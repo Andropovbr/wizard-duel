@@ -1,0 +1,122 @@
+# ============================================================
+# Wizard Duel - Atari 2600
+# ============================================================
+
+# ------------------------------------------------------------
+# Build artifacts
+# ------------------------------------------------------------
+build/
+dist/
+out/
+
+*.bin
+*.rom
+*.a26
+
+# DASM generated files
+*.lst
+*.sym
+*.map
+
+# ------------------------------------------------------------
+# Python tooling
+# ------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# ------------------------------------------------------------
+# Benchmark / test temporary output
+# ------------------------------------------------------------
+tmp/
+temp/
+.cache/
+
+tests/output/
+tests/results/
+
+# Generated reports that are not meant to be versioned
+reports/generated/
+
+# ------------------------------------------------------------
+# Stella local/runtime files
+# ------------------------------------------------------------
+*.state
+*.stella
+*.sav
+
+# Screenshots / recordings generated during testing
+screenshots/
+recordings/
+
+# ------------------------------------------------------------
+# Logs
+# ------------------------------------------------------------
+*.log
+logs/
+
+# ------------------------------------------------------------
+# IDE / Editor
+# ------------------------------------------------------------
+
+# Visual Studio Code
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.example.json
+
+# JetBrains
+.idea/
+*.iml
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+\#*\#
+.\#*
+
+# ------------------------------------------------------------
+# Operating systems
+# ------------------------------------------------------------
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux / desktop environments
+.directory
+
+# ------------------------------------------------------------
+# Miscellaneous temporary files
+# ------------------------------------------------------------
+*.tmp
+*.temp
+*.bak
+*.orig
+
+# ------------------------------------------------------------
+# Local environment configuration
+# ------------------------------------------------------------
+.env
+.env.*
+!.env.example
