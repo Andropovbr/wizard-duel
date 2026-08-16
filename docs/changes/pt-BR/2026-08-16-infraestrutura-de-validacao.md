@@ -2,7 +2,7 @@
 
 Data: 2026-08-16
 Branch: `round-1-initial-kernel`
-Commit: `0e22354`
+Commit: `d488448`
 
 ## Objetivo
 
