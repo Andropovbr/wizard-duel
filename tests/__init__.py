@@ -1,0 +1,1 @@
+"""Wizard Duel automated test suite (importable package)."""

@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install DASM and Stella
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dasm stella
+
+      - name: Verify tool availability
+        run: |
+          dasm --version
+          stella -help | head -3
+
+      - name: Clean build
+        run: python3 tools/build.py --clean
+
+      - name: Static validation + tests
+        run: python3 tools/test.py
+
+      - name: Benchmark generation
+        run: python3 tools/benchmark.py
+
+      - name: Validate ROM with Stella (headless)
+        run: stella -rominfo build/wizard-duel.bin
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wizard-duel-build
+          path: |
+            build/wizard-duel.bin
+            build/wizard-duel.lst
+            build/wizard-duel.sym
+            docs/benchmarks/latest.md
+          if-no-files-found: error

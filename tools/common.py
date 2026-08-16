@@ -1,0 +1,139 @@
+"""Shared helpers for the Wizard Duel toolchain.
+
+Everything is cross-platform (Python 3.8+) and never assumes Bash-only
+utilities.  The public entry points are:
+
+    python tools/build.py
+    python tools/run.py
+    python tools/test.py
+    python tools/benchmark.py
+"""
+
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+SRC_DIR = ROOT / "src"
+BUILD_DIR = ROOT / "build"
+TESTS_DIR = ROOT / "tests"
+DOCS_DIR = ROOT / "docs"
+ROM_NAME = "wizard-duel"
+
+ROM_PATH = BUILD_DIR / f"{ROM_NAME}.bin"
+LST_PATH = BUILD_DIR / f"{ROM_NAME}.lst"
+SYM_PATH = BUILD_DIR / f"{ROM_NAME}.sym"
+
+ROM_LIMIT = 4096          # bytes (4 KiB, no bankswitching)
+RAM_LIMIT = 128           # bytes (RIOT RAM $80-$FF)
+ROM_ORIGIN = 0xF000
+ROM_END = 0xFFFF
+RAM_ORIGIN = 0x80
+RAM_END = 0xFF
+VECTOR_RESET = 0xFFFC
+VECTOR_BLOCK = 0xFFFA       # first byte of the 6502 vector block
+
+
+def tool(name, what):
+    """Return the absolute path to a required executable or exit cleanly."""
+    path = shutil.which(name)
+    if path is None:
+        print(f"ERROR: {name.upper()} was not found.\n", file=sys.stderr)
+        print(f"Install {name.upper()} and ensure the `{name}` executable is "
+              f"available in PATH.\n", file=sys.stderr)
+        print(f"Required for:\n  {what}\n", file=sys.stderr)
+        sys.exit(2)
+    return path
+
+
+def run(cmd, **kwargs):
+    """Run a command and return a CompletedProcess with text output."""
+    return subprocess.run(cmd, capture_output=True, text=True, **kwargs)
+
+
+def parse_symbols(sym_path=SYM_PATH):
+    """Parse a DASM symbol file into {name: address}."""
+    symbols = {}
+    if not sym_path.exists():
+        return symbols
+    for line in sym_path.read_text().splitlines():
+        # DASM .sym format: "symbol  address  (segment)"
+        parts = line.split()
+        if len(parts) >= 2:
+            try:
+                symbols[parts[0]] = int(parts[1], 16)
+            except ValueError:
+                continue
+    return symbols
+
+
+def parse_listing(lst_path=LST_PATH):
+    """Parse a DASM listing into a list of emitted (address, bytes) rows.
+
+    Returns a list of dicts with 'addr' (int or None) and 'bytes' (bytes
+    object or None).  Lines that emit no data are skipped.
+    """
+    rows = []
+    if not lst_path.exists():
+        return rows
+    for line in lst_path.read_text().splitlines():
+        # Format: <src> <addr> <hex bytes> <mnemonic> ...
+        m = re.match(r"^\s*\d+\s+([0-9a-f]{4})\s+((?:[0-9a-f]{2}\s)*)\s+(\S+)", line)
+        if not m:
+            continue
+        addr = int(m.group(1), 16)
+        hexs = m.group(2).strip()
+        if not hexs:
+            continue
+        try:
+            data = bytes(int(h, 16) for h in hexs.split())
+        except ValueError:
+            continue
+        rows.append({"addr": addr, "bytes": data})
+    return rows
+
+
+def ram_usage(symbols=None):
+    """Return (used_bytes, available_bytes) for RIOT RAM.
+
+    Usage is derived from the DS (define storage) directives in the listing
+    VARS segment.  Counting every symbol whose value falls in $80-$FF is not
+    valid because many EQU constants have such values.
+    """
+    used = 0
+    if lst_path := LST_PATH:
+        for line in LST_PATH.read_text().splitlines():
+            m = re.match(r"^\s*\d+\s+U([0-9a-f]{4})\s+[0-9a-f]{2}\s+\S+\s+DS\s+(\d+)", line)
+            if m:
+                addr = int(m.group(1), 16)
+                size = int(m.group(2))
+                if RAM_ORIGIN <= addr < RAM_ORIGIN + RAM_LIMIT:
+                    used += size
+    return used, RAM_LIMIT - used
+
+
+def rom_usage():
+    """Return (used_bytes, available_bytes) for the 4 KiB ROM.
+
+    "Used" is the high-water mark of emitted code/data below the interrupt
+    vector block ($FFFA), so the $FF-filled padding counts as available.
+    """
+    rows = parse_listing()
+    code_high = ROM_ORIGIN
+    for row in rows:
+        addr = row["addr"]
+        if ROM_ORIGIN <= addr < VECTOR_BLOCK:
+            code_high = max(code_high, addr + len(row["bytes"]) - 1)
+    used = code_high - ROM_ORIGIN + 1
+    return used, ROM_LIMIT - used
+
+
+def require_build():
+    """Fail with a clear message if the ROM has not been built."""
+    if not ROM_PATH.exists():
+        print("ERROR: ROM not found at " + str(ROM_PATH), file=sys.stderr)
+        print("Run `python tools/build.py` first.", file=sys.stderr)
+        sys.exit(2)
