@@ -1,0 +1,13 @@
+{
+  "kernel_best": 44,
+  "kernel_budget": 76,
+  "kernel_slack": 20,
+  "kernel_worst": 56,
+  "overscan_timer": 37,
+  "ram_available": 125,
+  "ram_used": 3,
+  "rom_available": 3568,
+  "rom_used": 528,
+  "scanlines": 262,
+  "vblank_timer": 44
+}

@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 is required so the regression comparison can access the
+      # base branch (built in a temporary git worktree).  See docs/en/build.md.
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      # xvfb is needed because `stella -rominfo` initializes SDL and therefore
+      # requires a video device even though it never opens a window.
+      - name: Install DASM, Stella and Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dasm stella xvfb
+
+      - name: Fetch base branch (PR regression baseline)
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags origin \
+            +refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}
+
+      - name: Verify tool availability (dasm/stella probes)
+        run: python3 tools/check_env.py
+
+      - name: Clean build
+        run: python3 tools/build.py --clean
+
+      - name: Static validation + tests
+        run: python3 tools/test.py
+
+      - name: Benchmark generation
+        run: python3 tools/benchmark.py
+
+      - name: Regression comparison
+        run: python3 tools/regression.py --json
+
+      - name: Validate ROM metadata with Stella (-rominfo)
+        run: |
+          python3 -c "
+          import sys; sys.path.insert(0, 'tools')
+          from common import ROM_PATH, stella_rominfo
+          r = stella_rominfo(ROM_PATH)
+          out = (r.stdout or '') + (r.stderr or '')
+          assert r.returncode == 0, 'stella -rominfo failed:\n' + out
+          assert 'Bankswitch Type: 4K' in out and 'Display Format:  NTSC' in out
+          print(out)
+          "
+
+      - name: Publish regression summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f build/regression-report.md ]; then
+            cat build/regression-report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          cat build/regression-report.txt
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wizard-duel-build
+          path: |
+            build/wizard-duel.bin
+            build/wizard-duel.lst
+            build/wizard-duel.sym
+            build/regression-report.txt
+            build/regression-report.md
+            build/regression-report.json
+            docs/benchmarks/latest.md
+          if-no-files-found: error
