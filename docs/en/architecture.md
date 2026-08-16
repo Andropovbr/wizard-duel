@@ -1,14 +1,18 @@
 # Wizard Duel - Architecture
 
-Round 1 establishes the minimum technical base for an Atari 2600 game:
+Round 2 establishes the minimum technical base for an Atari 2600 game:
 
 * a stable NTSC frame of exactly 262 scanlines
-* two TIA players visible simultaneously (P0 on the left, P1 on the right)
+* two TIA players visible simultaneously (P0 on the left, P1 on the right),
+  rendered as simple vertical paddles
 * vertical-only movement driven by joystick 1 (P0) and joystick 2 (P1)
+* a TIA Ball object that moves continuously and bounces off the four arena
+  edges
 
-There is intentionally no magic system, projectiles, HP, AI, collisions or
-HUD yet; the gameplay rules are expected to evolve in later rounds without
-requiring architectural changes.
+There is intentionally no magic system, projectiles, HP, AI, collisions,
+scoring or HUD yet; the gameplay rules are expected to evolve in later
+rounds without requiring architectural changes. The ball does not interact
+with the players in this round.
 
 ## Code layout
 
@@ -19,10 +23,12 @@ register addresses and build-time constants.
 | Address  | Content                                        |
 | -------- | ---------------------------------------------- |
 | `$F000`  | `Reset` (initialization)                       |
-| `$F016`  | `StartOfFrame` (VSYNC + VBLANK + kernel + OS)  |
-| `$F09B`  | `UpdatePlayers` (joystick input + movement)    |
-| `$F0D5`  | `PositionPlayers` (RESP0/RESP1 + HMP + HMOVE)  |
-| `$F0F4`  | `P0Sprite` / `P1Sprite` (12 bytes each)        |
+| `$F049`  | `StartOfFrame` (VSYNC + VBLANK + kernel + OS)  |
+| `$F0C9`  | `UpdatePlayers` (joystick input + movement)    |
+| `$F103`  | `UpdateBall` (ball movement + bounce)          |
+| `$F13A`  | `PositionPlayers` (RESP0/RESP1 + HMP + HMOVE)  |
+| `$F149`  | `PositionBall` (RESBL + HMBL)                  |
+| `$F164`  | `P0Sprite` / `P1Sprite` (12 bytes each)        |
 | `$F200`  | `fineAdjustBegin` (page-aligned HMP table)     |
 | `$FFFA`  | NMI / RESET / IRQ vectors                      |
 
@@ -36,14 +42,17 @@ StartOfFrame
  ├─ VSYNC   3 scanlines  (three explicit WSYNC writes)
  ├─ VBLANK 37 scanlines  (TIM64T = 44; gameplay runs here)
  │   ├─ UpdatePlayers    read SWCHA, move P0/P1, clamp to the arena
- │   └─ PositionPlayers  RESP0/RESP1 + HMP0/HMP1 coarse/fine placement
+ │   ├─ UpdateBall       move the ball, bounce off the arena edges
+ │   ├─ PositionPlayers  RESP0/RESP1 + HMP0/HMP1 coarse/fine placement
+ │   └─ PositionBall     RESBL + HMBL placement
  ├─ KERNEL 192 scanlines (explicit WSYNC loop; render only)
  └─ OVERSCAN 30 scanlines (TIM64T = 37; loop back to StartOfFrame)
 ```
 
 Gameplay input and state updates happen during VBLANK; the visible kernel
-only renders the two sprites. This follows the project rule that display
-code must remain timing-predictable and gameplay must stay out of it.
+only renders the two sprites and the ball. This follows the project rule
+that display code must remain timing-predictable and gameplay must stay out
+of it.
 
 ## Input
 
@@ -66,30 +75,55 @@ arena boundaries so the position never wraps.
 
 Both players are drawn as single-copy TIA sprites (`NUSIZ0/1 = 0`) with
 different colors: P0 is red (`COLUP0 = $46`) and P1 is blue
-(`COLUP1 = $84`). The kernel computes, per scanline, whether the current
-line index belongs to a player's 12-row sprite and writes the matching row
-byte to `GRP0`/`GRP1`.
+(`COLUP1 = $84`). Each sprite is a 12-row solid rectangle of `%00111100`
+(a 4-pixel-wide paddle). The kernel computes, per scanline, whether the
+current line index belongs to a player's 12-row sprite and writes the
+matching row byte to `GRP0`/`GRP1`.
+
+The ball is drawn with the TIA Ball object (1 scanline tall, 4 pixels wide
+via `CTRLPF` D5:D4 = `%10`, colored by `COLUPF`). The kernel enables it for
+exactly one scanline per frame by comparing the line index with `ball_y` and
+writing `ENABL`; because `ENABL` is latched for the *following* scanline,
+the kernel must write it on every line (the enable value on the ball's row,
+0 everywhere else) or the ball would stick on screen.
 
 Horizontal placement is fixed every frame with the classic
-RESP0/RESP1 + HMP0/HMP1 + HMOVE technique: a coarse `RESPx` positions the
-sprite to within 15 pixels and a fine `HMPx` offset from the page-aligned
-`fineAdjustTable` finishes the job. The `HMOVE` that applies the offsets is
-written on the last VBLANK line.
+RESP0/RESP1/HMBL + HMP0/HMP1/HMBL + HMOVE technique: a coarse `RESPx`/`RESBL`
+positions the object to within 15 pixels and a fine `HMPx`/`HMBL` offset
+from the page-aligned `fineAdjustTable` finishes the job. The `HMOVE` that
+applies the offsets is written on the last VBLANK line. `PositionBall`
+passes `ball_x + 1` to the shared positioning routine because the TIA delays
+player graphics by one extra color clock; the same `RESP` input would
+otherwise place the ball one pixel to the left of where the players render.
+
+## Ball movement and bounce
+
+`UpdateBall` moves the ball one pixel per frame on both axes at constant
+speed. `ball_dx`/`ball_dy` store the direction step (+1 or $FF). Bouncing is
+implemented by reversing a direction when the ball reaches an exact arena
+edge (`BALL_X_MIN/MAX`, `BALL_Y_MIN/MAX`) *before* moving, so the position
+is always clamped to the valid range and can never wrap through an unsigned
+underflow. The ball does not collide with the players or the playfield; it
+bounces only off the four edges of the play area.
 
 ## Variable allocation
 
-Only three zero-page variables are used (3 of 128 bytes of RIOT RAM):
+Seven zero-page variables are used (7 of 128 bytes of RIOT RAM):
 
 | Address | Name      | Purpose                      |
 | ------- | --------- | ---------------------------- |
 | `$80`   | `P0Y`     | player 0 vertical position   |
 | `$81`   | `P1Y`     | player 1 vertical position   |
 | `$82`   | `joystate`| sampled SWCHA value          |
+| `$83`   | `ball_x`  | ball leftmost visible pixel  |
+| `$84`   | `ball_y`  | ball ENABL write scanline    |
+| `$85`   | `ball_dx` | horizontal direction step    |
+| `$86`   | `ball_dy` | vertical direction step      |
 
 ## Why VBLANK for gameplay
 
 The visible kernel has a 76-cycle budget per scanline. Running the joystick
-decoding and movement there would add branch-heavy, data-dependent timing
-to a rendering path that must stay deterministic. Moving it to VBLANK (see
-[timing.md](timing.md)) keeps the kernel stable at exactly one scanline per
-iteration regardless of input.
+decoding, movement and bounce checks there would add branch-heavy,
+data-dependent timing to a rendering path that must stay deterministic.
+Moving it to VBLANK (see [timing.md](timing.md)) keeps the kernel stable at
+exactly one scanline per iteration regardless of input or ball position.

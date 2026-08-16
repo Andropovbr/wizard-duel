@@ -1,3 +1,5 @@
 rom_used,rom_available,ram_used,ram_available,scanlines,kernel_worst,kernel_best,kernel_budget,kernel_slack,vblank_timer,overscan_timer
 528,3568,3,125,262,56,44,76,20,44,37
 528,3568,3,125,262,56,44,76,20,44,37
+528,3568,7,121,262,71,57,76,5,44,37
+528,3568,7,121,262,71,57,76,5,44,37

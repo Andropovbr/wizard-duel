@@ -3,15 +3,16 @@
 An experimental Atari 2600 game written in 6502 assembly (DASM), developed
 for the NTSC platform.
 
-Round 1 delivers the minimum technical base:
+Round 2 delivers the technical base:
 
 - a stable NTSC frame of exactly **262 scanlines**
 - two TIA players visible simultaneously (P0 red on the left, P1 blue on
-  the right)
+  the right), rendered as simple vertical paddles
 - vertical-only movement driven by joystick 1 (P0) and joystick 2 (P1)
+- a TIA Ball object moving continuously and bouncing off the arena edges
 
-There is no magic system, projectiles, HP, AI or collisions yet; gameplay
-rules are expected to evolve.
+There is no magic system, projectiles, HP, AI, collisions, scoring or
+power-ups yet; gameplay rules are expected to evolve.
 
 ## Requirements
 
@@ -55,12 +56,14 @@ build/       generated ROM/listing/symbols (not committed)
 
 The deterministic test suite validates ROM size/format, memory usage,
 symbols and addresses, page alignment, the frame structure (262 scanlines),
-the kernel cycle budget (worst case 56/76 cycles, 20 cycles slack) and the
-regression comparison against the baseline. Runtime checks (frame length,
-movement, both players visible) are performed manually in the Stella
-debugger and documented in `docs/en/timing.md`; `docs/en/build.md` explains
-what `stella -rominfo` validates and the CI runtime gap. See
-`docs/en/benchmarks.md` for the regression baseline and thresholds.
+the kernel cycle budget (worst case 71/76 cycles, 5 cycles slack, all eight
+player x ball paths), the ball's movement and bounce logic (executed from
+the assembled ROM by a small 6502 interpreter), and the regression
+comparison against the baseline. Runtime checks (frame length, movement,
+players and ball visible) are performed in Stella and documented in
+`docs/en/timing.md`; `docs/en/build.md` explains what `stella -rominfo`
+validates and the CI runtime gap. See `docs/en/benchmarks.md` for the
+regression baseline and thresholds.
 
 ## License
 

@@ -16,11 +16,12 @@ Medidas deterministicamente a partir dos artefatos do build (sem tela):
 
 ## Kernel slack
 
-Uma scanline NTSC tem 76 ciclos de CPU. O kernel visível gasta no máximo 56
-ciclos no pior caminho (ambos os jogadores desenhados), portanto:
+Uma scanline NTSC tem 76 ciclos de CPU. O kernel visível gasta no máximo 71
+ciclos no pior caminho (ambas as raquetes desenhadas e a bola na linha),
+portanto:
 
 ```text
-kernel slack = 76 - 56 = 20 ciclos
+kernel slack = 76 - 71 = 5 ciclos
 ```
 
 O slack é uma **métrica de primeira classe**: é registrado em `latest.md`,
@@ -116,24 +117,34 @@ como artefato `build/regression-report.txt` / `build/regression-report.json`.
 ## Histórico persistido
 
 `docs/benchmarks/history.csv` registra uma linha por execução de benchmark
-(`latest.md` reflete a execução mais recente). Nesta rodada o CSV ganhou a
+(`latest.md` reflete a execução mais recente). Na Rodada 1 o CSV ganhou a
 coluna `kernel_slack`; `tools/benchmark.py` migra as linhas anteriores no
-lugar, calculando `slack = kernel_budget - kernel_worst` (a linha original da
-Rodada 1 vira 20), então nenhum dado histórico é perdido.
+lugar, calculando `slack = kernel_budget - kernel_worst`, então nenhum dado
+histórico é perdido.
 
-## Baseline atual (Rodada 1)
+## Baseline e estado atual
 
-O baseline persistido `docs/benchmarks/baseline.json` foi criado a partir do
-estado da Rodada 1:
+O baseline persistido `docs/benchmarks/baseline.json` foi criado a partir
+do estado da Rodada 1 e é deliberadamente mantido como ponto de referência
+(só é reescrito com `--update-baseline`):
 
 ```text
+Baseline da Rodada 1:
 ROM usada:          528 bytes
 RAM usada:          3 bytes
 Scanlines do quadro: 262
 Pior caso do kernel: 56 / 76 ciclos
 Kernel slack:       20 ciclos
 Melhor caso do kernel: 44 ciclos
+
+Rodada 2 atual (medida):
+ROM usada:          528 bytes   (o código da bola coube no padding de página)
+RAM usada:          7 bytes
+Scanlines do quadro: 262
+Pior caso do kernel: 71 / 76 ciclos
+Kernel slack:       5 ciclos
+Melhor caso do kernel: 57 ciclos
 ```
 
-Esses números são o baseline técnico da Rodada 1, não "verdade" fixada no
-tooling; as ferramentas os medem a partir dos artefatos a cada execução.
+Esses números são medidos a partir dos artefatos a cada execução, não
+"verdade" fixada no tooling.

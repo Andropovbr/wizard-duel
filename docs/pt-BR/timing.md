@@ -1,7 +1,7 @@
 # Wizard Duel - Timing
 
 Este documento registra a análise de timing em nível de ciclo do kernel e do
-quadro da Rodada 1. Cada número abaixo foi derivado manualmente e depois
+quadro da Rodada 2. Cada número abaixo foi derivado manualmente e depois
 verificado contra o listing montado pela suíte de testes automatizada, ou
 medido no depurador do Stella.
 
@@ -78,32 +78,66 @@ Caminho vazio por jogador (nenhuma linha do sprite nesta linha):
 Fim (por scanline): `INX` 2 + `CPX #192` 2 + `BNE` 3 + `STA WSYNC` 3
 = **10**.
 
-| Caminho                  | Ciclos |
-| ------------------------ | ------ |
-| Ambos os sprites desenhados | 23+23+10 = **56** |
-| Ambos os sprites vazios   | 17+17+10 = **44** |
-| Um desenhado, um vazio    | 23+17+10 = **50** |
-| Orçamento da scanline     | 76     |
-| Folga no pior caso        | **20 ciclos** |
+Bloco de habilitação da bola (toda scanline, porque `ENABL` é travado para
+a linha *seguinte* e, portanto, precisa ser reescrito a cada linha):
 
-As tabelas de sprite estão dispostas de modo que todo índice possível de
-linha (0..11) permaneça dentro de uma única página; o `LDA` indexado nunca
-paga a penalidade de +1 de passagem de página. Isso é verificado pela suíte
-de testes.
+Na linha da bola (escreve o valor de habilitação):
 
-`GRP0` é escrito por volta do ciclo 23 da sua scanline e `GRP1` por volta
-do ciclo 46; ambos são travados (latched) para a linha seguinte, bem antes
-do limite de 76 ciclos.
+| Instrução          | Ciclos |
+| ------------------ | ------ |
+| `TXA`              | 2      |
+| `CMP ball_y`       | 3      |
+| `BNE .BallOff`     | 2 (não tomado) |
+| `LDA #BALL_ENABLE` | 2      |
+| `STA ENABL`        | 3      |
+| `JMP .BallDone`    | 3      |
+| **Subtotal**       | **15** |
+
+Fora da linha da bola (mantém a bola apagada):
+
+| Instrução          | Ciclos |
+| ------------------ | ------ |
+| `TXA`              | 2      |
+| `CMP ball_y`       | 3      |
+| `BNE .BallOff`     | 3 (tomado) |
+| `LDA #0`           | 2      |
+| `STA ENABL`        | 3      |
+| **Subtotal**       | **13** |
+
+| Caminho                          | Ciclos |
+| -------------------------------- | ------ |
+| Ambos sprites desenhados + bola  | 23+23+15+10 = **71** |
+| Ambos sprites desenhados + bola apagada | 23+23+13+10 = **69** |
+| Um desenhado, um vazio + bola    | 23+17+15+10 = **65** |
+| Um desenhado, um vazio + bola apagada | 23+17+13+10 = **63** |
+| Ambos sprites vazios + bola      | 17+17+15+10 = **59** |
+| Ambos sprites vazios + bola apagada | 17+17+13+10 = **57** |
+| Orçamento da scanline            | 76     |
+| Folga no pior caso               | **5 ciclos** |
+
+Todas as oito combinações de jogador x bola são enumeradas e verificadas
+pela suíte de testes. As tabelas de sprite estão dispostas de modo que todo
+índice possível de linha (0..11) permaneça dentro de uma única página; o
+`LDA` indexado nunca paga a penalidade de +1 de passagem de página. Isso é
+verificado pela suíte de testes.
+
+`GRP0` é escrito por volta do ciclo 24 da sua scanline, `GRP1` por volta do
+ciclo 47 e `ENABL` por volta do ciclo 63; os três são travados (latched)
+para a linha seguinte, bem antes do limite de 76 ciclos.
 
 ## Orçamentos de VBLANK e OVERSCAN
 
-A lógica de jogo (decodificação do joystick + movimento + posicionamento)
-roda no VBLANK entre a liberação do VSYNC e a espera do timer. Seu custo é:
+A lógica de jogo (decodificação do joystick + movimento + atualização da
+bola + posicionamento) roda no VBLANK entre a liberação do VSYNC e a espera
+do timer. Seu custo é:
 
 * `UpdatePlayers`: 3 + 3 + (2+3+2/3) + (2+3+2+2/3) + ... cerca de 60 ciclos
   no pior caso para os dois jogadores;
+* `UpdateBall`: quatro checagens de quique + dois movimentos, cerca de 65
+  ciclos no pior caso (ramo tomado em todas as checagens);
 * `PositionPlayers`: duas chamadas `PosObject` consumindo 1-2 scanlines
-  cada.
+  cada;
+* `PositionBall`: uma chamada `PosObject`.
 
 Isso está muito abaixo do orçamento de 37 linhas do VBLANK e nunca interfere
 no kernel visível.

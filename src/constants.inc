@@ -118,6 +118,46 @@ PLAYER2_COLOR      = $84     ; blue (NTSC)
 BACKGR_COLOR       = $00     ; black
 
 ; ---------------------------------------------------------------------------
+; Ball constants
+; ---------------------------------------------------------------------------
+; The ball is a TIA Ball object: 4 pixels wide (CTRLPF D5:D4 = %10), one
+; scanline tall. It moves at a constant 1 pixel per frame per axis and
+; bounces off the four arena edges. It does NOT interact with the players
+; this round (no collision, no collection, no power-up).
+;
+; ball_x / ball_y are the ball's visual position:
+;   - ball_x: leftmost visible pixel of the ball (0..159)
+;   - ball_y: kernel scanline index at which ENABL = 1 is written; because
+;     of the TIA graphics latch the ball is physically displayed on
+;     scanline ball_y + 1 (the same coordinate convention as the players).
+;
+; Horizontal positioning note: the TIA delays player graphics by 1 CLK more
+; than the ball/missile output, so for the same PosObject input the ball
+; appears 1 pixel to the LEFT of a player. PositionBall therefore passes
+; ball_x + 1 to PosObject; the bounds below are expressed in the visible
+; pixel coordinate (ball_x), so the ball stays fully inside the 160-pixel
+; visible width.
+; ---------------------------------------------------------------------------
+BALL_WIDTH         = 4       ; ball size in pixels (CTRLPF D5:D4 = %10)
+BALL_SIZE_CTRLPF   = %00010000
+BALL_COLOR         = $0E     ; white (NTSC)
+BALL_ENABLE        = $02     ; ENABL bit 1 = ball output enabled
+
+BALL_X_MIN         = 0                     ; left edge of the visible area
+BALL_X_MAX         = 160 - BALL_WIDTH      ; keep the 4-px ball fully visible
+BALL_Y_MIN         = 0                     ; written on the first kernel line
+BALL_Y_MAX         = KERNEL_SCANLINES - 2  ; displayed on the last kernel line
+
+BALL_X_INIT        = 78      ; ~center of the 160-pixel arena
+BALL_Y_INIT        = 95      ; ~center of the 192-line kernel
+
+; Direction steps added to ball_x/ball_y every frame (constant speed).
+DIR_LEFT  = $FF             ; -1
+DIR_RIGHT = 1
+DIR_UP    = $FF             ; -1
+DIR_DOWN  = 1
+
+; ---------------------------------------------------------------------------
 ; Joystick masks (SWCHA is active low: a bit is 0 when the direction is
 ; pushed).
 ;   Port 0 (left player / P0): D7 right, D6 left, D5 down, D4 up

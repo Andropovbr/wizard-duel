@@ -20,16 +20,19 @@ class TestSymbols(unittest.TestCase):
 
     def test_required_symbols_exist(self):
         for name in ("Reset", "StartOfFrame", "WaitVBlank", "KernelLoop",
-                     "OverscanWait", "UpdatePlayers", "PositionPlayers",
-                     "PosObject", "P0Sprite", "P1Sprite", "fineAdjustTable",
-                     "fineAdjustBegin", "P0Y", "P1Y", "joystate"):
+                     "OverscanWait", "UpdatePlayers", "UpdateBall",
+                     "PositionPlayers", "PositionBall", "PosObject",
+                     "P0Sprite", "P1Sprite", "fineAdjustTable",
+                     "fineAdjustBegin", "P0Y", "P1Y", "joystate",
+                     "ball_x", "ball_y", "ball_dx", "ball_dy"):
             self.assertIn(name, self.sym, f"missing symbol {name}")
 
     def test_reset_at_rom_origin(self):
         self.assertEqual(self.sym["Reset"], ROM_ORIGIN)
 
     def test_ram_symbols_in_riot_ram(self):
-        for name in ("P0Y", "P1Y", "joystate"):
+        for name in ("P0Y", "P1Y", "joystate",
+                     "ball_x", "ball_y", "ball_dx", "ball_dy"):
             self.assertGreaterEqual(self.sym[name], 0x80)
             self.assertLessEqual(self.sym[name], 0xFF)
 
@@ -38,7 +41,9 @@ class TestSymbols(unittest.TestCase):
 
     def test_ram_symbols_distinct(self):
         self.assertEqual(len({self.sym["P0Y"], self.sym["P1Y"],
-                              self.sym["joystate"]}), 3)
+                              self.sym["joystate"], self.sym["ball_x"],
+                              self.sym["ball_y"], self.sym["ball_dx"],
+                              self.sym["ball_dy"]}), 7)
 
     def test_kernel_loop_inside_rom(self):
         self.assertGreaterEqual(self.sym["KernelLoop"], ROM_ORIGIN)
@@ -69,6 +74,18 @@ class TestRomLayout(unittest.TestCase):
             last = base + PLAYER_HEIGHT - 1
             self.assertEqual(base >> 8, last >> 8,
                              f"{name} crosses a page boundary")
+
+    def test_players_are_solid_paddle_rectangles(self):
+        # Round 2 renders both players as Pong-style vertical paddles:
+        # PLAYER_HEIGHT identical solid rows of a 4-pixel bar.
+        for name in ("P0Sprite", "P1Sprite"):
+            base = self.sym[name]
+            rows = [self.addr(base + i) for i in range(PLAYER_HEIGHT)]
+            self.assertEqual(len(set(rows)), 1,
+                             f"{name} rows are not identical")
+            self.assertEqual(rows[0], 0x3C,  # %00111100
+                             f"{name} is not the expected paddle shape")
+            self.assertNotEqual(rows[0], 0, f"{name} is blank")
 
     def test_sprite_table_indices_valid(self):
         # Every row byte must use only the 8 visible pixels.

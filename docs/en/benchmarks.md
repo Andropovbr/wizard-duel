@@ -16,11 +16,11 @@ Measured deterministically from the assembled build artifacts (no display):
 
 ## Kernel slack
 
-One NTSC scanline is 76 CPU cycles. The visible kernel spends at most 56
-cycles in its worst path (both players drawn), so:
+One NTSC scanline is 76 CPU cycles. The visible kernel spends at most 71
+cycles in its worst path (both paddles drawn and the ball on the line), so:
 
 ```text
-kernel slack = 76 - 56 = 20 cycles
+kernel slack = 76 - 71 = 5 cycles
 ```
 
 Slack is a **first-class metric**: it is recorded in `latest.md`, in
@@ -114,24 +114,34 @@ as `build/regression-report.txt` / `build/regression-report.json` artifacts.
 ## Persisted history
 
 `docs/benchmarks/history.csv` records one row per benchmark run
-(`latest.md` reflects the most recent run). In this round the CSV gained the
+(`latest.md` reflects the most recent run). In Round 1 the CSV gained the
 `kernel_slack` column; `tools/benchmark.py` migrates pre-existing rows in
-place, computing `slack = kernel_budget - kernel_worst` (the original Round 1
-row becomes 20), so no historical data is lost.
+place, computing `slack = kernel_budget - kernel_worst`, so no historical
+data is lost.
 
-## Current baseline (Round 1)
+## Baseline and current state
 
 The persisted baseline `docs/benchmarks/baseline.json` was created from the
-Round 1 state:
+Round 1 state and is deliberately kept as the reference point (it is only
+rewritten with `--update-baseline`):
 
 ```text
+Round 1 baseline:
 ROM used:          528 bytes
 RAM used:          3 bytes
 Frame scanlines:   262
 Kernel worst case: 56 / 76 cycles
 Kernel slack:      20 cycles
 Kernel best case:  44 cycles
+
+Round 2 current (measured):
+ROM used:          528 bytes   (the ball code fits in page padding)
+RAM used:          7 bytes
+Frame scanlines:   262
+Kernel worst case: 71 / 76 cycles
+Kernel slack:      5 cycles
+Kernel best case:  57 cycles
 ```
 
-These numbers are the technical baseline of Round 1, not hardcoded "truth" in
-the tooling; the tooling measures them from the artifacts on every run.
+These numbers are measured from the artifacts on every run, not hardcoded
+"truth" in the tooling.

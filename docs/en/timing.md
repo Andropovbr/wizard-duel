@@ -1,6 +1,6 @@
 # Wizard Duel - Timing
 
-This document records the cycle-level timing analysis of the Round 1 kernel
+This document records the cycle-level timing analysis of the Round 2 kernel
 and frame. Every number below was either derived by hand and then verified
 against the assembled listing by the automated test suite, or measured in
 Stella's debugger.
@@ -77,29 +77,63 @@ Blank path per player (no sprite row this line):
 Tail (per scanline): `INX` 2 + `CPX #192` 2 + `BNE` 3 + `STA WSYNC` 3
 = **10**.
 
+Ball enable block (every scanline, because `ENABL` is latched for the
+*following* line and must therefore be re-written every line):
+
+On the ball's row (write the enable value):
+
+| Instruction      | Cycles |
+| ---------------- | ------ |
+| `TXA`            | 2      |
+| `CMP ball_y`     | 3      |
+| `BNE .BallOff`   | 2 (not taken) |
+| `LDA #BALL_ENABLE` | 2   |
+| `STA ENABL`      | 3      |
+| `JMP .BallDone`  | 3      |
+| **Subtotal**     | **15** |
+
+Off the ball's row (keep the ball dark):
+
+| Instruction      | Cycles |
+| ---------------- | ------ |
+| `TXA`            | 2      |
+| `CMP ball_y`     | 3      |
+| `BNE .BallOff`   | 3 (taken) |
+| `LDA #0`         | 2      |
+| `STA ENABL`      | 3      |
+| **Subtotal**     | **13** |
+
 | Path                     | Cycles |
 | ------------------------ | ------ |
-| Both sprites drawn       | 23+23+10 = **56** |
-| Both sprites blank       | 17+17+10 = **44** |
-| One drawn, one blank     | 23+17+10 = **50** |
+| Both sprites drawn + ball on | 23+23+15+10 = **71** |
+| Both sprites drawn + ball off | 23+23+13+10 = **69** |
+| One drawn, one blank + ball on | 23+17+15+10 = **65** |
+| One drawn, one blank + ball off | 23+17+13+10 = **63** |
+| Both sprites blank + ball on | 17+17+15+10 = **59** |
+| Both sprites blank + ball off | 17+17+13+10 = **57** |
 | Scanline budget          | 76     |
-| Worst-case slack         | **20 cycles** |
+| Worst-case slack         | **5 cycles** |
 
-The sprite tables are laid out so every possible row index (0..11) stays
-inside a single page; the indexed `LDA` never pays the +1 page-cross
+All eight player x ball combinations are enumerated and asserted by the test
+suite. The sprite tables are laid out so every possible row index (0..11)
+stays inside a single page; the indexed `LDA` never pays the +1 page-cross
 penalty. This is asserted by the test suite.
 
-`GRP0` is written at ~cycle 23 of its scanline and `GRP1` at ~cycle 46;
-both are latched for the following line, well before the 76-cycle limit.
+`GRP0` is written at ~cycle 24 of its scanline, `GRP1` at ~cycle 47 and
+`ENABL` at ~cycle 63; all three are latched for the following line, well
+before the 76-cycle limit.
 
 ## VBLANK and OVERSCAN budgets
 
-The gameplay (joystick decode + movement + positioning) runs in VBLANK
-between the VSYNC release and the timer wait. Its cost is:
+The gameplay (joystick decode + movement + ball update + positioning) runs
+in VBLANK between the VSYNC release and the timer wait. Its cost is:
 
 * `UpdatePlayers`: 3 + 3 + (2+3+2/3) + (2+3+2+2/3) + ... roughly 60 cycles
   worst case for both players;
-* `PositionPlayers`: two `PosObject` calls consuming 1-2 scanlines each.
+* `UpdateBall`: four bounce checks + two moves, ~65 cycles worst case
+  (branch taken on every check);
+* `PositionPlayers`: two `PosObject` calls consuming 1-2 scanlines each;
+* `PositionBall`: one `PosObject` call.
 
 This is far below the 37-line VBLANK budget and never interferes with the
 visible kernel.

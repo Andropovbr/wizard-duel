@@ -167,7 +167,7 @@ class TestKernelSlackMetric(unittest.TestCase):
         m = measure()
         self.assertEqual(m["kernel_slack"],
                          m["kernel_budget"] - m["kernel_worst"])
-        self.assertEqual(m["kernel_slack"], 20)  # 76 - 56 (Round 1 baseline)
+        self.assertEqual(m["kernel_slack"], 5)  # 76 - 71 (Round 2 worst case)
 
     def test_latest_report_documents_slack(self):
         self.assertTrue(LATEST.exists())

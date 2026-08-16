@@ -70,12 +70,15 @@ These are generated files and are not committed.
 
 * **Build**: ROM exists, exactly 4096 bytes, vectors present and pointing
   into ROM; Stella's `-rominfo` reports `4K`, NTSC and two joysticks.
-* **Memory**: ROM usage <= 4096 bytes, RAM usage <= 128 bytes (only 3 used).
+* **Memory**: ROM usage <= 4096 bytes, RAM usage <= 128 bytes (7 used).
 * **Assembly**: required symbols exist, `Reset` at `$F000`,
   `fineAdjustBegin` page-aligned, sprite tables 12 bytes and page-safe.
 * **Timing**: frame region scanline sum == 262; kernel worst-case path
   recomputed from the listing with a deterministic 6502 cycle walker and
-  asserted <= 76 cycles (worst = 56, best = 44).
+  asserted <= 76 cycles (worst = 71, best = 57; all 8 player x ball paths).
+* **Ball behavior**: the assembled `UpdateBall` is executed by a small
+  deterministic 6502 interpreter in the test suite - movement, the four edge
+  bounces, the bounds invariant over 2000 frames and the initial state.
 * **Regression**: delta computation, hard/soft thresholds, kernel slack,
   baseline resolution (see `docs/en/benchmarks.md`).
 * **Tool validation**: DASM/Stella probes accept a real tool and reject a
