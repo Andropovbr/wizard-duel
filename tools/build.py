@@ -11,7 +11,7 @@ import subprocess
 import sys
 
 from common import (BUILD_DIR, ROM_LIMIT, ROM_NAME, SRC_DIR,
-                    rom_usage, tool)
+                    probe_dasm, rom_usage, tool)
 
 DASM_SRC = SRC_DIR / "main.asm"
 
@@ -22,7 +22,7 @@ def main():
                         help="remove build artifacts before assembling")
     args = parser.parse_args()
 
-    dasm = tool("dasm", "python tools/build.py")
+    dasm = tool("dasm", "python tools/build.py", probe=probe_dasm)
 
     if args.clean:
         BUILD_DIR.mkdir(exist_ok=True)

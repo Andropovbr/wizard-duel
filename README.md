@@ -24,10 +24,12 @@ On Ubuntu/Debian: `sudo apt-get install dasm stella`
 ## Commands
 
 ```sh
+python tools/check_env.py       # verify dasm + stella are installed and work
 python tools/build.py           # assemble the ROM
 python tools/test.py            # deterministic validation suite
 python tools/run.py             # run in Stella
 python tools/benchmark.py       # measure and persist metrics
+python tools/regression.py      # compare current metrics against a baseline
 ```
 
 ## Project layout
@@ -52,11 +54,13 @@ build/       generated ROM/listing/symbols (not committed)
 ## Validation
 
 The deterministic test suite validates ROM size/format, memory usage,
-symbols and addresses, page alignment, the frame structure (262 scanlines)
-and the kernel cycle budget (worst case 56/76 cycles). Runtime checks
-(frame length, movement, both players visible) are performed in the Stella
-debugger and documented in `docs/en/timing.md`; see `docs/en/build.md` for
-the CI runtime gap.
+symbols and addresses, page alignment, the frame structure (262 scanlines),
+the kernel cycle budget (worst case 56/76 cycles, 20 cycles slack) and the
+regression comparison against the baseline. Runtime checks (frame length,
+movement, both players visible) are performed manually in the Stella
+debugger and documented in `docs/en/timing.md`; `docs/en/build.md` explains
+what `stella -rominfo` validates and the CI runtime gap. See
+`docs/en/benchmarks.md` for the regression baseline and thresholds.
 
 ## License
 

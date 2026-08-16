@@ -9,5 +9,6 @@ Measured from the assembled build artifacts.
 | Frame scanlines | 262 |
 | Kernel worst case | 56 / 76 cycles |
 | Kernel best case | 44 cycles |
+| Kernel slack | 20 cycles |
 | VBLANK timer value | 44 |
 | OVERSCAN timer value | 37 |

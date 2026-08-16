@@ -117,9 +117,25 @@ because the CPU and TIA clocks are not yet aligned; all subsequent frames
 are exactly 19912 cycles. This is normal reset behavior.
 
 The frame-length measurement is deterministic but requires the Stella GUI
-debugger, so it is documented here rather than automated in CI. The CI
-pipeline validates the frame structure statically (constants, listing) and
-rejects any build whose region scanline sum differs from 262.
+debugger, so it is documented here rather than automated in CI.
+
+### Runtime validation status
+
+There is **no automated runtime scanline validation** in the current
+pipeline. Stella 6.6 offers no documented headless option that advances
+frames and exposes the TIA scanline counter to stdout; the debugger and the
+frame-stats overlay (Alt-L) need a graphical session and interactive input,
+and keystroke automation is too fragile for CI. Consequently:
+
+* the 262-scanline frame was measured **manually in the Stella debugger on a
+  local graphical session** (`print _cyclesLo` deltas of 19912 cycles);
+* the CI pipeline validates the frame structure **statically** (constants,
+  listing, region scanline sum == 262, kernel cycle budget) and rejects any
+  build whose region scanline sum differs from 262.
+
+The project therefore does not claim that scanlines were "validated at
+runtime in CI"; runtime frame validation remains a manual step, and the
+architecture keeps the static suite as the deterministic CI-safe substitute.
 
 ## Why this matters
 

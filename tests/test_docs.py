@@ -15,6 +15,7 @@ REQUIRED_PAIRS = [
     ("en/memory-map.md", "pt-BR/mapa-de-memoria.md"),
     ("en/timing.md", "pt-BR/timing.md"),
     ("en/build.md", "pt-BR/build.md"),
+    ("en/benchmarks.md", "pt-BR/benchmarks.md"),
     ("benchmarks/latest.md", "benchmarks/latest.md"),
 ]
 

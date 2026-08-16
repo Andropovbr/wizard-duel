@@ -10,7 +10,7 @@ import argparse
 import subprocess
 import sys
 
-from common import ROM_PATH, require_build, tool
+from common import ROM_PATH, probe_stella, require_build, tool
 
 
 def main():
@@ -19,7 +19,7 @@ def main():
                         help="start in the Stella debugger")
     args = parser.parse_args()
 
-    stella = tool("stella", "python tools/run.py")
+    stella = tool("stella", "python tools/run.py", probe=probe_stella)
     require_build()
 
     cmd = [stella]

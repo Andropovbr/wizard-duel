@@ -37,8 +37,47 @@ VECTOR_RESET = 0xFFFC
 VECTOR_BLOCK = 0xFFFA       # first byte of the 6502 vector block
 
 
-def tool(name, what):
-    """Return the absolute path to a required executable or exit cleanly."""
+def probe_dasm(path):
+    """Deterministically verify that `path` is a functional DASM executable.
+
+    DASM has no --version/-h option: invoking `dasm --version` makes DASM try
+    to open a file named "--version", print a warning and exit 0, so it is a
+    false positive.  With no arguments DASM prints its short help text
+    (documented behavior) and exits non-zero, which is a reliable probe.
+    """
+    try:
+        result = subprocess.run([path], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"could not execute dasm: {exc}"
+    out = (result.stdout or "") + (result.stderr or "")
+    if "Usage: dasm" in out or "DASM" in out:
+        return True, "ok"
+    return False, f"did not behave like DASM (output: {out.strip()[:200]})"
+
+
+def probe_stella(path):
+    """Deterministically verify that `path` is a functional Stella executable.
+
+    Stella supports a real `-help` option that works without a video device.
+    """
+    try:
+        result = subprocess.run([path, "-help"], capture_output=True, text=True,
+                                timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"could not execute stella: {exc}"
+    out = (result.stdout or "") + (result.stderr or "")
+    if "Stella" in out and "Usage: stella" in out:
+        return True, "ok"
+    return False, f"did not behave like Stella (output: {out.strip()[:200]})"
+
+
+def tool(name, what, probe=None):
+    """Return the absolute path to a required executable or exit cleanly.
+
+    `probe(executable)` is an optional deterministic functional check that
+    must return (ok: bool, message: str).  Presence in PATH alone is not
+    enough; the tool must actually work.
+    """
     path = shutil.which(name)
     if path is None:
         print(f"ERROR: {name.upper()} was not found.\n", file=sys.stderr)
@@ -46,12 +85,38 @@ def tool(name, what):
               f"available in PATH.\n", file=sys.stderr)
         print(f"Required for:\n  {what}\n", file=sys.stderr)
         sys.exit(2)
+    if probe is not None:
+        ok, message = probe(path)
+        if not ok:
+            print(f"ERROR: {name.upper()} failed verification.\n",
+                  file=sys.stderr)
+            print(f"{message}\n", file=sys.stderr)
+            print(f"Install a working {name.upper()} and try again.\n",
+                  file=sys.stderr)
+            print(f"Required for:\n  {what}\n", file=sys.stderr)
+            sys.exit(2)
     return path
 
 
 def run(cmd, **kwargs):
     """Run a command and return a CompletedProcess with text output."""
     return subprocess.run(cmd, capture_output=True, text=True, **kwargs)
+
+
+def stella_rominfo(rom_path, stella_bin=None):
+    """Run `stella -rominfo <rom>` and return the CompletedProcess.
+
+    NOTE: unlike `stella -help`, `-rominfo` initializes SDL and therefore
+    requires a video device.  On headless Linux (e.g. CI) this transparently
+    retries through `xvfb-run -a` when that helper is installed.
+    """
+    stella_bin = stella_bin or tool("stella", "ROM metadata validation")
+    cmd = [stella_bin, "-rominfo", str(rom_path)]
+    result = run(cmd)
+    if (result.returncode != 0 and os.name == "posix"
+            and not os.environ.get("DISPLAY") and shutil.which("xvfb-run")):
+        result = run(["xvfb-run", "-a"] + cmd)
+    return result
 
 
 def parse_symbols(sym_path=SYM_PATH):

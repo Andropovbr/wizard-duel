@@ -122,9 +122,29 @@ os quadros seguintes têm exatamente 19912 ciclos. Isso é comportamento
 normal de reset.
 
 A medição do comprimento do quadro é determinística, mas exige o depurador
-gráfico do Stella, então é documentada aqui em vez de automatizada no CI. O
-CI valida a estrutura do quadro estaticamente (constantes, listing) e
-rejeita qualquer build cuja soma das scanlines das regiões difira de 262.
+gráfico do Stella, então é documentada aqui em vez de automatizada no CI.
+
+### Status da validação em runtime
+
+**Não existe validação automatizada de scanlines em runtime** na pipeline
+atual. O Stella 6.6 não oferece opção headless documentada que avance
+quadros e exponha o contador de scanlines do TIA para a saída padrão; o
+depurador e o overlay de estatísticas do quadro (Alt-L) exigem sessão
+gráfica e entrada interativa, e a automação por teclas é frágil demais para
+o CI. Consequentemente:
+
+* o quadro de 262 scanlines foi medido **manualmente no depurador do Stella
+  em uma sessão gráfica local** (deltas de `print _cyclesLo` de 19912
+  ciclos);
+* a pipeline do CI valida a estrutura do quadro **estaticamente**
+  (constantes, listing, soma das scanlines das regiões == 262, orçamento de
+  ciclos do kernel) e rejeita qualquer build cuja soma das scanlines das
+  regiões difira de 262.
+
+O projeto, portanto, não afirma que as scanlines foram "validadas em runtime
+no CI"; a validação do quadro em runtime continua sendo uma etapa manual, e
+a arquitetura mantém a suíte estática como substituto determinístico seguro
+para o CI.
 
 ## Por que isso importa
 
