@@ -1,7 +1,7 @@
 # Wizard Duel - Timing
 
 Este documento registra a análise de timing em nível de ciclo do kernel e do
-quadro da Rodada 1. Cada número abaixo foi derivado manualmente e depois
+quadro da Rodada 2. Cada número abaixo foi derivado manualmente e depois
 verificado contra o listing montado pela suíte de testes automatizada, ou
 medido no depurador do Stella.
 
@@ -10,12 +10,12 @@ medido no depurador do Stella.
 | Região    | Scanlines | Como é produzida               |
 | --------- | --------- | ------------------------------ |
 | VSYNC     | 3         | três `STA WSYNC` explícitos    |
-| VBLANK    | 37        | contagem `TIM64T = 44`         |
+| VBLANK    | 37        | contagem `TIM64T = 43`         |
 | KERNEL    | 192       | loop explícito de `STA WSYNC`  |
 | OVERSCAN  | 30        | contagem `TIM64T = 37`         |
 | **Total** | **262**   |                                |
 
-### Por que os valores do timer são 44 e 37
+### Por que os valores do timer são 43 e 37
 
 O timer do RIOT conta a cada 64 ciclos. Definir `TIM64T = N` parece exigir
 `N * 64` ciclos, mas a implementação do M6532 no Stella (e no hardware real)
@@ -29,8 +29,10 @@ Por causa disso o timer expira em um ciclo anterior ao que um cálculo
 ingênuo de `valor * 64` sugeriria. Empiricamente (medido com
 `print _cyclesLo` no breakpoint `StartOfFrame` do depurador do Stella):
 
-* `VBLANK_TIMER_VALUE = 44` faz a espera do VBLANK expirar na última
-  scanline do VBLANK (linha 40 do quadro);
+* `VBLANK_TIMER_VALUE = 43` faz a espera do VBLANK expirar na linha 39; o
+  `STA WSYNC` seguinte sincroniza com a linha 40, onde `HMOVE` é escrito
+  imediatamente após o `WSYNC` (exigido para que os registradores de
+  movimento atuem durante o blanking horizontal da última linha do VBLANK);
 * `OVERSCAN_TIMER_VALUE = 37` faz a espera do OVERSCAN expirar na última
   linha do quadro.
 
@@ -41,69 +43,120 @@ scanlines pretendidas.
 ## O kernel visível
 
 Uma scanline = **76 ciclos de CPU**. Cada iteração do kernel começa com
-`STA WSYNC`, então toda iteração é exatamente uma scanline,
-independentemente de ramificações; o quadro não pode derivar quando um
-jogador se move.
+`STA WSYNC`, então toda iteração é exatamente uma scanline; o quadro não
+pode derivar quando um jogador se move.
 
 ### Contabilidade de ciclos (verificada no listing)
 
-Caminho desenhado por jogador (linha do sprite escrita):
+O kernel é **sem ramificações** (branchless): a única ramificação é o `BNE`
+final que volta ao `KernelLoop`, então toda scanline custa exatamente o
+mesmo, independentemente do estado dos jogadores ou da bola. Isso remove
+todo timing dependente de dados do caminho de renderização.
 
-| Instrução          | Ciclos |
-| ------------------ | ------ |
-| `TXA`              | 2      |
-| `SEC`              | 2      |
-| `SBC P0Y`          | 3      |
-| `CMP #altura`      | 2      |
-| `BCS .P0Blank`     | 2 (não tomado) |
-| `TAY`              | 2      |
-| `LDA P0Sprite,Y`   | 4      |
-| `JMP .P0Done`      | 3      |
-| `STA GRP0`         | 3      |
-| **Subtotal**       | **23** |
+Por scanline:
 
-Caminho vazio por jogador (nenhuma linha do sprite nesta linha):
+| Instrução           | Ciclos |
+| ------------------- | ------ |
+| `STA WSYNC`         | 3      |
+| `STA ENABL`         | 3      |
+| Bloco do P0 (retângulo) | 18  |
+| Bloco do P1 (retângulo) | 18  |
+| Fim (incl. `BNE`)   | 20     |
+| **Total**           | **62** |
 
-| Instrução          | Ciclos |
-| ------------------ | ------ |
-| `TXA`              | 2      |
-| `SEC`              | 2      |
-| `SBC P0Y`          | 3      |
-| `CMP #altura`      | 2      |
-| `BCS .P0Blank`     | 3 (tomado) |
-| `LDA #0`           | 2      |
-| `STA GRP0`         | 3      |
-| **Subtotal**       | **17** |
+Bloco de jogador (um jogador):
 
-Fim (por scanline): `INX` 2 + `CPX #192` 2 + `BNE` 3 + `STA WSYNC` 3
-= **10**.
+| Instrução              | Ciclos |
+| ---------------------- | ------ |
+| `TXA`                  | 2      |
+| `SEC`                  | 2      |
+| `SBC PLAYERxY`         | 3      |
+| `CMP #PLAYER_HEIGHT`   | 2      |
+| `LDA #0`               | 2      |
+| `SBC #0`               | 2      |
+| `AND #PADDLE_BITS`     | 2      |
+| `STA GRPx`             | 3      |
+| **Subtotal**           | **18** |
 
-| Caminho                  | Ciclos |
+A sequência `LDA #0 / SBC #0` é um teste "desenha ou apaga" sem ramificação:
+após `CMP #PLAYER_HEIGHT` o carry está limpo exatamente nas linhas da
+raquete (`PLAYERx_Y <= X < PLAYERx_Y + altura`), então `SBC #0` deixa
+`A = $FF` lá e `A = $00` em todo o resto; `AND #PADDLE_BITS` mapeia isso
+para o byte da linha `%00111100` ou 0.
+
+Fim (por scanline):
+
+| Instrução                | Ciclos |
 | ------------------------ | ------ |
-| Ambos os sprites desenhados | 23+23+10 = **56** |
-| Ambos os sprites vazios   | 17+17+10 = **44** |
-| Um desenhado, um vazio    | 23+17+10 = **50** |
+| `TXA`                    | 2      |
+| `SEC`                    | 2      |
+| `SBC ball_y`             | 3      |
+| `CMP #BALL_HEIGHT`       | 2      |
+| `LDA #0`                 | 2      |
+| `SBC #0`                 | 2      |
+| `INX`                    | 2      |
+| `CPX #KERNEL_SCANLINES`  | 2      |
+| `BNE KernelLoop`         | 3      |
+| **Subtotal**             | **20** |
+
+| Caminho                   | Ciclos |
+| ------------------------- | ------ |
+| Qualquer (kernel sem ramificações) | **62** |
 | Orçamento da scanline     | 76     |
-| Folga no pior caso        | **20 ciclos** |
+| Folga                     | **14 ciclos** |
 
-As tabelas de sprite estão dispostas de modo que todo índice possível de
-linha (0..11) permaneça dentro de uma única página; o `LDA` indexado nunca
-paga a penalidade de +1 de passagem de página. Isso é verificado pela suíte
-de testes.
+A folga subiu de 2 para 14 ciclos porque os caminhos ramificados do kernel
+antigo (pior caso 74) desapareceram: o novo kernel é mais curto e totalmente
+determinístico. O custo único desse projeto é que os dois jogadores precisam
+ser renderizados como retângulos constantes: um jogador dirigido por tabela
+(`LDA` indexado + `JMP`) não cabe após a escrita de `ENABL` que deve abrir a
+scanline e ainda deixar `GRP0` com folga.
 
-`GRP0` é escrito por volta do ciclo 23 da sua scanline e `GRP1` por volta
-do ciclo 46; ambos são travados (latched) para a linha seguinte, bem antes
-do limite de 76 ciclos.
+### Timing de habilitação da bola (a correção do deslocamento vertical)
+
+O TIA amostra o bit de habilitação da bola na posição horizontal da bola; o
+valor escrito em `ENABL` **não** é travado (latched) para a scanline
+seguinte. O kernel anterior escrevia `ENABL` tarde na scanline (~ciclo 67),
+então se uma dada scanline desenhava a bola com o valor da linha atual ou da
+anterior dependia de `ball_x` em relação à posição do feixe no momento da
+escrita. O resultado era uma bola que pulava uma scanline na vertical em
+algumas regiões horizontais.
+
+A correção escreve `ENABL` durante o blanking horizontal de toda scanline:
+`STA ENABL` completa por volta do ciclo 5, bem antes do primeiro pixel
+visível (~ciclo 22.7). O valor é pré-calculado no fim da scanline *anterior*
+para a linha *atual*, então a bola é desenhada em exatamente `BALL_HEIGHT`
+linhas consecutivas, independentemente de `ball_x`: a linha L mostra a bola
+se L-1 for uma linha da bola, ou seja, L em `ball_y+1 .. ball_y+BALL_HEIGHT`
+(a mesma convenção de exibição de antes). A linha 0 escreve o `A = 0` deixado
+pelo pré-kernel, então a primeira linha visível nunca mostra a bola. `ENABL`
+é limpo novamente na inicialização do overscan, de modo que o registrador
+nunca pode manter 1 no overscan, mesmo quando a bola está no fundo da arena.
+
+Como o valor de habilitação é transportado em `A` pela aresta de retorno do
+loop, nenhum byte de RAM é necessário para ele.
+
+### Horários de escrita dos registradores de gráficos
+
+`ENABL` completa por volta do ciclo 5, `GRP0` por volta do ciclo 23 (antes de
+o feixe alcançar o P0 em x=16, ~ciclo 28.3) e `GRP1` por volta do ciclo 41
+(antes de o feixe alcançar o P1 em x=136, ~ciclo 68). As três escritas
+acontecem antes da posição horizontal do respectivo objeto, então cada
+objeto renderiza com o valor escrito na scanline atual.
 
 ## Orçamentos de VBLANK e OVERSCAN
 
-A lógica de jogo (decodificação do joystick + movimento + posicionamento)
-roda no VBLANK entre a liberação do VSYNC e a espera do timer. Seu custo é:
+A lógica de jogo (decodificação do joystick + movimento + atualização da
+bola + posicionamento) roda no VBLANK entre a liberação do VSYNC e a espera
+do timer. Seu custo é:
 
 * `UpdatePlayers`: 3 + 3 + (2+3+2/3) + (2+3+2+2/3) + ... cerca de 60 ciclos
   no pior caso para os dois jogadores;
+* `UpdateBall`: quatro checagens de quique + dois movimentos, cerca de 65
+  ciclos no pior caso (ramo tomado em todas as checagens);
 * `PositionPlayers`: duas chamadas `PosObject` consumindo 1-2 scanlines
-  cada.
+  cada;
+* `PositionBall`: uma chamada `PosObject`.
 
 Isso está muito abaixo do orçamento de 37 linhas do VBLANK e nunca interfere
 no kernel visível.

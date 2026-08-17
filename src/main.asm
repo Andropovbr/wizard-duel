@@ -2,12 +2,15 @@
 ; Wizard Duel - Atari 2600
 ; main.asm
 ;
-; Round 1 - minimum technical base.
+; Round 2 - paddles and a bouncing ball.
 ;
 ;   * stable NTSC frame, 262 scanlines
 ;   * two TIA players visible simultaneously (P0 left, P1 right)
+;   * players rendered as simple vertical paddles (Pong-style rectangles)
 ;   * vertical-only movement, driven by joystick 1 and joystick 2
-;   * no magic system, projectiles, HP, AI or collisions yet
+;   * a TIA Ball object moving continuously and bouncing off the arena edges
+;   * the ball does NOT interact with the players yet (no collision,
+;     collection, power-up, scoring or spells)
 ;
 ; Frame structure (NTSC):
 ;
@@ -50,6 +53,8 @@ Reset:
     STA COLUP0
     LDA #PLAYER2_COLOR
     STA COLUP1
+    LDA #BALL_COLOR
+    STA COLUPF              ; the ball is drawn with the playfield/ball color
     LDA #BACKGR_COLOR
     STA COLUBK
     LDA #0
@@ -57,7 +62,9 @@ Reset:
     STA NUSIZ1              ; player 1: 1 copy, normal size
     STA VDELP0
     STA VDELP1
+    LDA #BALL_SIZE_CTRLPF   ; CTRLPF D5:D4 = %10 -> 4-pixel ball
     STA CTRLPF
+    LDA #0
     STA SWACNT              ; port A = all inputs (joysticks readable)
 
     ; Initial vertical positions (horizontal placement is fixed each frame)
@@ -65,6 +72,16 @@ Reset:
     STA P0Y
     LDA #PLAYER2_Y_INIT
     STA P1Y
+
+    ; Initial ball state: centered, moving down-right at 1 px/frame
+    LDA #BALL_X_INIT
+    STA ball_x
+    LDA #BALL_Y_INIT
+    STA ball_y
+    LDA #DIR_RIGHT
+    STA ball_dx
+    LDA #DIR_DOWN
+    STA ball_dy
 
 ; =============================================================================
 ; StartOfFrame - one complete frame
@@ -84,110 +101,138 @@ StartOfFrame:
 
     ; ---- VBLANK: game logic (input + movement + placement) --------------
     JSR UpdatePlayers       ; move both players vertically (see below)
+    JSR UpdateBall          ; move the ball and bounce it off the arena edges
     JSR PositionPlayers     ; fixed horizontal placement (RESP + HMP)
+    JSR PositionBall        ; ball horizontal placement (RESBL + HMBL)
 
-    ; Wait for the VBLANK timer to expire on the last VBLANK line (line 40).
+    ; Wait for the VBLANK timer to expire on the penultimate VBLANK line.
+    ; The timer expires while line 39 is being drawn; the WSYNC below then
+    ; syncs to line 40 so the HMOVE can immediately follow it. The Stella
+    ; Programmer's Guide requires HMOVE to immediately follow a WSYNC so the
+    ; motion registers act during horizontal blanking of the last VBLANK line.
 WaitVBlank:
     LDA INTIM               ; 3
     BNE WaitVBlank          ; 2/3
 
-    ; Last VBLANK line: apply the horizontal fine movement, enable the
-    ; display and clear the sprite graphics for the first visible line.
+    ; Last VBLANK line (line 40): apply the horizontal fine movement, enable
+    ; the display and clear the sprite graphics for the first visible line.
+    STA WSYNC               ; 3   sync to line 40
     STA HMOVE               ; 3   apply HMP0/HMP1 fine adjustments
     LDA #0                  ; 2
     STA VBLANK              ; 3   picture on from the next scanline
     STA GRP0                ; 3   first visible line shows a cleared sprite
     STA GRP1                ; 3
     LDX #0                  ; 2   scanline counter (0..191)
+    ; A = 0 here: the first kernel line (X = 0) stores it to ENABL, so the
+    ; very first visible scanline is always ball-free.
 
     ; ---- Visible kernel: 192 scanlines -----------------------------------
     ;
-    ; Scanline budget: 76 cycles. Cycle accounting (verified by the
-    ; automated test suite from the assembled listing):
+    ; Scanline budget: 76 cycles. The kernel is BRANCHLESS (the only branch
+    ; is the tail BNE that loops back), so every scanline costs exactly the
+    ; same 62 cycles regardless of player or ball state. Cycle accounting
+    ; (verified by the automated test suite from the assembled listing):
     ;
-    ;   Sprite drawn path (one player):
-    ;     TXA                 2
-    ;     SEC                 2
-    ;     SBC P0Y             3
-    ;     CMP #PLAYER_HEIGHT  2
-    ;     BCS .P0Blank        2   (not taken)
-    ;     TAY                 2
-    ;     LDA P0Sprite,Y      4   (tables fit inside one page -> no page cross)
-    ;     JMP .P0Done         3
-    ;     STA GRP0            3
-    ;     Subtotal           23
+    ;   STA WSYNC            3   start of scanline
+    ;   STA ENABL            3   apply the enable computed in the tail
     ;
-    ;   Sprite blank path (one player):
-    ;     TXA                 2
+    ;   Player block (one player):
+    ;     TXA                 2   scanline index
     ;     SEC                 2
-    ;     SBC P0Y             3
-    ;     CMP #PLAYER_HEIGHT  2
-    ;     BCS .P0Blank        3   (taken, same page)
+    ;     SBC PLAYERxY        3   row = X - Y (borrow when X < Y)
+    ;     CMP #PLAYER_HEIGHT  2   row >= height -> off the paddle
     ;     LDA #0              2
-    ;     STA GRP0            3
-    ;     Subtotal           17
+    ;     SBC #0              2   A = $FF on paddle rows, $00 elsewhere
+    ;     AND #PADDLE_BITS    2   A = %00111100 / $00
+    ;     STA GRPx            3
+    ;     Subtotal           18
     ;
     ;   Tail (per scanline):
+    ;     TXA                 2
+    ;     SEC                 2
+    ;     SBC ball_y          3
+    ;     CMP #BALL_HEIGHT    2
+    ;     LDA #0              2
+    ;     SBC #0              2   A = BALL_ENABLE on ball rows, $00 otherwise
     ;     INX                 2
     ;     CPX #KERNEL_SCANLINES 2
-    ;     BNE KernelLoop      3   (taken, backward to same page)
-    ;     STA WSYNC           3
-    ;     Subtotal           10
+    ;     BNE KernelLoop      3   (taken, backward, same page)
+    ;     Subtotal           20
     ;
-    ; Worst case (both sprites drawn): 23 + 23 + 10 = 56 cycles < 76.
-    ; Best case (both sprites blank):  17 + 17 + 10 = 44 cycles.
+    ; Total: 3 + 3 + 18 + 18 + 20 = 62 cycles < 76. Slack = 14 cycles.
     ;
-    ; The sprite tables are laid out so that every possible row index stays
-    ; inside a single page, so the indexed LDA never costs the +1 page-cross
-    ; penalty (unlike fineAdjustTable in PosObject, which is deliberately
-    ; page-aligned to force that +1 cycle for deterministic RESP timing).
+    ; ENABL timing: the TIA samples the ball enable bit at the ball's
+    ; horizontal position, NOT by latching the register for the following
+    ; scanline (contrary to an earlier comment in this file). The old kernel
+    ; wrote ENABL late in the scanline (~cycle 67), so whether the ball drew
+    ; with the current or the previous line's value depended on ball_x vs
+    ; the beam position at the write: the ball jumped one scanline in some
+    ; horizontal regions. The fix writes ENABL during the horizontal
+    ; blanking of every scanline (STA ENABL right after STA WSYNC, completing
+    ; at ~cycle 5, far before the first visible pixel at ~cycle 22.7). The
+    ; value is PRE-COMPUTED in the tail of the previous scanline for the
+    ; current line, so the ball draws on exactly BALL_HEIGHT consecutive
+    ; lines regardless of ball_x: line L shows the ball iff L-1 was a ball
+    ; row, i.e. L in ball_y+1 .. ball_y+BALL_HEIGHT.
+    ;
+    ; Player timing: GRP0/GRP1 must be written before the beam reaches the
+    ; player's fixed position (P0 at x=16 -> ~cycle 28.3; P1 at x=136 ->
+    ; ~cycle 68). The branchless rectangle block completes GRP0 at ~cycle 23,
+    ; leaving a safe margin. A table-driven player (indexed LDA + JMP) could
+    ; not fit after the ENABL write that must lead the scanline.
+    ;
+    ; Line 0 (X = 0) stores the A = 0 left over from the pre-kernel, so the
+    ; first visible scanline is always ball-free.
     ;
     ; Every iteration starts with STA WSYNC, so each iteration is exactly
     ; one scanline regardless of the branch taken. The frame therefore
-    ; stays at 262 scanlines whether a player is still, rising, descending
-    ; or both move at once.
-    ;
-    ; Graphics registers are written at ~cycle 24 (GRP0) and ~cycle 48
-    ; (GRP1), comfortably inside the 76-cycle scanline, so both writes are
-    ; latched for the following line.
+    ; stays at 262 scanlines whether a player is still, rising, descending,
+    ; the ball is present on the line or not.
 KernelLoop:
     STA WSYNC               ; 3   start of scanline (physical line 41 + X)
+    STA ENABL               ; 3   apply the enable precomputed in the tail
 
-    ; Player 0 (left): compute the sprite row for this scanline.
-    TXA                     ; 2   scanline index
-    SEC                     ; 2
-    SBC P0Y                 ; 3   row = X - P0Y (borrow when X < P0Y)
-    CMP #PLAYER_HEIGHT      ; 2   row >= height -> not part of the sprite
-    BCS .P0Blank            ; 2/3
-    TAY                     ; 2
-    LDA P0Sprite,Y          ; 4(5)  row byte 0..11
-    JMP .P0Done             ; 3
-.P0Blank:
-    LDA #0                  ; 2
-.P0Done:
-    STA GRP0                ; 3
-
-    ; Player 1 (right): same logic, separate position and sprite table.
+    ; Player 0 (left): solid rectangle of PADDLE_BITS on its rows.
     TXA                     ; 2
     SEC                     ; 2
-    SBC P1Y                 ; 3
-    CMP #PLAYER_HEIGHT      ; 2
-    BCS .P1Blank            ; 2/3
-    TAY                     ; 2
-    LDA P1Sprite,Y          ; 4(5)
-    JMP .P1Done             ; 3
-.P1Blank:
+    SBC P0Y                 ; 3   row = X - P0Y (borrow when X < P0Y)
+    CMP #PLAYER_HEIGHT      ; 2   row >= height -> off the paddle
     LDA #0                  ; 2
-.P1Done:
+    SBC #0                  ; 2   A = $FF on paddle rows, $00 elsewhere
+    AND #PADDLE_BITS        ; 2   A = %00111100 on the paddle rows
+    STA GRP0                ; 3
+
+    ; Player 1 (right): same branchless rectangle, separate position.
+    TXA                     ; 2
+    SEC                     ; 2
+    SBC P1Y                 ; 3   row = X - P1Y (borrow when X < P1Y)
+    CMP #PLAYER_HEIGHT      ; 2
+    LDA #0                  ; 2
+    SBC #0                  ; 2
+    AND #PADDLE_BITS        ; 2
     STA GRP1                ; 3
 
+    ; Tail: precompute the ball enable for the NEXT scanline and loop back.
+    ; On the ball rows (ball_y <= X < ball_y + BALL_HEIGHT) A becomes
+    ; BALL_ENABLE ($FF), otherwise $00; the next iteration stores that value
+    ; to ENABL at its top.
+    TXA                     ; 2
+    SEC                     ; 2
+    SBC ball_y              ; 3   row = X - ball_y (borrow when X < ball_y)
+    CMP #BALL_HEIGHT        ; 2   row >= height -> not a ball row
+    LDA #0                  ; 2
+    SBC #0                  ; 2   A = BALL_ENABLE on ball rows, $00 otherwise
     INX                     ; 2
     CPX #KERNEL_SCANLINES   ; 2
-    BNE KernelLoop          ; 2/3
+    BNE KernelLoop          ; 3   (taken; backward, same page)
 
     ; ---- Overscan: 30 scanlines ------------------------------------------
     LDA #VBLANK_BLANK       ; 2
     STA VBLANK              ; 3   blank output again
+    LDA #0                  ; 2
+    STA ENABL               ; 3   ball off during overscan: the last kernel
+                            ;     line may have left ENABL = 1 when the ball
+                            ;     rests at the bottom of the arena
     LDA #OVERSCAN_TIMER_VALUE ; 2
     STA TIM64T              ; 4   overscan countdown (36 * 64 = 2304 cycles)
 OverscanWait:
@@ -257,6 +302,61 @@ UpdatePlayers:
     RTS                     ; 6
 
 ; =============================================================================
+; UpdateBall
+;
+; Moves the ball one pixel per frame on both axes (constant speed, no
+; acceleration) and reverses a direction when the ball reaches an arena
+; edge. Runs during VBLANK so the visible kernel stays branch-free.
+;
+; Bounce strategy: the ball moves exactly 1 pixel per frame, so it always
+; lands exactly on a boundary pixel before reversing. Reversing AT the
+; boundary (rather than clamping after an overshoot) keeps ball_x/ball_y
+; inside [BALL_X_MIN..BALL_X_MAX] / [BALL_Y_MIN..BALL_Y_MAX] at all times;
+; an unsigned wrap below the minimum can never occur.
+;
+; ball_dx/ball_dy hold the direction step (+1 = right/down, $FF = left/up).
+; =============================================================================
+UpdateBall:
+    ; ---- Horizontal bounce (reverse at the exact left/right edges) ----
+    LDA ball_x              ; 3
+    CMP #BALL_X_MAX         ; 2   at the right edge?
+    BNE .noRight            ; 2/3
+    LDA #DIR_LEFT           ; 2
+    STA ball_dx             ; 3   reverse horizontal direction
+.noRight:
+    LDA ball_x              ; 3
+    CMP #BALL_X_MIN         ; 2   at the left edge?
+    BNE .noLeft             ; 2/3
+    LDA #DIR_RIGHT          ; 2
+    STA ball_dx             ; 3
+.noLeft:
+
+    ; ---- Vertical bounce (reverse at the exact top/bottom edges) ------
+    LDA ball_y              ; 3
+    CMP #BALL_Y_MAX         ; 2   at the bottom edge?
+    BNE .noBottom           ; 2/3
+    LDA #DIR_UP             ; 2
+    STA ball_dy             ; 3   reverse vertical direction
+.noBottom:
+    LDA ball_y              ; 3
+    CMP #BALL_Y_MIN         ; 2   at the top edge?
+    BNE .noTop              ; 2/3
+    LDA #DIR_DOWN           ; 2
+    STA ball_dy             ; 3
+.noTop:
+
+    ; ---- Move one pixel on both axes ----
+    LDA ball_x              ; 3
+    CLC                     ; 2
+    ADC ball_dx             ; 3
+    STA ball_x              ; 3
+    LDA ball_y              ; 3
+    CLC                     ; 2
+    ADC ball_dy             ; 3
+    STA ball_y              ; 3
+    RTS                     ; 6
+
+; =============================================================================
 ; PositionPlayers
 ;
 ; Horizontally places both players using the classic RESP0/RESP1 + HMP0/HMP1
@@ -272,10 +372,54 @@ UpdatePlayers:
 ; =============================================================================
 PositionPlayers:
     LDA #PLAYER1_X          ; 2
+    CLC                     ; 2
+    ADC #7                  ; 2   q >= 1 compensation
+    CMP #15                 ; 2   X + 7 >= 15  <=>  X >= 8
+    BCS PositionP1          ; 2/3
+    SEC                     ; 2
+    SBC #3                  ; 2   q = 0 compensation (X + 4)
+PositionP1:
     LDX #0                  ; 2   object 0 = player 0
     JSR PosObject           ; 6
     LDA #PLAYER2_X          ; 2
+    CLC                     ; 2
+    ADC #7                  ; 2
+    CMP #15                 ; 2
+    BCS PositionP2          ; 2/3
+    SEC                     ; 2
+    SBC #3                  ; 2
+PositionP2:
     LDX #1                  ; 2   object 1 = player 1
+    JSR PosObject           ; 6
+    RTS                     ; 6
+
+; =============================================================================
+; PositionBall
+;
+; Horizontally places the ball with the same PosObject routine (object 4 =
+; ball: RESBL + HMBL), using the HMBL fine value and the shared HMOVE on the
+; last VBLANK line.
+;
+; Measured on the target (TIA/Stella): PosObject renders a player at
+;   15*q + (s - 7)          for q >= 1
+;   3 + (s - 7)             for q = 0   (RESP strobe before cycle 23)
+; where the divide loop runs q+1 subtractions and s = input mod 15 is the
+; fine-adjust table index. The ball additionally renders 1 pixel left of a
+; player for the same input. To make the ball render at exactly ball_x:
+;   ball_x >= 7  -> input = ball_x + 8  (q >= 1)
+;   ball_x <= 6  -> input = ball_x + 5  (q = 0, coarse base is 2 not 0)
+; so every ball_x in BALL_X_MIN..BALL_X_MAX maps to itself.
+; =============================================================================
+PositionBall:
+    LDA ball_x              ; 3   visible left pixel
+    CLC                     ; 2
+    ADC #8                  ; 2   q >= 1 compensation
+    CMP #15                 ; 2   ball_x + 8 >= 15  <=>  ball_x >= 7
+    BCS PositionBallOk      ; 2/3
+    SEC                     ; 2
+    SBC #3                  ; 2   q = 0 compensation (ball_x + 5)
+PositionBallOk:
+    LDX #4                  ; 2   object 4 = ball
     JSR PosObject           ; 6
     RTS                     ; 6
 
@@ -302,41 +446,6 @@ PosObject:
     STA HMP0,X              ; 4   fine movement register for object X
     STA RESP0,X             ; 4   coarse position for object X
     RTS                     ; 6
-
-; =============================================================================
-; Sprite graphics
-;
-; One byte per scanline, drawn top to bottom. Bit 7 is the leftmost pixel.
-; Player 0 is drawn as a "wizard" (pointed hat), player 1 as a "duelist"
-; (rounded head and shoulders); colors also differ (red vs blue).
-; =============================================================================
-P0Sprite:
-    DC.B %00011000          ; row 0 - hat tip
-    DC.B %00011000          ; row 1 - hat
-    DC.B %00111100          ; row 2 - hat brim
-    DC.B %01111110          ; row 3 - head
-    DC.B %01111110          ; row 4 - head
-    DC.B %00111100          ; row 5 - neck
-    DC.B %00111100          ; row 6 - body
-    DC.B %00111100          ; row 7 - body
-    DC.B %00011000          ; row 8 - body
-    DC.B %00011000          ; row 9 - body
-    DC.B %00011000          ; row 10 - body
-    DC.B %00111100          ; row 11 - base
-
-P1Sprite:
-    DC.B %00011000          ; row 0 - head
-    DC.B %00111100          ; row 1 - head
-    DC.B %00111100          ; row 2 - head
-    DC.B %00111100          ; row 3 - head
-    DC.B %01111110          ; row 4 - shoulders
-    DC.B %11000011          ; row 5 - arms out
-    DC.B %10000001          ; row 6 - body
-    DC.B %10000001          ; row 7 - body
-    DC.B %10000001          ; row 8 - body
-    DC.B %01111110          ; row 9 - body
-    DC.B %00111100          ; row 10 - legs
-    DC.B %00111100          ; row 11 - legs
 
 ; =============================================================================
 ; Fine horizontal adjustment table (from the reference, session 24).
@@ -372,6 +481,10 @@ fineAdjustTable EQU fineAdjustBegin - %11110001
 P0Y         DS 1            ; player 0 vertical position (0..PLAYER_Y_MAX)
 P1Y         DS 1            ; player 1 vertical position (0..PLAYER_Y_MAX)
 joystate    DS 1            ; sampled SWCHA value
+ball_x      DS 1            ; ball visible left pixel (BALL_X_MIN..BALL_X_MAX)
+ball_y      DS 1            ; ball ENABL write scanline (BALL_Y_MIN..BALL_Y_MAX)
+ball_dx     DS 1            ; horizontal step (+1 = right, $FF = left)
+ball_dy     DS 1            ; vertical step (+1 = down, $FF = up)
 
 ; =============================================================================
 ; 6502 vectors

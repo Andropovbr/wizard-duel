@@ -74,14 +74,18 @@ Esses arquivos são gerados e não são commitados.
 * **Build**: a ROM existe, tem exatamente 4096 bytes, vetores presentes e
   apontando para dentro da ROM; `-rominfo` do Stella reporta `4K`, NTSC e
   dois joysticks.
-* **Memória**: uso de ROM <= 4096 bytes, uso de RAM <= 128 bytes (apenas 3
-  usados).
+* **Memória**: uso de ROM <= 4096 bytes, uso de RAM <= 128 bytes (7 usados).
 * **Assembly**: símbolos exigidos existem, `Reset` em `$F000`,
   `fineAdjustBegin` alinhado a página, tabelas de sprite com 12 bytes e
   seguras quanto a página.
 * **Timing**: soma das scanlines das regiões == 262; o caminho de pior caso
   do kernel é recalculado do listing com um percorredor (walker) de ciclos
-  6502 determinístico e verificado <= 76 ciclos (pior = 56, melhor = 44).
+  6502 determinístico e verificado <= 76 ciclos (pior = 71, melhor = 57;
+  todos os 8 caminhos de jogador x bola).
+* **Comportamento da bola**: o `UpdateBall` montado é executado por um
+  pequeno interpretador 6502 determinístico na suíte de testes - movimento,
+  os quatro quiques de borda, o invariante de limites ao longo de 2000
+  quadros e o estado inicial.
 * **Regressão**: cálculo de deltas, limites hard/soft, kernel slack,
   resolução do baseline (ver `docs/pt-BR/benchmarks.md`).
 * **Validação de ferramentas**: as verificações de DASM/Stella aceitam a
@@ -121,7 +125,7 @@ artefatos do build):
   (262)
 * o caminho de pior caso do kernel cabe no orçamento de 76 ciclos,
   recalculado do listing com um percorredor de ciclos
-* os valores do timer (VBLANK 44, OVERSCAN 37) são as constantes ajustadas
+* os valores do timer (VBLANK 43, OVERSCAN 37) são as constantes ajustadas
 
 O quadro de exatamente 262 scanlines foi, adicionalmente, medido no
 depurador do Stella em uma sessão gráfica local (deltas de `print _cyclesLo`

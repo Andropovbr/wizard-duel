@@ -8,9 +8,16 @@ registers (`$00-$3F`) and the RIOT I/O/timer registers (`$0280-$02FF`).
 
 | Address  | Content                                   |
 | -------- | ----------------------------------------- |
-| `$F000`  | Reset/init + one-frame loop (main.asm)    |
-| `$F0F4`  | `P0Sprite`  (12 row bytes)                |
-| `$F100`  | `P1Sprite`  (12 row bytes)                |
+| `$F000`  | Reset/init (main.asm)                     |
+| `$F049`  | `StartOfFrame` (one-frame loop)           |
+| `$F06A`  | `WaitVBlank` (TIM64T + game logic)        |
+| `$F07D`  | `KernelLoop` (192-scanline kernel)        |
+| `$F0B9`  | `OverscanWait`                            |
+| `$F0C1`  | `UpdatePlayers` (vertical joystick input) |
+| `$F0FB`  | `UpdateBall` (move + bounce)              |
+| `$F132`  | `PositionPlayers` (RESP0/1 + HMP0/1)      |
+| `$F155`  | `PositionBall` (RESBL + HMBL)             |
+| `$F167`  | `PosObject` (generic RESPx + HMPx)        |
 | `$F200`  | `fineAdjustBegin` (HMP table, page-aligned) |
 | `$FFFA`  | NMI vector (`Reset`)                      |
 | `$FFFC`  | RESET vector (`Reset`)                    |
@@ -21,9 +28,13 @@ with a two's-complement remainder, and the guaranteed page crossing of the
 indexed `LDA` keeps the `RESPx` write on the exact cycle required by the
 timing contract of the positioning routine.
 
+There are no sprite graphics tables: both players are solid rectangles
+rendered branchlessly with the `PADDLE_BITS` constant (see [timing.md]).
 ROM usage is measured by the high-water mark of emitted code below the
 vector block; the `$FF`-filled padding counts as available space. The build
-reports both numbers.
+reports both numbers. Removing the former `P0Sprite`/`P1Sprite` tables and
+shortening the kernel freed bytes inside the page padding reserved for the
+aligned `fineAdjustBegin`, so ROM usage is unchanged at 528 bytes.
 
 ## RAM layout (RIOT RAM `$80-$FF`, 128 bytes)
 
@@ -32,16 +43,20 @@ reports both numbers.
 | `$80`   | `P0Y`      | 1    | player 0 vertical position (0..179)  |
 | `$81`   | `P1Y`      | 1    | player 1 vertical position (0..179)  |
 | `$82`   | `joystate` | 1    | sampled `SWCHA` value                |
-| `$83-$FF`| -          | 125  | unallocated                          |
+| `$83`   | `ball_x`   | 1    | ball leftmost visible pixel (0..156) |
+| `$84`   | `ball_y`   | 1    | first ball ENABL scanline (0..187) |
+| `$85`   | `ball_dx`  | 1    | horizontal step (+1 / $FF)           |
+| `$86`   | `ball_dy`  | 1    | vertical step (+1 / $FF)             |
+| `$87-$FF`| -          | 121  | unallocated                          |
 
-Only 3 of the 128 bytes are used in Round 1. Variables live in zero page so
-all accesses use the short, fast zero-page addressing modes.
+7 of the 128 bytes are used in Round 2. Variables live in zero page so all
+accesses use the short, fast zero-page addressing modes.
 
 ## Hardware register usage
 
-* TIA: `VSYNC`, `VBLANK`, `WSYNC`, `NUSIZ0/1`, `COLUP0/1`, `COLUBK`,
-  `REFP0/1` (cleared), `RESP0/1`, `GRP0/1`, `HMOVE`, `HMP0/1`, `CTRLPF`,
-  `VDELP0/1`.
+* TIA: `VSYNC`, `VBLANK`, `WSYNC`, `NUSIZ0/1`, `COLUP0/1`, `COLUPF`,
+  `COLUBK`, `CTRLPF`, `RESP0/1`, `RESBL`, `GRP0/1`, `ENABL`, `HMOVE`,
+  `HMP0/1`, `HMBL`, `VDELP0/1`, `REFP0/1` (cleared).
 * RIOT: `SWCHA` (read joysticks), `SWACNT` (set all inputs),
   `INTIM` (read timer), `TIM64T` (write timer, 64-cycle clock).
 

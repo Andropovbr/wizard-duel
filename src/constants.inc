@@ -90,7 +90,7 @@ VBLANK_SCANLINES     = 37
 KERNEL_SCANLINES     = 192
 OVERSCAN_SCANLINES   = 30
 
-VBLANK_TIMER_VALUE   = 44
+VBLANK_TIMER_VALUE   = 43
 OVERSCAN_TIMER_VALUE = 37
 
 ; ---------------------------------------------------------------------------
@@ -100,13 +100,23 @@ OVERSCAN_TIMER_VALUE = 37
 ; axis. PLAYERx_X is the fixed horizontal position (TIA pixel, 0..159).
 ;
 ; The vertical position PLAYERx_Y is the kernel scanline index at which the
-; sprite's first row is written. Because of the TIA graphics latch, the row
-; is physically displayed on the following scanline; the whole sprite stays
-; inside the visible region as long as Y stays within [MIN, MAX].
+; sprite's first row is drawn. The kernel renders each player as a solid
+; rectangle: on every scanline X it computes the boolean
+; "PLAYERx_Y <= X < PLAYERx_Y + PLAYER_HEIGHT" and writes either
+; PADDLE_BITS (on the paddle rows) or $00 (elsewhere) to GRP0/GRP1. The
+; whole sprite stays inside the visible region as long as Y stays within
+; [MIN, MAX].
+;
+; PADDLE_BITS is the 8-bit row pattern, %00111100, a 4-pixel-wide vertical
+; bar. Both players share it; the shape is provisional and intentionally
+; neutral so the future mechanics can be developed without depending on
+; character art. See the kernel comment in main.asm for the cycle cost of
+; the branchless "draw or blank" computation.
 ; ---------------------------------------------------------------------------
 PLAYER_HEIGHT      = 12
 PLAYER_Y_MIN       = 0
 PLAYER_Y_MAX       = KERNEL_SCANLINES - PLAYER_HEIGHT - 1
+PADDLE_BITS        = %00111100
 
 PLAYER1_X          = 16
 PLAYER2_X          = 136
@@ -116,6 +126,61 @@ PLAYER2_Y_INIT     = 128
 PLAYER1_COLOR      = $46     ; red (NTSC)
 PLAYER2_COLOR      = $84     ; blue (NTSC)
 BACKGR_COLOR       = $00     ; black
+
+; ---------------------------------------------------------------------------
+; Ball constants
+; ---------------------------------------------------------------------------
+; The ball is a TIA Ball object: BALL_WIDTH pixels wide (CTRLPF D5:D4 = %10)
+; and BALL_HEIGHT scanlines tall. It is kept approximately square (4 x 4)
+; because a 4-pixel-wide, 1-scanline-tall ball renders as a thin horizontal
+; dash and, being only 1 scanline tall, has no vertical overlap between
+; consecutive frames, which makes its 1 px/frame motion look stroboscopic.
+; It moves at a constant 1 pixel per frame per axis and bounces off the four
+; arena edges. It does NOT interact with the players this round (no
+; collision, no collection, no power-up).
+;
+; ball_x / ball_y are the ball's visual position:
+;   - ball_x: leftmost visible pixel of the ball (0..159)
+;   - ball_y: kernel scanline index at which the first ENABL = 1 write for
+;     this ball occurs; because of the TIA graphics latch the ball is
+;     physically displayed on scanlines ball_y + 1 .. ball_y + BALL_HEIGHT
+;     (the same coordinate convention as the players).
+;
+; Horizontal positioning note: the TIA delays player graphics by 1 CLK more
+; than the ball/missile output, so for the same PosObject input the ball
+; appears 1 pixel to the LEFT of a player. PositionBall therefore passes
+; ball_x + 1 to PosObject; the bounds below are expressed in the visible
+; pixel coordinate (ball_x), so the ball stays fully inside the 160-pixel
+; visible width.
+; ---------------------------------------------------------------------------
+BALL_WIDTH         = 4       ; ball size in pixels (CTRLPF D5:D4 = %10)
+BALL_HEIGHT        = 4       ; ball size in scanlines (ENABL = 1 for 4 rows)
+BALL_SIZE_CTRLPF   = %00100000   ; CTRLPF D5=1, D4=0 -> 4 color clocks
+BALL_COLOR         = $0E     ; white (NTSC)
+BALL_ENABLE        = $FF     ; ENABL bit 0 = ball output enabled. The kernel
+                             ; computes this value branchlessly as
+                             ; LDA #0 / SBC #0 -> $FF on a ball row, $00
+                             ; otherwise (see main.asm); only bit 0 matters
+                             ; to the TIA, but $FF avoids an extra AND.
+
+BALL_X_MIN         = 0                     ; left edge of the visible area
+BALL_X_MAX         = 160 - BALL_WIDTH      ; keep the 4-px ball fully visible
+BALL_Y_MIN         = 0                     ; drawn on the first kernel line
+BALL_Y_MAX         = KERNEL_SCANLINES - BALL_HEIGHT - 1
+                                          ; last ball draw row on kernel line
+                                          ; 187 -> displayed on lines 188..191.
+                                          ; ENABL is cleared explicitly during
+                                          ; overscan init, so the ball can
+                                          ; never bleed into overscan
+
+BALL_X_INIT        = 78      ; ~center of the 160-pixel arena
+BALL_Y_INIT        = 95      ; ~center of the 192-line kernel
+
+; Direction steps added to ball_x/ball_y every frame (constant speed).
+DIR_LEFT  = $FF             ; -1
+DIR_RIGHT = 1
+DIR_UP    = $FF             ; -1
+DIR_DOWN  = 1
 
 ; ---------------------------------------------------------------------------
 ; Joystick masks (SWCHA is active low: a bit is 0 when the direction is

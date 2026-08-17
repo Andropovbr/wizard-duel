@@ -12,15 +12,15 @@ Measured deterministically from the assembled build artifacts (no display):
 | Kernel worst case | worst kernel scanline cost, recomputed from listing |
 | Kernel best case  | cheapest kernel scanline cost                       |
 | Kernel slack      | `kernel_budget - kernel_worst`                      |
-| VBLANK/OVERSCAN   | tuned RIOT timer values (44 / 37)                   |
+| VBLANK/OVERSCAN   | tuned RIOT timer values (43 / 37)                   |
 
 ## Kernel slack
 
-One NTSC scanline is 76 CPU cycles. The visible kernel spends at most 56
-cycles in its worst path (both players drawn), so:
+One NTSC scanline is 76 CPU cycles. The visible kernel is branchless and
+costs 62 cycles on every scanline, so:
 
 ```text
-kernel slack = 76 - 56 = 20 cycles
+kernel slack = 76 - 62 = 14 cycles
 ```
 
 Slack is a **first-class metric**: it is recorded in `latest.md`, in
@@ -114,24 +114,34 @@ as `build/regression-report.txt` / `build/regression-report.json` artifacts.
 ## Persisted history
 
 `docs/benchmarks/history.csv` records one row per benchmark run
-(`latest.md` reflects the most recent run). In this round the CSV gained the
+(`latest.md` reflects the most recent run). In Round 1 the CSV gained the
 `kernel_slack` column; `tools/benchmark.py` migrates pre-existing rows in
-place, computing `slack = kernel_budget - kernel_worst` (the original Round 1
-row becomes 20), so no historical data is lost.
+place, computing `slack = kernel_budget - kernel_worst`, so no historical
+data is lost.
 
-## Current baseline (Round 1)
+## Baseline and current state
 
 The persisted baseline `docs/benchmarks/baseline.json` was created from the
-Round 1 state:
+Round 1 state and is deliberately kept as the reference point (it is only
+rewritten with `--update-baseline`):
 
 ```text
+Round 1 baseline:
 ROM used:          528 bytes
 RAM used:          3 bytes
 Frame scanlines:   262
 Kernel worst case: 56 / 76 cycles
 Kernel slack:      20 cycles
 Kernel best case:  44 cycles
+
+Round 2 current (measured, after the ENABL timing fix):
+ROM used:          528 bytes   (tables removed; page padding absorbs the savings)
+RAM used:          7 bytes
+Frame scanlines:   262
+Kernel worst case: 62 / 76 cycles
+Kernel slack:      14 cycles
+Kernel best case:  62 cycles   (the kernel is branchless: best == worst)
 ```
 
-These numbers are the technical baseline of Round 1, not hardcoded "truth" in
-the tooling; the tooling measures them from the artifacts on every run.
+These numbers are measured from the artifacts on every run, not hardcoded
+"truth" in the tooling.

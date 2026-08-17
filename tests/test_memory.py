@@ -44,9 +44,10 @@ class TestRamLimit(unittest.TestCase):
     def test_ram_usage_totals_128(self):
         self.assertEqual(self.used + self.available, RAM_LIMIT)
 
-    def test_round1_ram_is_small(self):
-        # Only three game variables exist this round.
-        self.assertEqual(self.used, 3)
+    def test_round2_ram_is_small(self):
+        # Three player/input variables plus four ball variables (position,
+        # vertical/horizontal direction) exist this round.
+        self.assertEqual(self.used, 7)
 
 
 if __name__ == "__main__":
