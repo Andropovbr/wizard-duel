@@ -43,93 +43,106 @@ A naive reading of `37 * 64 = 2368` cycles for overscan corresponds to
 ## The visible kernel
 
 One scanline = **76 CPU cycles**. Each kernel iteration starts with
-`STA WSYNC`, so every iteration is exactly one scanline regardless of
-branching; the frame cannot drift when a player moves.
+`STA WSYNC`, so every iteration is exactly one scanline; the frame cannot
+drift when a player moves.
 
 ### Cycle accounting (verified from the listing)
 
-Drawn path per player (sprite row written):
+The kernel is **branchless**: the only branch is the tail `BNE` that loops
+back to `KernelLoop`, so every scanline costs exactly the same regardless of
+player or ball state. This removes all data-dependent timing from the
+rendering path.
 
-| Instruction       | Cycles |
-| ----------------- | ------ |
-| `TXA`             | 2      |
-| `SEC`             | 2      |
-| `SBC P0Y`         | 3      |
-| `CMP #height`     | 2      |
-| `BCS .P0Blank`    | 2 (not taken) |
-| `TAY`             | 2      |
-| `LDA P0Sprite,Y`  | 4      |
-| `JMP .P0Done`     | 3      |
-| `STA GRP0`        | 3      |
-| **Subtotal**      | **23** |
+Per scanline:
 
-Blank path per player (no sprite row this line):
+| Instruction          | Cycles |
+| -------------------- | ------ |
+| `STA WSYNC`          | 3      |
+| `STA ENABL`          | 3      |
+| P0 rectangle block   | 18     |
+| P1 rectangle block   | 18     |
+| Tail (incl. `BNE`)   | 20     |
+| **Total**            | **62** |
 
-| Instruction       | Cycles |
-| ----------------- | ------ |
-| `TXA`             | 2      |
-| `SEC`             | 2      |
-| `SBC P0Y`         | 3      |
-| `CMP #height`     | 2      |
-| `BCS .P0Blank`    | 3 (taken) |
-| `LDA #0`          | 2      |
-| `STA GRP0`        | 3      |
-| **Subtotal**      | **17** |
+Player block (one player):
 
-Tail (per scanline): `INX` 2 + `CPX #192` 2 + `BNE` 3 + `STA WSYNC` 3
-= **10**.
+| Instruction            | Cycles |
+| ---------------------- | ------ |
+| `TXA`                  | 2      |
+| `SEC`                  | 2      |
+| `SBC PLAYERxY`         | 3      |
+| `CMP #PLAYER_HEIGHT`   | 2      |
+| `LDA #0`               | 2      |
+| `SBC #0`               | 2      |
+| `AND #PADDLE_BITS`     | 2      |
+| `STA GRPx`             | 3      |
+| **Subtotal**           | **18** |
 
-Ball enable block (every scanline, because `ENABL` is latched for the
-*following* line and must therefore be re-written every line). The row test
-computes `line - ball_y` and keeps the ball enabled for `BALL_HEIGHT`
-consecutive lines:
+The `LDA #0 / SBC #0` sequence is a branchless "draw or blank" test: after
+`CMP #PLAYER_HEIGHT` the carry is clear exactly on the paddle rows
+(`PLAYERx_Y <= X < PLAYERx_Y + height`), so `SBC #0` leaves `A = $FF` there
+and `A = $00` everywhere else; `AND #PADDLE_BITS` maps that to the row byte
+`%00111100` or 0.
 
-On a ball row (`line - ball_y < BALL_HEIGHT`, write the enable value):
+Tail (per scanline):
 
-| Instruction      | Cycles |
-| ---------------- | ------ |
-| `TXA`            | 2      |
-| `SEC`            | 2      |
-| `SBC ball_y`     | 3      |
-| `CMP #BALL_HEIGHT` | 2    |
-| `LDA #0`         | 2      |
-| `BCS .BallDone`  | 2 (not taken) |
-| `LDA #BALL_ENABLE` | 2   |
-| `STA ENABL`      | 3      |
-| **Subtotal**     | **18** |
-
-Off the ball rows (keep the ball dark):
-
-| Instruction      | Cycles |
-| ---------------- | ------ |
-| `TXA`            | 2      |
-| `SEC`            | 2      |
-| `SBC ball_y`     | 3      |
-| `CMP #BALL_HEIGHT` | 2    |
-| `LDA #0`         | 2      |
-| `BCS .BallDone`  | 3 (taken) |
-| `STA ENABL`      | 3      |
-| **Subtotal**     | **17** |
-
-| Path                     | Cycles |
+| Instruction              | Cycles |
 | ------------------------ | ------ |
-| Both sprites drawn + ball on | 23+23+18+10 = **74** |
-| Both sprites drawn + ball off | 23+23+17+10 = **73** |
-| One drawn, one blank + ball on | 23+17+18+10 = **68** |
-| One drawn, one blank + ball off | 23+17+17+10 = **67** |
-| Both sprites blank + ball on | 17+17+18+10 = **62** |
-| Both sprites blank + ball off | 17+17+17+10 = **61** |
-| Scanline budget          | 76     |
-| Worst-case slack         | **2 cycles** |
+| `TXA`                    | 2      |
+| `SEC`                    | 2      |
+| `SBC ball_y`             | 3      |
+| `CMP #BALL_HEIGHT`       | 2      |
+| `LDA #0`                 | 2      |
+| `SBC #0`                 | 2      |
+| `INX`                    | 2      |
+| `CPX #KERNEL_SCANLINES`  | 2      |
+| `BNE KernelLoop`         | 3      |
+| **Subtotal**             | **20** |
 
-All eight player x ball combinations are enumerated and asserted by the test
-suite. The sprite tables are laid out so every possible row index (0..11)
-stays inside a single page; the indexed `LDA` never pays the +1 page-cross
-penalty. This is asserted by the test suite.
+| Path                    | Cycles |
+| ----------------------- | ------ |
+| Any (kernel is branchless) | **62** |
+| Scanline budget         | 76     |
+| Slack                   | **14 cycles** |
 
-`GRP0` is written at ~cycle 26 of its scanline, `GRP1` at ~cycle 49 and
-`ENABL` at ~cycle 67; all three are latched for the following line, well
-before the 76-cycle limit.
+The slack recovered from 2 to 14 cycles because the old kernel's branch
+paths (74 worst case) are gone: the new kernel is shorter and fully
+deterministic. The single cost of this design is that both players must be
+rendered as constant rectangles: a table-driven player (indexed `LDA` +
+`JMP`) cannot fit after the `ENABL` write that must lead the scanline and
+still leave `GRP0` with margin.
+
+### Ball enable timing (the Round 2 vertical-displacement fix)
+
+The TIA samples the ball enable bit at the ball's horizontal position; the
+value written to `ENABL` is **not** latched for the following scanline. The
+previous kernel wrote `ENABL` late in the scanline (~cycle 67), so whether a
+given scanline drew the ball with the current or the previous line's enable
+value depended on `ball_x` relative to the beam position at the write. The
+result was a ball that jumped one scanline vertically in some horizontal
+regions.
+
+The fix writes `ENABL` during the horizontal blanking of every scanline:
+`STA ENABL` completes at ~cycle 5, far before the first visible pixel
+(~cycle 22.7). The value is precomputed in the tail of the *previous*
+scanline for the *current* line, so the ball draws on exactly `BALL_HEIGHT`
+consecutive lines regardless of `ball_x`: line L shows the ball iff L-1 is a
+ball row, i.e. L in `ball_y+1 .. ball_y+BALL_HEIGHT` (the same display
+convention as before). Line 0 writes the `A = 0` left over from the
+pre-kernel, so the first visible line is always ball-free. `ENABL` is
+cleared again during overscan init, so the register can never hold 1 into
+overscan even when the ball rests at the bottom of the arena.
+
+Because the enable value is carried in `A` across the loop back-edge, no RAM
+byte is needed for it.
+
+### Graphics register write times
+
+`ENABL` completes at ~cycle 5, `GRP0` at ~cycle 23 (before the beam reaches
+P0 at x=16, ~cycle 28.3) and `GRP1` at ~cycle 41 (before the beam reaches P1
+at x=136, ~cycle 68). All three writes happen before their object's
+horizontal position, so each object renders with the value written on the
+current scanline.
 
 ## VBLANK and OVERSCAN budgets
 

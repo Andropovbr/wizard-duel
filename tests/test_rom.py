@@ -1,13 +1,15 @@
-"""Assembly/ROM validation: symbols, addresses, sprites and page alignment."""
+"""Assembly/ROM validation: symbols, addresses, paddle rendering, page alignment."""
 
 import sys
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 
 from common import (ROM_ORIGIN, ROM_PATH, parse_listing, parse_symbols,
                     require_build)
+from test_timing import read_constants
 
 PLAYER_HEIGHT = 12
 
@@ -22,9 +24,8 @@ class TestSymbols(unittest.TestCase):
         for name in ("Reset", "StartOfFrame", "WaitVBlank", "KernelLoop",
                      "OverscanWait", "UpdatePlayers", "UpdateBall",
                      "PositionPlayers", "PositionBall", "PosObject",
-                     "P0Sprite", "P1Sprite", "fineAdjustTable",
-                     "fineAdjustBegin", "P0Y", "P1Y", "joystate",
-                     "ball_x", "ball_y", "ball_dx", "ball_dy"):
+                     "fineAdjustTable", "fineAdjustBegin", "P0Y", "P1Y",
+                     "joystate", "ball_x", "ball_y", "ball_dx", "ball_dy"):
             self.assertIn(name, self.sym, f"missing symbol {name}")
 
     def test_reset_at_rom_origin(self):
@@ -60,39 +61,20 @@ class TestRomLayout(unittest.TestCase):
     def addr(self, a):
         return self.rom[a - ROM_ORIGIN]
 
-    def test_sprite_tables_are_12_bytes_each(self):
-        for name in ("P0Sprite", "P1Sprite"):
-            base = self.sym[name]
-            data = [self.addr(base + i) for i in range(PLAYER_HEIGHT)]
-            self.assertFalse(all(b == 0 for b in data), f"{name} is all zeros")
-
-    def test_sprite_tables_do_not_cross_page_boundary(self):
-        # Guarantee that the indexed LDA in the kernel never pays the
-        # +1 page-cross penalty (see main.asm kernel accounting).
-        for name in ("P0Sprite", "P1Sprite"):
-            base = self.sym[name]
-            last = base + PLAYER_HEIGHT - 1
-            self.assertEqual(base >> 8, last >> 8,
-                             f"{name} crosses a page boundary")
-
-    def test_players_are_solid_paddle_rectangles(self):
+    def test_paddle_bits_constant_is_solid_bar(self):
         # Round 2 renders both players as Pong-style vertical paddles:
-        # PLAYER_HEIGHT identical solid rows of a 4-pixel bar.
-        for name in ("P0Sprite", "P1Sprite"):
-            base = self.sym[name]
-            rows = [self.addr(base + i) for i in range(PLAYER_HEIGHT)]
-            self.assertEqual(len(set(rows)), 1,
-                             f"{name} rows are not identical")
-            self.assertEqual(rows[0], 0x3C,  # %00111100
-                             f"{name} is not the expected paddle shape")
-            self.assertNotEqual(rows[0], 0, f"{name} is blank")
+        # PLAYER_HEIGHT identical solid rows of a 4-pixel bar, encoded as the
+        # PADDLE_BITS constant used by the branchless kernel rectangles.
+        self.assertEqual(read_constants().get("PADDLE_BITS"), 0x3C)
 
-    def test_sprite_table_indices_valid(self):
-        # Every row byte must use only the 8 visible pixels.
-        for name in ("P0Sprite", "P1Sprite"):
-            base = self.sym[name]
-            for i in range(PLAYER_HEIGHT):
-                self.addr(base + i)
+    def test_kernel_uses_branchless_paddle_pattern(self):
+        # Both players render as a constant PADDLE_BITS rectangle: the kernel
+        # body contains exactly two AND #PADDLE_BITS (29 3C), one per player.
+        start = self.sym["KernelLoop"]
+        end = self.sym["OverscanWait"]
+        kernel = self.rom[start - ROM_ORIGIN:end - ROM_ORIGIN]
+        self.assertEqual(kernel.count(bytes([0x29, 0x3C])), 2,
+                         "kernel must render both paddles with AND #PADDLE_BITS")
 
     def test_fine_adjust_table_15_entries(self):
         base = self.sym["fineAdjustBegin"]

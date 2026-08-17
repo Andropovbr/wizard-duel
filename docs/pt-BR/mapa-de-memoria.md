@@ -12,15 +12,13 @@ registradores do TIA (`$00-$3F`) e os registradores de I/O/timer do RIOT
 | `$F000`  | Reset/inicialização (main.asm)             |
 | `$F049`  | `StartOfFrame` (loop de um quadro)         |
 | `$F06A`  | `WaitVBlank` (TIM64T + lógica do jogo)     |
-| `$F07B`  | `KernelLoop` (kernel de 192 linhas)        |
-| `$F0C1`  | `OverscanWait`                             |
-| `$F0C9`  | `UpdatePlayers` (input vertical do joystick) |
-| `$F103`  | `UpdateBall` (movimento + quique)          |
-| `$F13A`  | `PositionPlayers` (RESP0/1 + HMP0/1)       |
-| `$F149`  | `PositionBall` (RESBL + HMBL)              |
-| `$F154`  | `PosObject` (RESPx/HMPx genérico)          |
-| `$F164`  | `P0Sprite`  (12 bytes de linha, raquete)   |
-| `$F170`  | `P1Sprite`  (12 bytes de linha, raquete)   |
+| `$F07D`  | `KernelLoop` (kernel de 192 linhas)        |
+| `$F0B9`  | `OverscanWait`                             |
+| `$F0C1`  | `UpdatePlayers` (input vertical do joystick) |
+| `$F0FB`  | `UpdateBall` (movimento + quique)          |
+| `$F132`  | `PositionPlayers` (RESP0/1 + HMP0/1)       |
+| `$F155`  | `PositionBall` (RESBL + HMBL)              |
+| `$F167`  | `PosObject` (RESPx/HMPx genérico)          |
 | `$F200`  | `fineAdjustBegin` (tabela HMP, alinhada a página) |
 | `$FFFA`  | vetor NMI (`Reset`)                        |
 | `$FFFC`  | vetor RESET (`Reset`)                      |
@@ -31,9 +29,12 @@ tabela com um resto em complemento de dois, e a passagem de página garantida
 do `LDA` indexado mantém a escrita `RESPx` no ciclo exato exigido pelo
 contrato de tempo da rotina de posicionamento.
 
-O uso de ROM é medido pelo maior endereço emitido abaixo do bloco de
-vetores; o preenchimento com `$FF` conta como espaço disponível. O build
-reporta ambos os números. Na Rodada 2 o código adicional da bola coube no
+Não existem tabelas de gráficos de sprites: os dois jogadores são retângulos
+sólidos renderizados sem ramificações com a constante `PADDLE_BITS` (veja
+[timing.md](timing.md)). O uso de ROM é medido pelo maior endereço emitido
+abaixo do bloco de vetores; o preenchimento com `$FF` conta como espaço
+disponível. O build reporta ambos os números. A remoção das antigas tabelas
+`P0Sprite`/`P1Sprite` e o encurtamento do kernel liberaram bytes dentro do
 preenchimento de página reservado para o `fineAdjustBegin` alinhado, então o
 uso de ROM permaneceu em 528 bytes.
 
@@ -45,7 +46,7 @@ uso de ROM permaneceu em 528 bytes.
 | `$81`    | `P1Y`      | 1    | posição vertical do jogador 1 (0..179)|
 | `$82`    | `joystate` | 1    | valor amostrado de `SWCHA`            |
 | `$83`    | `ball_x`   | 1    | pixel visível mais à esquerda (0..156)|
-| `$84`    | `ball_y`   | 1    | linha de escrita do ENABL (0..190)    |
+| `$84`    | `ball_y`   | 1    | primeira scanline do ENABL da bola (0..187) |
 | `$85`    | `ball_dx`  | 1    | passo horizontal (+1 / $FF)           |
 | `$86`    | `ball_dy`  | 1    | passo vertical (+1 / $FF)             |
 | `$87-$FF`| -          | 121  | não alocado                          |

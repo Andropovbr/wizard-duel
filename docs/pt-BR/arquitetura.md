@@ -24,13 +24,17 @@ endereços dos registradores de hardware e as constantes de compilação.
 | -------- | ----------------------------------------------- |
 | `$F000`  | `Reset` (inicialização)                         |
 | `$F049`  | `StartOfFrame` (VSYNC + VBLANK + kernel + overscan) |
-| `$F0C9`  | `UpdatePlayers` (entrada de joystick + movimento) |
-| `$F103`  | `UpdateBall` (movimento + quique da bola)       |
-| `$F13A`  | `PositionPlayers` (RESP0/RESP1 + HMP + HMOVE)   |
-| `$F15D`  | `PositionBall` (RESBL + HMBL)                   |
-| `$F164`  | `P0Sprite` / `P1Sprite` (12 bytes cada)         |
+| `$F0C1`  | `UpdatePlayers` (entrada de joystick + movimento) |
+| `$F0FB`  | `UpdateBall` (movimento + quique da bola)       |
+| `$F132`  | `PositionPlayers` (RESP0/RESP1 + HMP + HMOVE)   |
+| `$F155`  | `PositionBall` (RESBL + HMBL)                   |
+| `$F167`  | `PosObject` (RESPx/HMPx genérico)               |
 | `$F200`  | `fineAdjustBegin` (tabela HMP alinhada a página) |
 | `$FFFA`  | vetores NMI / RESET / IRQ                       |
+
+Não existem tabelas de gráficos de sprites: os dois jogadores são retângulos
+sólidos de `PADDLE_BITS` renderizados sem ramificações dentro do kernel
+(veja [timing.md](timing.md)).
 
 Os endereços exatos podem mudar entre builds; os testes automatizados os
 resolvem a partir dos arquivos de símbolos/listing em vez de fixá-los.
@@ -75,10 +79,11 @@ os limites da arena para que a posição nunca dê a volta (wrap).
 
 Os dois jogadores são sprites TIA de cópia única (`NUSIZ0/1 = 0`) com cores
 diferentes: P0 é vermelho (`COLUP0 = $46`) e P1 é azul (`COLUP1 = $84`).
-Cada sprite é um retângulo sólido de 12 linhas de `%00111100` (uma raquete
-de 4 pixels de largura). O kernel calcula, por scanline, se o índice da
-linha atual pertence ao sprite de 12 linhas de um jogador e escreve o byte
-correspondente em `GRP0`/`GRP1`.
+Cada sprite é um retângulo sólido de `%00111100` (uma raquete de 4 pixels de
+largura). O kernel renderiza cada jogador com um teste "desenha ou apaga"
+sem ramificações: por scanline ele calcula se `X` está dentro da faixa de 12
+linhas do jogador e escreve o byte da linha `PADDLE_BITS` constante ou 0 em
+`GRP0`/`GRP1` (o truque `LDA #0 / SBC #0`, 18 ciclos por jogador).
 
 A bola usa o objeto Ball do TIA (4 pixels de largura via `CTRLPF` D5:D4 =
 `%10` = 4 color clocks, `BALL_HEIGHT = 4` scanlines de altura, colorida por
@@ -86,10 +91,14 @@ A bola usa o objeto Ball do TIA (4 pixels de largura via `CTRLPF` D5:D4 =
 sem sobreposição vertical entre quadros consecutivos, parece estroboscópica
 ao se mover 1 px/quadro; a bola 4x4 é quase quadrada. O kernel a habilita em
 `BALL_HEIGHT` scanlines consecutivas testando `linha - ball_y < BALL_HEIGHT`
-e escrevendo `ENABL`; como `ENABL` é registrado (latch) para a scanline
-*seguinte*, o kernel precisa escrevê-lo em toda linha (o valor de
-habilitação nas linhas da bola, 0 em todas as outras), senão a bola ficaria
-presa na tela.
+no fim do loop e transportando o resultado em `A` pela aresta de retorno. O
+bit de habilitação é amostrado pelo TIA na posição horizontal da bola, então
+`STA ENABL` é escrito durante o blanking horizontal de toda scanline
+(imediatamente após `STA WSYNC`), pré-calculado para a linha atual no fim da
+scanline anterior. Isso mantém a bola com exatamente `BALL_HEIGHT` linhas de
+altura em qualquer `ball_x` (veja [timing.md](timing.md)); antes, escrever
+`ENABL` tarde na scanline fazia a bola pular uma scanline em algumas regiões
+horizontais.
 
 O posicionamento horizontal é fixado a cada quadro com a técnica clássica
 RESP0/RESP1/RESBL + HMP0/HMP1/HMBL + HMOVE: um `RESPx`/`RESBL` grosseiro
@@ -131,7 +140,7 @@ Sete variáveis de zero page são usadas (7 de 128 bytes de RAM RIOT):
 | `$81`    | `P1Y`      | posição vertical do jogador 1 |
 | `$82`    | `joystate` | valor amostrado de SWCHA      |
 | `$83`    | `ball_x`   | pixel visível mais à esquerda |
-| `$84`    | `ball_y`   | scanline de escrita do ENABL  |
+| `$84`    | `ball_y`   | primeira scanline do ENABL da bola |
 | `$85`    | `ball_dx`  | passo horizontal (+1 / $FF)   |
 | `$86`    | `ball_dy`  | passo vertical (+1 / $FF)     |
 

@@ -11,15 +11,13 @@ registers (`$00-$3F`) and the RIOT I/O/timer registers (`$0280-$02FF`).
 | `$F000`  | Reset/init (main.asm)                     |
 | `$F049`  | `StartOfFrame` (one-frame loop)           |
 | `$F06A`  | `WaitVBlank` (TIM64T + game logic)        |
-| `$F07B`  | `KernelLoop` (192-scanline kernel)        |
-| `$F0C1`  | `OverscanWait`                            |
-| `$F0C9`  | `UpdatePlayers` (vertical joystick input) |
-| `$F103`  | `UpdateBall` (move + bounce)              |
-| `$F13A`  | `PositionPlayers` (RESP0/1 + HMP0/1)      |
-| `$F149`  | `PositionBall` (RESBL + HMBL)             |
-| `$F154`  | `PosObject` (generic RESPx + HMPx)        |
-| `$F164`  | `P0Sprite`  (12 row bytes, paddle)        |
-| `$F170`  | `P1Sprite`  (12 row bytes, paddle)        |
+| `$F07D`  | `KernelLoop` (192-scanline kernel)        |
+| `$F0B9`  | `OverscanWait`                            |
+| `$F0C1`  | `UpdatePlayers` (vertical joystick input) |
+| `$F0FB`  | `UpdateBall` (move + bounce)              |
+| `$F132`  | `PositionPlayers` (RESP0/1 + HMP0/1)      |
+| `$F155`  | `PositionBall` (RESBL + HMBL)             |
+| `$F167`  | `PosObject` (generic RESPx + HMPx)        |
 | `$F200`  | `fineAdjustBegin` (HMP table, page-aligned) |
 | `$FFFA`  | NMI vector (`Reset`)                      |
 | `$FFFC`  | RESET vector (`Reset`)                    |
@@ -30,11 +28,13 @@ with a two's-complement remainder, and the guaranteed page crossing of the
 indexed `LDA` keeps the `RESPx` write on the exact cycle required by the
 timing contract of the positioning routine.
 
+There are no sprite graphics tables: both players are solid rectangles
+rendered branchlessly with the `PADDLE_BITS` constant (see [timing.md]).
 ROM usage is measured by the high-water mark of emitted code below the
 vector block; the `$FF`-filled padding counts as available space. The build
-reports both numbers. In Round 2 the added ball code still fits inside the
-page padding reserved for the aligned `fineAdjustBegin`, so ROM usage is
-unchanged at 528 bytes.
+reports both numbers. Removing the former `P0Sprite`/`P1Sprite` tables and
+shortening the kernel freed bytes inside the page padding reserved for the
+aligned `fineAdjustBegin`, so ROM usage is unchanged at 528 bytes.
 
 ## RAM layout (RIOT RAM `$80-$FF`, 128 bytes)
 
@@ -44,7 +44,7 @@ unchanged at 528 bytes.
 | `$81`   | `P1Y`      | 1    | player 1 vertical position (0..179)  |
 | `$82`   | `joystate` | 1    | sampled `SWCHA` value                |
 | `$83`   | `ball_x`   | 1    | ball leftmost visible pixel (0..156) |
-| `$84`   | `ball_y`   | 1    | ball ENABL write scanline (0..190)   |
+| `$84`   | `ball_y`   | 1    | first ball ENABL scanline (0..187) |
 | `$85`   | `ball_dx`  | 1    | horizontal step (+1 / $FF)           |
 | `$86`   | `ball_dy`  | 1    | vertical step (+1 / $FF)             |
 | `$87-$FF`| -          | 121  | unallocated                          |

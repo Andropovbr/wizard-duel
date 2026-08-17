@@ -24,13 +24,16 @@ register addresses and build-time constants.
 | -------- | ---------------------------------------------- |
 | `$F000`  | `Reset` (initialization)                       |
 | `$F049`  | `StartOfFrame` (VSYNC + VBLANK + kernel + OS)  |
-| `$F0C9`  | `UpdatePlayers` (joystick input + movement)    |
-| `$F103`  | `UpdateBall` (ball movement + bounce)          |
-| `$F13A`  | `PositionPlayers` (RESP0/RESP1 + HMP + HMOVE)  |
-| `$F15D`  | `PositionBall` (RESBL + HMBL)                  |
-| `$F164`  | `P0Sprite` / `P1Sprite` (12 bytes each)        |
+| `$F0C1`  | `UpdatePlayers` (joystick input + movement)    |
+| `$F0FB`  | `UpdateBall` (ball movement + bounce)          |
+| `$F132`  | `PositionPlayers` (RESP0/RESP1 + HMP + HMOVE)  |
+| `$F155`  | `PositionBall` (RESBL + HMBL)                  |
+| `$F167`  | `PosObject` (generic RESPx/HMPx)               |
 | `$F200`  | `fineAdjustBegin` (page-aligned HMP table)     |
 | `$FFFA`  | NMI / RESET / IRQ vectors                      |
+
+There are no sprite graphics tables: both players are solid `PADDLE_BITS`
+rectangles rendered branchlessly inside the kernel (see [timing.md](timing.md)).
 
 The exact addresses may change between builds; the automated tests resolve
 them from the symbol/listing files rather than hard-coding them.
@@ -75,10 +78,11 @@ arena boundaries so the position never wraps.
 
 Both players are drawn as single-copy TIA sprites (`NUSIZ0/1 = 0`) with
 different colors: P0 is red (`COLUP0 = $46`) and P1 is blue
-(`COLUP1 = $84`). Each sprite is a 12-row solid rectangle of `%00111100`
-(a 4-pixel-wide paddle). The kernel computes, per scanline, whether the
-current line index belongs to a player's 12-row sprite and writes the
-matching row byte to `GRP0`/`GRP1`.
+(`COLUP1 = $84`). Each sprite is a solid rectangle of `%00111100` (a
+4-pixel-wide paddle). The kernel renders each player with a branchless
+"draw or blank" test: per scanline it computes whether `X` is inside the
+player's 12-row band and writes either the constant `PADDLE_BITS` row byte
+or 0 to `GRP0`/`GRP1` (the `LDA #0 / SBC #0` trick, 18 cycles per player).
 
 The ball is drawn with the TIA Ball object (4 pixels wide via `CTRLPF`
 D5:D4 = `%10` = 4 color clocks, `BALL_HEIGHT = 4` scanlines tall, colored by
@@ -86,9 +90,13 @@ D5:D4 = `%10` = 4 color clocks, `BALL_HEIGHT = 4` scanlines tall, colored by
 vertical overlap between consecutive frames, looks stroboscopic when it
 moves 1 px/frame; the 4x4 ball is close to square. The kernel enables it on
 `BALL_HEIGHT` consecutive scanlines by testing `line - ball_y < BALL_HEIGHT`
-and writing `ENABL`; because `ENABL` is latched for the *following* scanline,
-the kernel must write it on every line (the enable value on the ball's rows,
-0 everywhere else) or the ball would stick on screen.
+in its tail and carrying the result in `A` across the loop. The enable bit
+is sampled by the TIA at the ball's horizontal position, so `STA ENABL` is
+written during the horizontal blanking of every scanline (immediately after
+`STA WSYNC`), precomputed for the current line in the previous scanline's
+tail. This keeps the ball exactly `BALL_HEIGHT` lines tall at every `ball_x`
+(see [timing.md](timing.md)); earlier, writing `ENABL` late in the scanline
+made the ball jump one scanline in some horizontal regions.
 
 Horizontal placement is fixed every frame with the classic
 RESP0/RESP1/HMBL + HMP0/HMP1/HMBL + HMOVE technique: a coarse `RESPx`/`RESBL`
@@ -127,7 +135,7 @@ Seven zero-page variables are used (7 of 128 bytes of RIOT RAM):
 | `$81`   | `P1Y`     | player 1 vertical position   |
 | `$82`   | `joystate`| sampled SWCHA value          |
 | `$83`   | `ball_x`  | ball leftmost visible pixel  |
-| `$84`   | `ball_y`  | ball ENABL write scanline    |
+| `$84`   | `ball_y`  | first ball ENABL scanline      |
 | `$85`   | `ball_dx` | horizontal direction step    |
 | `$86`   | `ball_dy` | vertical direction step      |
 

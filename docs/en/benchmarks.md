@@ -16,11 +16,11 @@ Measured deterministically from the assembled build artifacts (no display):
 
 ## Kernel slack
 
-One NTSC scanline is 76 CPU cycles. The visible kernel spends at most 71
-cycles in its worst path (both paddles drawn and the ball on the line), so:
+One NTSC scanline is 76 CPU cycles. The visible kernel is branchless and
+costs 62 cycles on every scanline, so:
 
 ```text
-kernel slack = 76 - 71 = 5 cycles
+kernel slack = 76 - 62 = 14 cycles
 ```
 
 Slack is a **first-class metric**: it is recorded in `latest.md`, in
@@ -134,13 +134,13 @@ Kernel worst case: 56 / 76 cycles
 Kernel slack:      20 cycles
 Kernel best case:  44 cycles
 
-Round 2 current (measured):
-ROM used:          528 bytes   (the ball code fits in page padding)
+Round 2 current (measured, after the ENABL timing fix):
+ROM used:          528 bytes   (tables removed; page padding absorbs the savings)
 RAM used:          7 bytes
 Frame scanlines:   262
-Kernel worst case: 74 / 76 cycles
-Kernel slack:      2 cycles
-Kernel best case:  61 cycles
+Kernel worst case: 62 / 76 cycles
+Kernel slack:      14 cycles
+Kernel best case:  62 cycles   (the kernel is branchless: best == worst)
 ```
 
 These numbers are measured from the artifacts on every run, not hardcoded

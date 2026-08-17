@@ -43,96 +43,106 @@ scanlines pretendidas.
 ## O kernel visível
 
 Uma scanline = **76 ciclos de CPU**. Cada iteração do kernel começa com
-`STA WSYNC`, então toda iteração é exatamente uma scanline,
-independentemente de ramificações; o quadro não pode derivar quando um
-jogador se move.
+`STA WSYNC`, então toda iteração é exatamente uma scanline; o quadro não
+pode derivar quando um jogador se move.
 
 ### Contabilidade de ciclos (verificada no listing)
 
-Caminho desenhado por jogador (linha do sprite escrita):
+O kernel é **sem ramificações** (branchless): a única ramificação é o `BNE`
+final que volta ao `KernelLoop`, então toda scanline custa exatamente o
+mesmo, independentemente do estado dos jogadores ou da bola. Isso remove
+todo timing dependente de dados do caminho de renderização.
 
-| Instrução          | Ciclos |
-| ------------------ | ------ |
-| `TXA`              | 2      |
-| `SEC`              | 2      |
-| `SBC P0Y`          | 3      |
-| `CMP #altura`      | 2      |
-| `BCS .P0Blank`     | 2 (não tomado) |
-| `TAY`              | 2      |
-| `LDA P0Sprite,Y`   | 4      |
-| `JMP .P0Done`      | 3      |
-| `STA GRP0`         | 3      |
-| **Subtotal**       | **23** |
+Por scanline:
 
-Caminho vazio por jogador (nenhuma linha do sprite nesta linha):
+| Instrução           | Ciclos |
+| ------------------- | ------ |
+| `STA WSYNC`         | 3      |
+| `STA ENABL`         | 3      |
+| Bloco do P0 (retângulo) | 18  |
+| Bloco do P1 (retângulo) | 18  |
+| Fim (incl. `BNE`)   | 20     |
+| **Total**           | **62** |
 
-| Instrução          | Ciclos |
-| ------------------ | ------ |
-| `TXA`              | 2      |
-| `SEC`              | 2      |
-| `SBC P0Y`          | 3      |
-| `CMP #altura`      | 2      |
-| `BCS .P0Blank`     | 3 (tomado) |
-| `LDA #0`           | 2      |
-| `STA GRP0`         | 3      |
-| **Subtotal**       | **17** |
+Bloco de jogador (um jogador):
 
-Fim (por scanline): `INX` 2 + `CPX #192` 2 + `BNE` 3 + `STA WSYNC` 3
-= **10**.
+| Instrução              | Ciclos |
+| ---------------------- | ------ |
+| `TXA`                  | 2      |
+| `SEC`                  | 2      |
+| `SBC PLAYERxY`         | 3      |
+| `CMP #PLAYER_HEIGHT`   | 2      |
+| `LDA #0`               | 2      |
+| `SBC #0`               | 2      |
+| `AND #PADDLE_BITS`     | 2      |
+| `STA GRPx`             | 3      |
+| **Subtotal**           | **18** |
 
-Bloco de habilitação da bola (toda scanline, porque `ENABL` é travado para
-a linha *seguinte* e, portanto, precisa ser reescrito a cada linha). O teste
-de linha calcula `linha - ball_y` e mantém a bola habilitada por
-`BALL_HEIGHT` linhas consecutivas:
+A sequência `LDA #0 / SBC #0` é um teste "desenha ou apaga" sem ramificação:
+após `CMP #PLAYER_HEIGHT` o carry está limpo exatamente nas linhas da
+raquete (`PLAYERx_Y <= X < PLAYERx_Y + altura`), então `SBC #0` deixa
+`A = $FF` lá e `A = $00` em todo o resto; `AND #PADDLE_BITS` mapeia isso
+para o byte da linha `%00111100` ou 0.
 
-Numa linha da bola (`linha - ball_y < BALL_HEIGHT`, escreve o valor de
-habilitação):
+Fim (por scanline):
 
-| Instrução          | Ciclos |
-| ------------------ | ------ |
-| `TXA`              | 2      |
-| `SEC`              | 2      |
-| `SBC ball_y`       | 3      |
-| `CMP #BALL_HEIGHT` | 2      |
-| `LDA #0`           | 2      |
-| `BCS .BallDone`    | 2 (não tomado) |
-| `LDA #BALL_ENABLE` | 2      |
-| `STA ENABL`        | 3      |
-| **Subtotal**       | **18** |
+| Instrução                | Ciclos |
+| ------------------------ | ------ |
+| `TXA`                    | 2      |
+| `SEC`                    | 2      |
+| `SBC ball_y`             | 3      |
+| `CMP #BALL_HEIGHT`       | 2      |
+| `LDA #0`                 | 2      |
+| `SBC #0`                 | 2      |
+| `INX`                    | 2      |
+| `CPX #KERNEL_SCANLINES`  | 2      |
+| `BNE KernelLoop`         | 3      |
+| **Subtotal**             | **20** |
 
-Fora das linhas da bola (mantém a bola apagada):
+| Caminho                   | Ciclos |
+| ------------------------- | ------ |
+| Qualquer (kernel sem ramificações) | **62** |
+| Orçamento da scanline     | 76     |
+| Folga                     | **14 ciclos** |
 
-| Instrução          | Ciclos |
-| ------------------ | ------ |
-| `TXA`              | 2      |
-| `SEC`              | 2      |
-| `SBC ball_y`       | 3      |
-| `CMP #BALL_HEIGHT` | 2      |
-| `LDA #0`           | 2      |
-| `BCS .BallDone`    | 3 (tomado) |
-| `STA ENABL`        | 3      |
-| **Subtotal**       | **17** |
+A folga subiu de 2 para 14 ciclos porque os caminhos ramificados do kernel
+antigo (pior caso 74) desapareceram: o novo kernel é mais curto e totalmente
+determinístico. O custo único desse projeto é que os dois jogadores precisam
+ser renderizados como retângulos constantes: um jogador dirigido por tabela
+(`LDA` indexado + `JMP`) não cabe após a escrita de `ENABL` que deve abrir a
+scanline e ainda deixar `GRP0` com folga.
 
-| Caminho                          | Ciclos |
-| -------------------------------- | ------ |
-| Ambos sprites desenhados + bola  | 23+23+18+10 = **74** |
-| Ambos sprites desenhados + bola apagada | 23+23+17+10 = **73** |
-| Um desenhado, um vazio + bola    | 23+17+18+10 = **68** |
-| Um desenhado, um vazio + bola apagada | 23+17+17+10 = **67** |
-| Ambos sprites vazios + bola      | 17+17+18+10 = **62** |
-| Ambos sprites vazios + bola apagada | 17+17+17+10 = **61** |
-| Orçamento da scanline            | 76     |
-| Folga no pior caso               | **2 ciclos** |
+### Timing de habilitação da bola (a correção do deslocamento vertical)
 
-Todas as oito combinações de jogador x bola são enumeradas e verificadas
-pela suíte de testes. As tabelas de sprite estão dispostas de modo que todo
-índice possível de linha (0..11) permaneça dentro de uma única página; o
-`LDA` indexado nunca paga a penalidade de +1 de passagem de página. Isso é
-verificado pela suíte de testes.
+O TIA amostra o bit de habilitação da bola na posição horizontal da bola; o
+valor escrito em `ENABL` **não** é travado (latched) para a scanline
+seguinte. O kernel anterior escrevia `ENABL` tarde na scanline (~ciclo 67),
+então se uma dada scanline desenhava a bola com o valor da linha atual ou da
+anterior dependia de `ball_x` em relação à posição do feixe no momento da
+escrita. O resultado era uma bola que pulava uma scanline na vertical em
+algumas regiões horizontais.
 
-`GRP0` é escrito por volta do ciclo 26 da sua scanline, `GRP1` por volta do
-ciclo 49 e `ENABL` por volta do ciclo 67; os três são travados (latched)
-para a linha seguinte, bem antes do limite de 76 ciclos.
+A correção escreve `ENABL` durante o blanking horizontal de toda scanline:
+`STA ENABL` completa por volta do ciclo 5, bem antes do primeiro pixel
+visível (~ciclo 22.7). O valor é pré-calculado no fim da scanline *anterior*
+para a linha *atual*, então a bola é desenhada em exatamente `BALL_HEIGHT`
+linhas consecutivas, independentemente de `ball_x`: a linha L mostra a bola
+se L-1 for uma linha da bola, ou seja, L em `ball_y+1 .. ball_y+BALL_HEIGHT`
+(a mesma convenção de exibição de antes). A linha 0 escreve o `A = 0` deixado
+pelo pré-kernel, então a primeira linha visível nunca mostra a bola. `ENABL`
+é limpo novamente na inicialização do overscan, de modo que o registrador
+nunca pode manter 1 no overscan, mesmo quando a bola está no fundo da arena.
+
+Como o valor de habilitação é transportado em `A` pela aresta de retorno do
+loop, nenhum byte de RAM é necessário para ele.
+
+### Horários de escrita dos registradores de gráficos
+
+`ENABL` completa por volta do ciclo 5, `GRP0` por volta do ciclo 23 (antes de
+o feixe alcançar o P0 em x=16, ~ciclo 28.3) e `GRP1` por volta do ciclo 41
+(antes de o feixe alcançar o P1 em x=136, ~ciclo 68). As três escritas
+acontecem antes da posição horizontal do respectivo objeto, então cada
+objeto renderiza com o valor escrito na scanline atual.
 
 ## Orçamentos de VBLANK e OVERSCAN
 

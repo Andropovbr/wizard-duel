@@ -16,12 +16,11 @@ Medidas deterministicamente a partir dos artefatos do build (sem tela):
 
 ## Kernel slack
 
-Uma scanline NTSC tem 76 ciclos de CPU. O kernel visível gasta no máximo 71
-ciclos no pior caminho (ambas as raquetes desenhadas e a bola na linha),
-portanto:
+Uma scanline NTSC tem 76 ciclos de CPU. O kernel visível é sem ramificações
+e custa 62 ciclos em toda scanline, portanto:
 
 ```text
-kernel slack = 76 - 71 = 5 ciclos
+kernel slack = 76 - 62 = 14 ciclos
 ```
 
 O slack é uma **métrica de primeira classe**: é registrado em `latest.md`,
@@ -137,13 +136,13 @@ Pior caso do kernel: 56 / 76 ciclos
 Kernel slack:       20 ciclos
 Melhor caso do kernel: 44 ciclos
 
-Rodada 2 atual (medida):
-ROM usada:          528 bytes   (o código da bola coube no padding de página)
+Rodada 2 atual (medida, após a correção de timing do ENABL):
+ROM usada:          528 bytes   (tabelas removidas; o padding de página absorve)
 RAM usada:          7 bytes
 Scanlines do quadro: 262
-Pior caso do kernel: 74 / 76 ciclos
-Kernel slack:       2 ciclos
-Melhor caso do kernel: 61 ciclos
+Pior caso do kernel: 62 / 76 ciclos
+Kernel slack:       14 ciclos
+Melhor caso do kernel: 62 ciclos   (kernel sem ramificações: melhor == pior)
 ```
 
 Esses números são medidos a partir dos artefatos a cada execução, não
