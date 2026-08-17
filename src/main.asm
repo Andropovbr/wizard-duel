@@ -105,13 +105,18 @@ StartOfFrame:
     JSR PositionPlayers     ; fixed horizontal placement (RESP + HMP)
     JSR PositionBall        ; ball horizontal placement (RESBL + HMBL)
 
-    ; Wait for the VBLANK timer to expire on the last VBLANK line (line 40).
+    ; Wait for the VBLANK timer to expire on the penultimate VBLANK line.
+    ; The timer expires while line 39 is being drawn; the WSYNC below then
+    ; syncs to line 40 so the HMOVE can immediately follow it. The Stella
+    ; Programmer's Guide requires HMOVE to immediately follow a WSYNC so the
+    ; motion registers act during horizontal blanking of the last VBLANK line.
 WaitVBlank:
     LDA INTIM               ; 3
     BNE WaitVBlank          ; 2/3
 
-    ; Last VBLANK line: apply the horizontal fine movement, enable the
-    ; display and clear the sprite graphics for the first visible line.
+    ; Last VBLANK line (line 40): apply the horizontal fine movement, enable
+    ; the display and clear the sprite graphics for the first visible line.
+    STA WSYNC               ; 3   sync to line 40
     STA HMOVE               ; 3   apply HMP0/HMP1 fine adjustments
     LDA #0                  ; 2
     STA VBLANK              ; 3   picture on from the next scanline
@@ -147,23 +152,27 @@ WaitVBlank:
     ;     Subtotal           17
     ;
     ;   Ball enable paths (ENABL must be written every scanline because the
-    ;   TIA latches it for the next line; writing only on the ball row would
+    ;   TIA latches it for the next line; writing only on the ball rows would
     ;   leave the ball permanently enabled):
-    ;     On the ball row:
+    ;     On a ball row (X in ball_y .. ball_y + BALL_HEIGHT - 1):
     ;       TXA                 2
-    ;       CMP ball_y          3
-    ;       BNE .BallOff        2   (not taken)
+    ;       SEC                 2
+    ;       SBC ball_y          3   row = X - ball_y (borrow when X < ball_y)
+    ;       CMP #BALL_HEIGHT    2   row >= height -> off the ball
+    ;       LDA #0              2
+    ;       BCS .BallDone       2   (not taken)
     ;       LDA #BALL_ENABLE    2
     ;       STA ENABL           3
-    ;       JMP .BallDone       3
-    ;       Subtotal           15
-    ;     Off the ball row:
+    ;       Subtotal           18
+    ;     Off the ball rows:
     ;       TXA                 2
-    ;       CMP ball_y          3
-    ;       BNE .BallOff        3   (taken, same page)
+    ;       SEC                 2
+    ;       SBC ball_y          3
+    ;       CMP #BALL_HEIGHT    2
     ;       LDA #0              2
+    ;       BCS .BallDone       3   (taken, same page)
     ;       STA ENABL           3
-    ;       Subtotal           13
+    ;       Subtotal           17
     ;
     ;   Tail (per scanline):
     ;     INX                 2
@@ -172,8 +181,8 @@ WaitVBlank:
     ;     STA WSYNC           3
     ;     Subtotal           10
     ;
-    ; Worst case (both sprites drawn + ball on): 23+23+15+10 = 71 cycles < 76.
-    ; Best case (both sprites blank + ball off): 17+17+13+10 = 57 cycles.
+    ; Worst case (both sprites drawn + ball on): 23+23+18+10 = 74 cycles < 76.
+    ; Best case (both sprites blank + ball off): 17+17+17+10 = 61 cycles.
     ;
     ; The sprite tables are laid out so that every possible row index stays
     ; inside a single page, so the indexed LDA never costs the +1 page-cross
@@ -185,13 +194,14 @@ WaitVBlank:
     ; stays at 262 scanlines whether a player is still, rising, descending,
     ; the ball is present on the line or not.
     ;
-    ; Graphics registers are written at ~cycle 24 (GRP0), ~cycle 48 (GRP1)
-    ; and ~cycle 63 (ENABL), comfortably inside the 76-cycle scanline, so
+    ; Graphics registers are written at ~cycle 26 (GRP0), ~cycle 49 (GRP1)
+    ; and ~cycle 67 (ENABL), comfortably inside the 76-cycle scanline, so
     ; all three writes are latched for the following line.
     ;
-    ; ENABL is written with 0 on every scanline except the ball's row. Since
-    ; ball_y never exceeds KERNEL_SCANLINES - 2, the last kernel line always
-    ; writes ENABL = 0, so the ball can never bleed into overscan/next frame.
+    ; ENABL is written with 0 on every scanline except the BALL_HEIGHT rows
+    ; starting at ball_y. Since ball_y never exceeds
+    ; KERNEL_SCANLINES - BALL_HEIGHT - 1, the last kernel line always writes
+    ; ENABL = 0, so the ball can never bleed into overscan/next frame.
 KernelLoop:
     STA WSYNC               ; 3   start of scanline (physical line 41 + X)
 
@@ -223,17 +233,18 @@ KernelLoop:
 .P1Done:
     STA GRP1                ; 3
 
-    ; Ball: enable it for exactly one scanline (row == ball_y).
+    ; Ball: enable it for BALL_HEIGHT consecutive scanlines. The write rows
+    ; are ball_y .. ball_y + BALL_HEIGHT - 1; the ball is displayed on
+    ; ball_y + 1 .. ball_y + BALL_HEIGHT (ENABL is latched for next line).
     TXA                     ; 2   scanline index
-    CMP ball_y              ; 3   Z=1 on the ball's write scanline
-    BNE .BallOff            ; 2/3
+    SEC                     ; 2
+    SBC ball_y              ; 3   row = X - ball_y (borrow when X < ball_y)
+    CMP #BALL_HEIGHT        ; 2   row >= BALL_HEIGHT -> not part of the ball
+    LDA #0                  ; 2   default: ball dark
+    BCS .BallDone           ; 2/3 off rows skip the enable load
     LDA #BALL_ENABLE        ; 2
-    STA ENABL               ; 3   latched -> displayed on ball_y + 1
-    JMP .BallDone           ; 3
-.BallOff:
-    LDA #0                  ; 2
-    STA ENABL               ; 3   keep the ball dark on every other line
 .BallDone:
+    STA ENABL               ; 3   latched -> displayed on the next line
 
     INX                     ; 2
     CPX #KERNEL_SCANLINES   ; 2
@@ -381,9 +392,23 @@ UpdateBall:
 ; =============================================================================
 PositionPlayers:
     LDA #PLAYER1_X          ; 2
+    CLC                     ; 2
+    ADC #7                  ; 2   q >= 1 compensation
+    CMP #15                 ; 2   X + 7 >= 15  <=>  X >= 8
+    BCS PositionP1          ; 2/3
+    SEC                     ; 2
+    SBC #3                  ; 2   q = 0 compensation (X + 4)
+PositionP1:
     LDX #0                  ; 2   object 0 = player 0
     JSR PosObject           ; 6
     LDA #PLAYER2_X          ; 2
+    CLC                     ; 2
+    ADC #7                  ; 2
+    CMP #15                 ; 2
+    BCS PositionP2          ; 2/3
+    SEC                     ; 2
+    SBC #3                  ; 2
+PositionP2:
     LDX #1                  ; 2   object 1 = player 1
     JSR PosObject           ; 6
     RTS                     ; 6
@@ -395,14 +420,25 @@ PositionPlayers:
 ; ball: RESBL + HMBL), using the HMBL fine value and the shared HMOVE on the
 ; last VBLANK line.
 ;
-; ball_x is the VISIBLE leftmost pixel. The TIA delays player graphics by 1
-; CLK more than ball/missile output, so the ball appears 1 pixel left of a
-; player positioned with the same input; adding 1 compensates for that.
+; Measured on the target (TIA/Stella): PosObject renders a player at
+;   15*q + (s - 7)          for q >= 1
+;   3 + (s - 7)             for q = 0   (RESP strobe before cycle 23)
+; where the divide loop runs q+1 subtractions and s = input mod 15 is the
+; fine-adjust table index. The ball additionally renders 1 pixel left of a
+; player for the same input. To make the ball render at exactly ball_x:
+;   ball_x >= 7  -> input = ball_x + 8  (q >= 1)
+;   ball_x <= 6  -> input = ball_x + 5  (q = 0, coarse base is 2 not 0)
+; so every ball_x in BALL_X_MIN..BALL_X_MAX maps to itself.
 ; =============================================================================
 PositionBall:
     LDA ball_x              ; 3   visible left pixel
     CLC                     ; 2
-    ADC #1                  ; 2   compensate the ball's 1-pixel left shift
+    ADC #8                  ; 2   q >= 1 compensation
+    CMP #15                 ; 2   ball_x + 8 >= 15  <=>  ball_x >= 7
+    BCS PositionBallOk      ; 2/3
+    SEC                     ; 2
+    SBC #3                  ; 2   q = 0 compensation (ball_x + 5)
+PositionBallOk:
     LDX #4                  ; 2   object 4 = ball
     JSR PosObject           ; 6
     RTS                     ; 6

@@ -27,7 +27,7 @@ endereços dos registradores de hardware e as constantes de compilação.
 | `$F0C9`  | `UpdatePlayers` (entrada de joystick + movimento) |
 | `$F103`  | `UpdateBall` (movimento + quique da bola)       |
 | `$F13A`  | `PositionPlayers` (RESP0/RESP1 + HMP + HMOVE)   |
-| `$F149`  | `PositionBall` (RESBL + HMBL)                   |
+| `$F15D`  | `PositionBall` (RESBL + HMBL)                   |
 | `$F164`  | `P0Sprite` / `P1Sprite` (12 bytes cada)         |
 | `$F200`  | `fineAdjustBegin` (tabela HMP alinhada a página) |
 | `$FFFA`  | vetores NMI / RESET / IRQ                       |
@@ -40,7 +40,7 @@ resolvem a partir dos arquivos de símbolos/listing em vez de fixá-los.
 ```
 StartOfFrame
  ├─ VSYNC    3 scanlines  (três WSYNC explícitos)
- ├─ VBLANK  37 scanlines  (TIM64T = 44; lógica de jogo roda aqui)
+ ├─ VBLANK  37 scanlines  (TIM64T = 43; lógica de jogo roda aqui)
  │   ├─ UpdatePlayers     lê SWCHA, move P0/P1 e limita à arena
  │   ├─ UpdateBall        move a bola e quica nas bordas da arena
  │   ├─ PositionPlayers   posicionamento horizontal RESP0/RESP1 + HMP0/HMP1
@@ -80,23 +80,35 @@ de 4 pixels de largura). O kernel calcula, por scanline, se o índice da
 linha atual pertence ao sprite de 12 linhas de um jogador e escreve o byte
 correspondente em `GRP0`/`GRP1`.
 
-A bola usa o objeto Ball do TIA (1 scanline de altura, 4 pixels de largura
-via `CTRLPF` D5:D4 = `%10`, colorida por `COLUPF`). O kernel a habilita em
-exatamente uma scanline por quadro comparando o índice da linha com
-`ball_y` e escrevendo `ENABL`; como `ENABL` é registrado (latch) para a
-scanline *seguinte*, o kernel precisa escrevê-lo em toda linha (o valor de
-habilitação na linha da bola, 0 em todas as outras), senão a bola ficaria
+A bola usa o objeto Ball do TIA (4 pixels de largura via `CTRLPF` D5:D4 =
+`%10` = 4 color clocks, `BALL_HEIGHT = 4` scanlines de altura, colorida por
+`COLUPF`). Uma bola de uma única scanline renderiza como um traço fino e,
+sem sobreposição vertical entre quadros consecutivos, parece estroboscópica
+ao se mover 1 px/quadro; a bola 4x4 é quase quadrada. O kernel a habilita em
+`BALL_HEIGHT` scanlines consecutivas testando `linha - ball_y < BALL_HEIGHT`
+e escrevendo `ENABL`; como `ENABL` é registrado (latch) para a scanline
+*seguinte*, o kernel precisa escrevê-lo em toda linha (o valor de
+habilitação nas linhas da bola, 0 em todas as outras), senão a bola ficaria
 presa na tela.
 
 O posicionamento horizontal é fixado a cada quadro com a técnica clássica
 RESP0/RESP1/RESBL + HMP0/HMP1/HMBL + HMOVE: um `RESPx`/`RESBL` grosseiro
 coloca o objeto dentro de 15 pixels e um ajuste fino `HMPx`/`HMBL` vindo
 da tabela `fineAdjustTable` (alinhada a página) completa o trabalho. O
-`HMOVE` que aplica os offsets é escrito na última linha do VBLANK.
-`PositionBall` passa `ball_x + 1` para a rotina de posicionamento
-compartilhada porque o TIA atrasa os gráficos dos jogadores em um color
-clock extra; o mesmo valor de `RESP` colocaria a bola um pixel à esquerda
-de onde os jogadores são renderizados.
+`HMOVE` que aplica os offsets é escrito imediatamente após um `STA WSYNC`
+na última linha do VBLANK, como exige o Guia do Programador Stella; antes
+dessa correção o `HMOVE` seguia uma espera do timer em vez de um `WSYNC`,
+então os offsets finos nunca eram aplicados e os objetos saltavam na grade
+grosseira de 15 pixels.
+
+Medido no alvo (TIA/Stella), a rotina renderiza um jogador em
+`15*q + (s - 7)` para `q >= 1` e em `3 + (s - 7)` para `q = 0` (o caminho
+mais curto da divisão aplica `RESP` antes do ciclo 23 do TIA), onde
+`q = entrada / 15` e `s = entrada mod 15`. O `PositionBall` portanto passa
+`ball_x + 8` (ou `ball_x + 5` quando isso fica abaixo de 15, cancelando a
+base grosseira 3 do q = 0) e o deslocamento de 1 color clock para a
+esquerda da bola vs. um jogador, de modo que ela renderiza exatamente em
+`ball_x`; o `PositionPlayers` passa `X + 7` (ou `X + 4`).
 
 ## Movimento e quique da bola
 

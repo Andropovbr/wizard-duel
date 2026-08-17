@@ -27,7 +27,7 @@ register addresses and build-time constants.
 | `$F0C9`  | `UpdatePlayers` (joystick input + movement)    |
 | `$F103`  | `UpdateBall` (ball movement + bounce)          |
 | `$F13A`  | `PositionPlayers` (RESP0/RESP1 + HMP + HMOVE)  |
-| `$F149`  | `PositionBall` (RESBL + HMBL)                  |
+| `$F15D`  | `PositionBall` (RESBL + HMBL)                  |
 | `$F164`  | `P0Sprite` / `P1Sprite` (12 bytes each)        |
 | `$F200`  | `fineAdjustBegin` (page-aligned HMP table)     |
 | `$FFFA`  | NMI / RESET / IRQ vectors                      |
@@ -40,7 +40,7 @@ them from the symbol/listing files rather than hard-coding them.
 ```
 StartOfFrame
  ├─ VSYNC   3 scanlines  (three explicit WSYNC writes)
- ├─ VBLANK 37 scanlines  (TIM64T = 44; gameplay runs here)
+ ├─ VBLANK 37 scanlines  (TIM64T = 43; gameplay runs here)
  │   ├─ UpdatePlayers    read SWCHA, move P0/P1, clamp to the arena
  │   ├─ UpdateBall       move the ball, bounce off the arena edges
  │   ├─ PositionPlayers  RESP0/RESP1 + HMP0/HMP1 coarse/fine placement
@@ -80,21 +80,32 @@ different colors: P0 is red (`COLUP0 = $46`) and P1 is blue
 current line index belongs to a player's 12-row sprite and writes the
 matching row byte to `GRP0`/`GRP1`.
 
-The ball is drawn with the TIA Ball object (1 scanline tall, 4 pixels wide
-via `CTRLPF` D5:D4 = `%10`, colored by `COLUPF`). The kernel enables it for
-exactly one scanline per frame by comparing the line index with `ball_y` and
-writing `ENABL`; because `ENABL` is latched for the *following* scanline,
-the kernel must write it on every line (the enable value on the ball's row,
+The ball is drawn with the TIA Ball object (4 pixels wide via `CTRLPF`
+D5:D4 = `%10` = 4 color clocks, `BALL_HEIGHT = 4` scanlines tall, colored by
+`COLUPF`). A single-scanline-tall ball renders as a thin dash and, having no
+vertical overlap between consecutive frames, looks stroboscopic when it
+moves 1 px/frame; the 4x4 ball is close to square. The kernel enables it on
+`BALL_HEIGHT` consecutive scanlines by testing `line - ball_y < BALL_HEIGHT`
+and writing `ENABL`; because `ENABL` is latched for the *following* scanline,
+the kernel must write it on every line (the enable value on the ball's rows,
 0 everywhere else) or the ball would stick on screen.
 
 Horizontal placement is fixed every frame with the classic
 RESP0/RESP1/HMBL + HMP0/HMP1/HMBL + HMOVE technique: a coarse `RESPx`/`RESBL`
 positions the object to within 15 pixels and a fine `HMPx`/`HMBL` offset
 from the page-aligned `fineAdjustTable` finishes the job. The `HMOVE` that
-applies the offsets is written on the last VBLANK line. `PositionBall`
-passes `ball_x + 1` to the shared positioning routine because the TIA delays
-player graphics by one extra color clock; the same `RESP` input would
-otherwise place the ball one pixel to the left of where the players render.
+applies the offsets is written immediately after a `STA WSYNC` on the last
+VBLANK line, as the Stella Programmer's Guide requires; before this fix the
+`HMOVE` followed a timer poll instead of a `WSYNC`, so the fine offsets were
+never applied and objects snapped to the 15-pixel coarse grid.
+
+Measured on the target (TIA/Stella), the routine renders a player at
+`15*q + (s - 7)` for `q >= 1` and at `3 + (s - 7)` for `q = 0` (the shortest
+divide path strokes `RESP` before TIA cycle 23), where `q = input / 15` and
+`s = input mod 15`. `PositionBall` therefore passes `ball_x + 8` (or
+`ball_x + 5` when that is below 15, cancelling the q = 0 coarse base of 3)
+and the ball's 1-color-clock-left shift vs a player, so it renders at
+exactly `ball_x`; `PositionPlayers` passes `X + 7` (or `X + 4`).
 
 ## Ball movement and bounce
 

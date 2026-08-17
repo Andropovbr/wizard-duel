@@ -12,7 +12,7 @@ Measured deterministically from the assembled build artifacts (no display):
 | Kernel worst case | worst kernel scanline cost, recomputed from listing |
 | Kernel best case  | cheapest kernel scanline cost                       |
 | Kernel slack      | `kernel_budget - kernel_worst`                      |
-| VBLANK/OVERSCAN   | tuned RIOT timer values (44 / 37)                   |
+| VBLANK/OVERSCAN   | tuned RIOT timer values (43 / 37)                   |
 
 ## Kernel slack
 
@@ -138,9 +138,9 @@ Round 2 current (measured):
 ROM used:          528 bytes   (the ball code fits in page padding)
 RAM used:          7 bytes
 Frame scanlines:   262
-Kernel worst case: 71 / 76 cycles
-Kernel slack:      5 cycles
-Kernel best case:  57 cycles
+Kernel worst case: 74 / 76 cycles
+Kernel slack:      2 cycles
+Kernel best case:  61 cycles
 ```
 
 These numbers are measured from the artifacts on every run, not hardcoded

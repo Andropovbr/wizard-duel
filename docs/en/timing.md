@@ -10,12 +10,12 @@ Stella's debugger.
 | Region    | Scanlines | How it is produced             |
 | --------- | --------- | ------------------------------ |
 | VSYNC     | 3         | three explicit `STA WSYNC`     |
-| VBLANK    | 37        | `TIM64T = 44` countdown        |
+| VBLANK    | 37        | `TIM64T = 43` countdown        |
 | KERNEL    | 192       | explicit `STA WSYNC` loop      |
 | OVERSCAN  | 30        | `TIM64T = 37` countdown        |
 | **Total** | **262**   |                                |
 
-### Why the timer values are 44 and 37
+### Why the timer values are 43 and 37
 
 The RIOT timer ticks once every 64 cycles. Setting `TIM64T = N` would naively
 be expected to last `N * 64` cycles, but Stella's M6532 implementation (and
@@ -29,8 +29,10 @@ Because of this the timer expires on an earlier cycle than a naive
 `value * 64` calculation suggests. Empirically (measured with
 `print _cyclesLo` at the `StartOfFrame` breakpoint in the Stella debugger):
 
-* `VBLANK_TIMER_VALUE = 44` makes the VBLANK wait expire on the final
-  VBLANK scanline (line 40 of the frame);
+* `VBLANK_TIMER_VALUE = 43` makes the VBLANK wait expire on line 39; the
+  `STA WSYNC` that follows syncs to line 40, where `HMOVE` is written
+  immediately after the `WSYNC` (required so the motion registers act during
+  horizontal blanking of the last VBLANK line);
 * `OVERSCAN_TIMER_VALUE = 37` makes the OVERSCAN wait expire on the final
   frame line.
 
@@ -78,49 +80,55 @@ Tail (per scanline): `INX` 2 + `CPX #192` 2 + `BNE` 3 + `STA WSYNC` 3
 = **10**.
 
 Ball enable block (every scanline, because `ENABL` is latched for the
-*following* line and must therefore be re-written every line):
+*following* line and must therefore be re-written every line). The row test
+computes `line - ball_y` and keeps the ball enabled for `BALL_HEIGHT`
+consecutive lines:
 
-On the ball's row (write the enable value):
+On a ball row (`line - ball_y < BALL_HEIGHT`, write the enable value):
 
 | Instruction      | Cycles |
 | ---------------- | ------ |
 | `TXA`            | 2      |
-| `CMP ball_y`     | 3      |
-| `BNE .BallOff`   | 2 (not taken) |
+| `SEC`            | 2      |
+| `SBC ball_y`     | 3      |
+| `CMP #BALL_HEIGHT` | 2    |
+| `LDA #0`         | 2      |
+| `BCS .BallDone`  | 2 (not taken) |
 | `LDA #BALL_ENABLE` | 2   |
 | `STA ENABL`      | 3      |
-| `JMP .BallDone`  | 3      |
-| **Subtotal**     | **15** |
+| **Subtotal**     | **18** |
 
-Off the ball's row (keep the ball dark):
+Off the ball rows (keep the ball dark):
 
 | Instruction      | Cycles |
 | ---------------- | ------ |
 | `TXA`            | 2      |
-| `CMP ball_y`     | 3      |
-| `BNE .BallOff`   | 3 (taken) |
+| `SEC`            | 2      |
+| `SBC ball_y`     | 3      |
+| `CMP #BALL_HEIGHT` | 2    |
 | `LDA #0`         | 2      |
+| `BCS .BallDone`  | 3 (taken) |
 | `STA ENABL`      | 3      |
-| **Subtotal**     | **13** |
+| **Subtotal**     | **17** |
 
 | Path                     | Cycles |
 | ------------------------ | ------ |
-| Both sprites drawn + ball on | 23+23+15+10 = **71** |
-| Both sprites drawn + ball off | 23+23+13+10 = **69** |
-| One drawn, one blank + ball on | 23+17+15+10 = **65** |
-| One drawn, one blank + ball off | 23+17+13+10 = **63** |
-| Both sprites blank + ball on | 17+17+15+10 = **59** |
-| Both sprites blank + ball off | 17+17+13+10 = **57** |
+| Both sprites drawn + ball on | 23+23+18+10 = **74** |
+| Both sprites drawn + ball off | 23+23+17+10 = **73** |
+| One drawn, one blank + ball on | 23+17+18+10 = **68** |
+| One drawn, one blank + ball off | 23+17+17+10 = **67** |
+| Both sprites blank + ball on | 17+17+18+10 = **62** |
+| Both sprites blank + ball off | 17+17+17+10 = **61** |
 | Scanline budget          | 76     |
-| Worst-case slack         | **5 cycles** |
+| Worst-case slack         | **2 cycles** |
 
 All eight player x ball combinations are enumerated and asserted by the test
 suite. The sprite tables are laid out so every possible row index (0..11)
 stays inside a single page; the indexed `LDA` never pays the +1 page-cross
 penalty. This is asserted by the test suite.
 
-`GRP0` is written at ~cycle 24 of its scanline, `GRP1` at ~cycle 47 and
-`ENABL` at ~cycle 63; all three are latched for the following line, well
+`GRP0` is written at ~cycle 26 of its scanline, `GRP1` at ~cycle 49 and
+`ENABL` at ~cycle 67; all three are latched for the following line, well
 before the 76-cycle limit.
 
 ## VBLANK and OVERSCAN budgets

@@ -12,7 +12,7 @@ Medidas deterministicamente a partir dos artefatos do build (sem tela):
 | Pior caso do kernel | maior custo de scanline do kernel, recalculado do listing |
 | Melhor caso do kernel | menor custo de scanline do kernel              |
 | Kernel slack      | `kernel_budget - kernel_worst`                     |
-| VBLANK/OVERSCAN   | valores ajustados do timer do RIOT (44 / 37)       |
+| VBLANK/OVERSCAN   | valores ajustados do timer do RIOT (43 / 37)       |
 
 ## Kernel slack
 
@@ -141,9 +141,9 @@ Rodada 2 atual (medida):
 ROM usada:          528 bytes   (o código da bola coube no padding de página)
 RAM usada:          7 bytes
 Scanlines do quadro: 262
-Pior caso do kernel: 71 / 76 ciclos
-Kernel slack:       5 ciclos
-Melhor caso do kernel: 57 ciclos
+Pior caso do kernel: 74 / 76 ciclos
+Kernel slack:       2 ciclos
+Melhor caso do kernel: 61 ciclos
 ```
 
 Esses números são medidos a partir dos artefatos a cada execução, não

@@ -116,7 +116,7 @@ artifacts):
 * frame region scanline sum equals `FRAME_SCANLINES` (262)
 * kernel worst-case path fits the 76-cycle budget, recomputed from the
   listing with a cycle walker
-* timer values (VBLANK 44, OVERSCAN 37) are the tuned constants
+* timer values (VBLANK 43, OVERSCAN 37) are the tuned constants
 
 The exact 262-scanline frame was additionally measured in the Stella debugger
 on a local graphical session (`print _cyclesLo` deltas of 19912 cycles =

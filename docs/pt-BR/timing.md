@@ -10,12 +10,12 @@ medido no depurador do Stella.
 | Região    | Scanlines | Como é produzida               |
 | --------- | --------- | ------------------------------ |
 | VSYNC     | 3         | três `STA WSYNC` explícitos    |
-| VBLANK    | 37        | contagem `TIM64T = 44`         |
+| VBLANK    | 37        | contagem `TIM64T = 43`         |
 | KERNEL    | 192       | loop explícito de `STA WSYNC`  |
 | OVERSCAN  | 30        | contagem `TIM64T = 37`         |
 | **Total** | **262**   |                                |
 
-### Por que os valores do timer são 44 e 37
+### Por que os valores do timer são 43 e 37
 
 O timer do RIOT conta a cada 64 ciclos. Definir `TIM64T = N` parece exigir
 `N * 64` ciclos, mas a implementação do M6532 no Stella (e no hardware real)
@@ -29,8 +29,10 @@ Por causa disso o timer expira em um ciclo anterior ao que um cálculo
 ingênuo de `valor * 64` sugeriria. Empiricamente (medido com
 `print _cyclesLo` no breakpoint `StartOfFrame` do depurador do Stella):
 
-* `VBLANK_TIMER_VALUE = 44` faz a espera do VBLANK expirar na última
-  scanline do VBLANK (linha 40 do quadro);
+* `VBLANK_TIMER_VALUE = 43` faz a espera do VBLANK expirar na linha 39; o
+  `STA WSYNC` seguinte sincroniza com a linha 40, onde `HMOVE` é escrito
+  imediatamente após o `WSYNC` (exigido para que os registradores de
+  movimento atuem durante o blanking horizontal da última linha do VBLANK);
 * `OVERSCAN_TIMER_VALUE = 37` faz a espera do OVERSCAN expirar na última
   linha do quadro.
 
@@ -79,41 +81,48 @@ Fim (por scanline): `INX` 2 + `CPX #192` 2 + `BNE` 3 + `STA WSYNC` 3
 = **10**.
 
 Bloco de habilitação da bola (toda scanline, porque `ENABL` é travado para
-a linha *seguinte* e, portanto, precisa ser reescrito a cada linha):
+a linha *seguinte* e, portanto, precisa ser reescrito a cada linha). O teste
+de linha calcula `linha - ball_y` e mantém a bola habilitada por
+`BALL_HEIGHT` linhas consecutivas:
 
-Na linha da bola (escreve o valor de habilitação):
+Numa linha da bola (`linha - ball_y < BALL_HEIGHT`, escreve o valor de
+habilitação):
 
 | Instrução          | Ciclos |
 | ------------------ | ------ |
 | `TXA`              | 2      |
-| `CMP ball_y`       | 3      |
-| `BNE .BallOff`     | 2 (não tomado) |
+| `SEC`              | 2      |
+| `SBC ball_y`       | 3      |
+| `CMP #BALL_HEIGHT` | 2      |
+| `LDA #0`           | 2      |
+| `BCS .BallDone`    | 2 (não tomado) |
 | `LDA #BALL_ENABLE` | 2      |
 | `STA ENABL`        | 3      |
-| `JMP .BallDone`    | 3      |
-| **Subtotal**       | **15** |
+| **Subtotal**       | **18** |
 
-Fora da linha da bola (mantém a bola apagada):
+Fora das linhas da bola (mantém a bola apagada):
 
 | Instrução          | Ciclos |
 | ------------------ | ------ |
 | `TXA`              | 2      |
-| `CMP ball_y`       | 3      |
-| `BNE .BallOff`     | 3 (tomado) |
+| `SEC`              | 2      |
+| `SBC ball_y`       | 3      |
+| `CMP #BALL_HEIGHT` | 2      |
 | `LDA #0`           | 2      |
+| `BCS .BallDone`    | 3 (tomado) |
 | `STA ENABL`        | 3      |
-| **Subtotal**       | **13** |
+| **Subtotal**       | **17** |
 
 | Caminho                          | Ciclos |
 | -------------------------------- | ------ |
-| Ambos sprites desenhados + bola  | 23+23+15+10 = **71** |
-| Ambos sprites desenhados + bola apagada | 23+23+13+10 = **69** |
-| Um desenhado, um vazio + bola    | 23+17+15+10 = **65** |
-| Um desenhado, um vazio + bola apagada | 23+17+13+10 = **63** |
-| Ambos sprites vazios + bola      | 17+17+15+10 = **59** |
-| Ambos sprites vazios + bola apagada | 17+17+13+10 = **57** |
+| Ambos sprites desenhados + bola  | 23+23+18+10 = **74** |
+| Ambos sprites desenhados + bola apagada | 23+23+17+10 = **73** |
+| Um desenhado, um vazio + bola    | 23+17+18+10 = **68** |
+| Um desenhado, um vazio + bola apagada | 23+17+17+10 = **67** |
+| Ambos sprites vazios + bola      | 17+17+18+10 = **62** |
+| Ambos sprites vazios + bola apagada | 17+17+17+10 = **61** |
 | Orçamento da scanline            | 76     |
-| Folga no pior caso               | **5 ciclos** |
+| Folga no pior caso               | **2 ciclos** |
 
 Todas as oito combinações de jogador x bola são enumeradas e verificadas
 pela suíte de testes. As tabelas de sprite estão dispostas de modo que todo
@@ -121,8 +130,8 @@ pela suíte de testes. As tabelas de sprite estão dispostas de modo que todo
 `LDA` indexado nunca paga a penalidade de +1 de passagem de página. Isso é
 verificado pela suíte de testes.
 
-`GRP0` é escrito por volta do ciclo 24 da sua scanline, `GRP1` por volta do
-ciclo 47 e `ENABL` por volta do ciclo 63; os três são travados (latched)
+`GRP0` é escrito por volta do ciclo 26 da sua scanline, `GRP1` por volta do
+ciclo 49 e `ENABL` por volta do ciclo 67; os três são travados (latched)
 para a linha seguinte, bem antes do limite de 76 ciclos.
 
 ## Orçamentos de VBLANK e OVERSCAN

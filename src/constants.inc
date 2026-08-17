@@ -90,7 +90,7 @@ VBLANK_SCANLINES     = 37
 KERNEL_SCANLINES     = 192
 OVERSCAN_SCANLINES   = 30
 
-VBLANK_TIMER_VALUE   = 44
+VBLANK_TIMER_VALUE   = 43
 OVERSCAN_TIMER_VALUE = 37
 
 ; ---------------------------------------------------------------------------
@@ -120,16 +120,21 @@ BACKGR_COLOR       = $00     ; black
 ; ---------------------------------------------------------------------------
 ; Ball constants
 ; ---------------------------------------------------------------------------
-; The ball is a TIA Ball object: 4 pixels wide (CTRLPF D5:D4 = %10), one
-; scanline tall. It moves at a constant 1 pixel per frame per axis and
-; bounces off the four arena edges. It does NOT interact with the players
-; this round (no collision, no collection, no power-up).
+; The ball is a TIA Ball object: BALL_WIDTH pixels wide (CTRLPF D5:D4 = %10)
+; and BALL_HEIGHT scanlines tall. It is kept approximately square (4 x 4)
+; because a 4-pixel-wide, 1-scanline-tall ball renders as a thin horizontal
+; dash and, being only 1 scanline tall, has no vertical overlap between
+; consecutive frames, which makes its 1 px/frame motion look stroboscopic.
+; It moves at a constant 1 pixel per frame per axis and bounces off the four
+; arena edges. It does NOT interact with the players this round (no
+; collision, no collection, no power-up).
 ;
 ; ball_x / ball_y are the ball's visual position:
 ;   - ball_x: leftmost visible pixel of the ball (0..159)
-;   - ball_y: kernel scanline index at which ENABL = 1 is written; because
-;     of the TIA graphics latch the ball is physically displayed on
-;     scanline ball_y + 1 (the same coordinate convention as the players).
+;   - ball_y: kernel scanline index at which the first ENABL = 1 write for
+;     this ball occurs; because of the TIA graphics latch the ball is
+;     physically displayed on scanlines ball_y + 1 .. ball_y + BALL_HEIGHT
+;     (the same coordinate convention as the players).
 ;
 ; Horizontal positioning note: the TIA delays player graphics by 1 CLK more
 ; than the ball/missile output, so for the same PosObject input the ball
@@ -139,14 +144,19 @@ BACKGR_COLOR       = $00     ; black
 ; visible width.
 ; ---------------------------------------------------------------------------
 BALL_WIDTH         = 4       ; ball size in pixels (CTRLPF D5:D4 = %10)
-BALL_SIZE_CTRLPF   = %00010000
+BALL_HEIGHT        = 4       ; ball size in scanlines (ENABL = 1 for 4 rows)
+BALL_SIZE_CTRLPF   = %00100000   ; CTRLPF D5=1, D4=0 -> 4 color clocks
 BALL_COLOR         = $0E     ; white (NTSC)
 BALL_ENABLE        = $02     ; ENABL bit 1 = ball output enabled
 
 BALL_X_MIN         = 0                     ; left edge of the visible area
 BALL_X_MAX         = 160 - BALL_WIDTH      ; keep the 4-px ball fully visible
 BALL_Y_MIN         = 0                     ; written on the first kernel line
-BALL_Y_MAX         = KERNEL_SCANLINES - 2  ; displayed on the last kernel line
+BALL_Y_MAX         = KERNEL_SCANLINES - BALL_HEIGHT - 1
+                                          ; last ENABL write on kernel line
+                                          ; 190 -> the final line (191) always
+                                          ; writes ENABL = 0, so the ball can
+                                          ; never bleed into overscan
 
 BALL_X_INIT        = 78      ; ~center of the 160-pixel arena
 BALL_Y_INIT        = 95      ; ~center of the 192-line kernel

@@ -139,8 +139,8 @@ class TestKernelCycleBudget(unittest.TestCase):
         """Collect (addr, bytes) for one kernel loop iteration.
 
         The iteration ends at the BACKWARD branch that loops back to
-        KernelLoop; earlier forward BNE instructions (the ball enable
-        block) are part of the iteration body.
+        KernelLoop; earlier forward branches (the player sprite BCS blocks
+        and the ball enable BCS block) are part of the iteration body.
         """
         start = cls.sym["KernelLoop"]
         insts = []
@@ -181,7 +181,12 @@ class TestKernelCycleBudget(unittest.TestCase):
         raise AssertionError(f"unexpected opcode ${op:02X} in kernel")
 
     def _simulate(self, p0_drawn, p1_drawn, ball_on):
-        """Execute one kernel iteration, returning total cycles."""
+        """Execute one kernel iteration, returning total cycles.
+
+        The kernel body has three forward BCS branches: one per player
+        sprite (branch_index 0 and 1) and one for the ball enable range
+        check (branch_index 2).
+        """
         pc = self.sym["KernelLoop"]
         total = 0
         branch_index = 0
@@ -192,32 +197,34 @@ class TestKernelCycleBudget(unittest.TestCase):
             self.assertIsNotNone(entry, f"pc ${pc:04X} not in kernel body")
             addr, bts = entry
             op = bts[0]
-            if op == 0xB0:  # BCS for a sprite block
-                drawn = (p0_drawn if branch_index == 0 else p1_drawn)
-                branch_index += 1
-                if drawn:
-                    total += self._cost(addr, bts, False)
-                    pc = addr + 2
+            if op == 0xB0:  # BCS: player sprite blocks, then the ball block
+                if branch_index == 2:  # ball enable range check
+                    if ball_on:  # not taken on the ball rows
+                        total += self._cost(addr, bts, False)
+                        pc = addr + 2
+                    else:  # taken away from the ball rows
+                        total += self._cost(addr, bts, True)
+                        pc = self._branch(0xB0, addr, bts[1:])
                 else:
-                    total += self._cost(addr, bts, True)
-                    pc = self._branch(0xB0, addr, bts[1:])
+                    drawn = (p0_drawn if branch_index == 0 else p1_drawn)
+                    if drawn:
+                        total += self._cost(addr, bts, False)
+                        pc = addr + 2
+                    else:
+                        total += self._cost(addr, bts, True)
+                        pc = self._branch(0xB0, addr, bts[1:])
+                branch_index += 1
                 continue
             if op == 0x4C:  # JMP abs -> follow the target
                 total += self._cost(addr, bts, False)
                 pc = bts[1] | (bts[2] << 8)
                 continue
-            if op == 0xD0:  # BNE: ball block or loop terminator
+            if op == 0xD0:  # BNE: only the loop terminator (always taken)
                 target = self._branch(op, addr, bts[1:])
                 if target < addr:  # backward BNE KernelLoop (always taken)
                     total += self._cost(addr, bts, True)
                     break
-                if ball_on:  # forward BNE .BallOff: not taken on the ball row
-                    total += self._cost(addr, bts, False)
-                    pc = addr + 2
-                else:  # taken away from the ball row
-                    total += self._cost(addr, bts, True)
-                    pc = target
-                continue
+                raise AssertionError("unexpected forward BNE in kernel")
             total += self._cost(addr, bts, False)
             pc = addr + len(bts)
         return total
@@ -229,23 +236,23 @@ class TestKernelCycleBudget(unittest.TestCase):
         cost = self._simulate(p0_drawn=True, p1_drawn=True, ball_on=True)
         self.assertLessEqual(cost, SCANLINE_BUDGET,
                              f"worst-case kernel path is {cost} > 76 cycles")
-        self.assertEqual(cost, 71)  # documented worst case
+        self.assertEqual(cost, 74)  # documented worst case
 
     def test_best_case_all_blank_within_budget(self):
         cost = self._simulate(p0_drawn=False, p1_drawn=False, ball_on=False)
         self.assertLessEqual(cost, SCANLINE_BUDGET)
-        self.assertEqual(cost, 57)  # documented best case
+        self.assertEqual(cost, 61)  # documented best case
 
     def test_all_kernel_paths_within_budget(self):
         expected = {
-            (True, True, True): 71,     # worst: both drawn + ball on
-            (True, True, False): 69,
-            (True, False, True): 65,
-            (True, False, False): 63,
-            (False, True, True): 65,
-            (False, True, False): 63,
-            (False, False, True): 59,
-            (False, False, False): 57,  # best: both blank + ball off
+            (True, True, True): 74,     # worst: both drawn + ball on
+            (True, True, False): 73,
+            (True, False, True): 68,
+            (True, False, False): 67,
+            (False, True, True): 68,
+            (False, True, False): 67,
+            (False, False, True): 62,
+            (False, False, False): 61,  # best: both blank + ball off
         }
         for combo, cost_expected in expected.items():
             with self.subTest(combo=combo):
