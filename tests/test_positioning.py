@@ -211,5 +211,53 @@ class TestBallCompensation(unittest.TestCase):
             self.assertLessEqual(left + width - 1, 159, f"ball_x={x}")
 
 
+class TestMissileCompensation(unittest.TestCase):
+    """Missiles are TIA Missile objects and, like the ball, render 1 pixel
+    left of a player for the same input, so PositionMissiles uses the same
+    compensation as PositionBall (input = x + 8, or x + 5 for the first
+    15-pixel region)."""
+
+    @classmethod
+    def setUpClass(cls):
+        require_build()
+        cls.model = PositioningModel(EXPECTED_TABLE)
+        cls.c = read_constants()
+
+    def test_missile_renders_at_requested_pixel(self):
+        # M0 flies x = 18..158, M1 x = 134..2; every value must land on itself.
+        for x in range(self.c["M0_X_INIT"], self.c["M0_X_MAX"] + 1):
+            self.assertEqual(self.model.ball_rendered(x), x, f"M0 x={x}")
+        for x in range(self.c["M1_X_MIN"], self.c["M1_X_INIT"] + 1):
+            self.assertEqual(self.model.ball_rendered(x), x, f"M1 x={x}")
+
+    def test_missile_moves_two_pixels_per_frame(self):
+        # MISSILE_SPEED = 2: consecutive fired positions step by exactly 2 px
+        # with no 15-pixel coarse jumps.
+        for x in range(self.c["M0_X_INIT"], self.c["M0_X_MAX"]):
+            self.assertEqual(self.model.ball_rendered(x + 1) -
+                             self.model.ball_rendered(x),
+                             1, f"transition {x} -> {x+1}")
+
+    def test_missile_stays_fully_visible(self):
+        width = self.c["MISSILE_WIDTH"]
+        self.assertEqual(width, 2)
+        for x in range(self.c["M0_X_INIT"], self.c["M0_X_MAX"] + 1):
+            left = self.model.ball_rendered(x)
+            self.assertGreaterEqual(left, 0, f"M0 x={x}")
+            self.assertLessEqual(left + width - 1, 159, f"M0 x={x}")
+        for x in range(self.c["M1_X_MIN"], self.c["M1_X_INIT"] + 1):
+            left = self.model.ball_rendered(x)
+            self.assertGreaterEqual(left, 0, f"M1 x={x}")
+            self.assertLessEqual(left + width - 1, 159, f"M1 x={x}")
+
+    def test_missile_bounds_sane(self):
+        # M0 starts near the left paddle and despawns at the right edge; M1
+        # mirrors it.  Both stay inside the visible 160-pixel arena.
+        self.assertEqual(self.c["M0_X_INIT"], 18)
+        self.assertEqual(self.c["M1_X_INIT"], 134)
+        self.assertLessEqual(self.c["M0_X_MAX"], 159)
+        self.assertGreaterEqual(self.c["M1_X_MIN"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

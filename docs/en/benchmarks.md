@@ -12,15 +12,16 @@ Measured deterministically from the assembled build artifacts (no display):
 | Kernel worst case | worst kernel scanline cost, recomputed from listing |
 | Kernel best case  | cheapest kernel scanline cost                       |
 | Kernel slack      | `kernel_budget - kernel_worst`                      |
-| VBLANK/OVERSCAN   | tuned RIOT timer values (43 / 37)                   |
+| VBLANK/OVERSCAN   | tuned RIOT timer values (69 / 11)                   |
 
 ## Kernel slack
 
-One NTSC scanline is 76 CPU cycles. The visible kernel is branchless and
-costs 62 cycles on every scanline, so:
+One NTSC scanline is 76 CPU cycles. The Round 3 kernel is event-driven: a
+non-event line costs 18 cycles and a two-write event line (the worst case)
+costs 69 cycles, so:
 
 ```text
-kernel slack = 76 - 62 = 14 cycles
+kernel slack = 76 - 69 = 7 cycles
 ```
 
 Slack is a **first-class metric**: it is recorded in `latest.md`, in
@@ -141,6 +142,14 @@ Frame scanlines:   262
 Kernel worst case: 62 / 76 cycles
 Kernel slack:      14 cycles
 Kernel best case:  62 cycles   (the kernel is branchless: best == worst)
+
+Round 3 current (event-driven kernel + missiles):
+ROM used:          1296 bytes  (event builder + missiles)
+RAM used:          121 bytes   (event table + records + order array)
+Frame scanlines:   262
+Kernel worst case: 69 / 76 cycles   (two-write event line)
+Kernel slack:      7 cycles
+Kernel best case:  18 cycles   (non-event line)
 ```
 
 These numbers are measured from the artifacts on every run, not hardcoded

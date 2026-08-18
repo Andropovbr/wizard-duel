@@ -21,8 +21,9 @@ def _resolve_constant(expr, consts):
     """Resolve a numeric EQU expression to an int, or None when unknown.
 
     Handles decimal, $hex and %binary literals, plain identifiers that are
-    already-resolved constants, and simple +/- arithmetic over them (the only
-    operators used in constants.inc, e.g. "160 - BALL_WIDTH").
+    already-resolved constants, and simple + - * arithmetic over them (the
+    operators used by constants.inc).  Unresolvable expressions return None
+    instead of recursing forever.
     """
     expr = expr.strip()
     if not expr:
@@ -35,22 +36,27 @@ def _resolve_constant(expr, consts):
         return int(expr, 10)
     if re.fullmatch(r"[A-Za-z_]\w*", expr):
         return consts.get(expr)
-    parts = re.split(r"(\+|-)", expr)
+    parts = re.split(r"(\+|\-|\*)", expr)
+    if len(parts) == 1:
+        return None  # contains an unknown operator -> not resolvable
     total = 0
-    sign = 1
+    op = "+"
     for part in parts:
         part = part.strip()
         if not part:
             continue
-        if part == "+":
-            sign = 1
-        elif part == "-":
-            sign = -1
-        else:
-            term = _resolve_constant(part, consts)
-            if term is None:
-                return None
-            total += sign * term
+        if part in ("+", "-", "*"):
+            op = part
+            continue
+        term = _resolve_constant(part, consts)
+        if term is None:
+            return None
+        if op == "+":
+            total += term
+        elif op == "-":
+            total -= term
+        else:  # "*"
+            total *= term
     return total
 
 
@@ -87,10 +93,16 @@ class TestFrameConstants(unittest.TestCase):
         self.assertEqual(self.c.get("KERNEL_SCANLINES"), 192)
 
     def test_vblank_and_overscan_blank_times(self):
-        # VBLANK 37 lines + OVERSCAN 30 lines + VSYNC 3 = 70 blank lines.
-        self.assertEqual(self.c.get("VBLANK_SCANLINES"), 37)
-        self.assertEqual(self.c.get("OVERSCAN_SCANLINES"), 30)
+        # VBLANK 57 lines + OVERSCAN 10 lines + VSYNC 3 = 70 blank lines.
+        # VBLANK grew and OVERSCAN shrank in Round 3 to give BuildEvents room.
+        self.assertEqual(self.c.get("VBLANK_SCANLINES"), 57)
+        self.assertEqual(self.c.get("OVERSCAN_SCANLINES"), 10)
         self.assertEqual(self.c.get("VSYNC_SCANLINES"), 3)
+
+    def test_vblank_plus_overscan_is_67(self):
+        # 262 - 3 (VSYNC) - 192 (kernel) = 67 lines for VBLANK + overscan.
+        self.assertEqual(self.c.get("VBLANK_SCANLINES", 0)
+                         + self.c.get("OVERSCAN_SCANLINES", 0), 67)
 
     def test_timer_values_single_byte(self):
         for name in ("VBLANK_TIMER_VALUE", "OVERSCAN_TIMER_VALUE"):
@@ -111,19 +123,33 @@ class TestFrameConstants(unittest.TestCase):
 
 
 class TestKernelCycleBudget(unittest.TestCase):
-    """Recompute the worst-case kernel scanline cost from the listing."""
+    """Recompute the worst-case kernel scanline cost from the listing.
+
+    The Round 3 kernel is event-driven: every scanline counts down scanCnt
+    (the 192-line countdown) and evCnt (the next table entry).  Two paths
+    exist inside the loop:
+
+      * non-event line: 18 cycles (WSYNC, DEC scanCnt, BEQ not taken,
+        DEC evCnt, BNE taken back to KernelLoop)
+      * event line (two writes): 69 cycles (the BNE is not taken and the
+        straight-line event code runs)
+
+    Both must stay inside the 76-cycle scanline budget.
+    """
 
     OPC_CYCLES = {
         0x85: 3,   # STA zp
-        0x8A: 2,   # TXA
-        0x38: 2,   # SEC
-        0xE5: 3,   # SBC zp
-        0xC9: 2,   # CMP #imm
-        0xA9: 2,   # LDA #imm
-        0xE9: 2,   # SBC #imm
-        0x29: 2,   # AND #imm
-        0xE8: 2,   # INX
-        0xE0: 2,   # CPX #imm
+        0xC6: 5,   # DEC zp
+        0xA4: 3,   # LDY zp
+        0xB9: 4,   # LDA abs,Y
+        0xAA: 2,   # TAX
+        0x95: 4,   # STA zp,X
+        0x98: 2,   # TYA
+        0x18: 2,   # CLC
+        0x69: 2,   # ADC #imm
+        0xA8: 2,   # TAY
+        0x84: 3,   # STY zp
+        0x4C: 3,   # JMP abs
     }
 
     @classmethod
@@ -134,107 +160,91 @@ class TestKernelCycleBudget(unittest.TestCase):
 
     @classmethod
     def _kernel_instructions(cls):
-        """Collect (addr, bytes) for one kernel loop iteration.
+        """Collect (addr, bytes) for every instruction of the kernel body.
 
-        The iteration ends at the BACKWARD BNE that loops back to
-        KernelLoop; the kernel body itself is branchless.
+        The body spans KernelLoop up to (and including) the JMP that closes
+        the event path; the overscan that follows (the BEQ target) is not
+        part of a normal scanline's work.
         """
         start = cls.sym["KernelLoop"]
+        end = cls.sym["OverscanWait"]
         insts = []
         for r in parse_listing():
-            if r["addr"] < start:
-                continue
-            insts.append((r["addr"], r["bytes"]))
-            if r["bytes"][0] == 0xD0:  # BNE
-                addr, bts = r["addr"], r["bytes"]
-                rel = bts[1]
-                if rel & 0x80:
-                    rel -= 0x100
-                if ((addr + 2 + rel) & 0xFFFF) < addr:  # backward = terminator
-                    break
+            if start <= r["addr"] < end:
+                insts.append((r["addr"], r["bytes"]))
         return insts
 
-    def _branch(self, opcode, addr, bts):
-        rel = bts[0]
+    def _at(self, pc):
+        for addr, bts in self.insts:
+            if addr == pc:
+                return (addr, bts)
+        raise AssertionError(f"pc ${pc:04X} not in kernel body")
+
+    def _target(self, addr, bts):
+        rel = bts[1]
         if rel & 0x80:
             rel -= 0x100
         return (addr + 2 + rel) & 0xFFFF
 
-    def _cost(self, addr, bts, taken_branch):
-        op = bts[0]  # first byte of the instruction bytes is the opcode
-        if op in self.OPC_CYCLES:
-            return self.OPC_CYCLES[op]
-        if op in (0xB0, 0xD0):  # BCS / BNE
-            rel = bts[1]
-            if rel & 0x80:
-                rel -= 0x100
-            target = (addr + 2 + rel) & 0xFFFF
-            if taken_branch:
-                cost = 3
-                if ((addr + 2) >> 8) != (target >> 8):
-                    cost += 1
-                return cost
-            return 2
-        raise AssertionError(f"unexpected opcode ${op:02X} in kernel")
-
-    def _simulate(self, p0_drawn=None, p1_drawn=None, ball_on=None):
-        """Execute one kernel iteration, returning total cycles.
-
-        The kernel is branchless: the only branch is the tail BNE that loops
-        back, so every scanline costs the same 62 cycles regardless of
-        player or ball state.  The arguments are accepted for compatibility
-        with the benchmark tool but no longer affect the result.
-        """
+    def _simulate(self, event_line):
+        """Cost of one full loop iteration for the given event outcome."""
         pc = self.sym["KernelLoop"]
         total = 0
-        max_steps = 64
-        while max_steps:
-            max_steps -= 1
-            entry = next((i for i in self.insts if i[0] == pc), None)
-            self.assertIsNotNone(entry, f"pc ${pc:04X} not in kernel body")
-            addr, bts = entry
+        steps = 0
+        while steps < 64:
+            steps += 1
+            addr, bts = self._at(pc)
             op = bts[0]
-            if op == 0xD0:  # BNE: only the loop terminator (always taken)
-                total += self._cost(addr, bts, True)
-                break
-            total += self._cost(addr, bts, False)
-            pc = addr + len(bts)
-        return total
+            if op == 0x4C:  # JMP KernelLoop: closes the event path
+                total += self.OPC_CYCLES[0x4C]
+                return total
+            if op in (0xF0, 0xD0):  # BEQ / BNE
+                target = self._target(addr, bts)
+                if op == 0xD0 and target < addr:
+                    # BNE KernelLoop: the loop terminator.  Taken = non-event
+                    # line (we are back at KernelLoop); not taken = event line
+                    # (fall into the event code).
+                    if not event_line:
+                        return total + 3
+                    total += 2
+                else:
+                    # BEQ .kernelEnd (or any other forward branch): on a
+                    # normal scanline it is not taken.
+                    total += 2
+                pc = addr + len(bts)
+            else:
+                total += self.OPC_CYCLES[op]
+                pc = addr + len(bts)
+        raise AssertionError("kernel walk did not terminate")
 
     def test_kernel_instruction_sequence_length(self):
         self.assertGreater(len(self.insts), 10)
 
     def test_worst_case_within_budget(self):
-        cost = self._simulate()
+        cost = self._simulate(event_line=True)   # two-write event line
         self.assertLessEqual(cost, SCANLINE_BUDGET,
-                             f"kernel path is {cost} > 76 cycles")
-        self.assertEqual(cost, 62)  # documented cost
+                             f"event path is {cost} > 76 cycles")
+        self.assertEqual(cost, 69)  # documented worst case
 
     def test_best_case_within_budget(self):
-        cost = self._simulate()
+        cost = self._simulate(event_line=False)   # non-event line
         self.assertLessEqual(cost, SCANLINE_BUDGET)
-        self.assertEqual(cost, 62)
+        self.assertEqual(cost, 18)  # documented best case
 
-    def test_kernel_is_branchless(self):
-        # The kernel body must contain no forward conditional branches; the
-        # only branch is the backward loop terminator.  This guarantees that
-        # every scanline costs the same 62 cycles regardless of game state.
-        # Exclude the loop-opening STA WSYNC and the backward BNE terminator;
-        # everything between must be straight-line code.
-        body = self.insts[1:-1]
-        for addr, bts in body:
-            self.assertNotIn(bts[0], (0xB0, 0xF0, 0x10, 0x30, 0xD0),
-                             f"conditional branch at ${addr:04X}")
+    def test_event_code_is_straight_line(self):
+        # Between the DEC evCnt and the closing JMP, the event code must be
+        # straight-line: the only branches in the whole kernel are the BEQ
+        # (line countdown done) and the BNE (event or not).
+        body = self.insts
+        branches = [(a, b) for a, b in body if b[0] in (0xF0, 0xD0)]
+        self.assertEqual(len(branches), 2,
+                         "kernel must contain exactly two conditional branches")
 
-    def test_all_kernel_paths_within_budget(self):
-        # The kernel is branchless, so all eight historical "path" combos
-        # cost the same 62 cycles; they are kept to pin the exact number.
-        for combo in [(p0, p1, b) for p0 in (True, False)
-                      for p1 in (True, False) for b in (True, False)]:
-            with self.subTest(combo=combo):
-                cost = self._simulate(*combo)
+    def test_event_and_non_event_paths_within_budget(self):
+        for event in (True, False):
+            with self.subTest(event=event):
+                cost = self._simulate(event_line=event)
                 self.assertLessEqual(cost, SCANLINE_BUDGET)
-                self.assertEqual(cost, 62)
 
 
 if __name__ == "__main__":

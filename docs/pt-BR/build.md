@@ -125,7 +125,7 @@ artefatos do build):
   (262)
 * o caminho de pior caso do kernel cabe no orçamento de 76 ciclos,
   recalculado do listing com um percorredor de ciclos
-* os valores do timer (VBLANK 43, OVERSCAN 37) são as constantes ajustadas
+* os valores do timer (VBLANK 69, OVERSCAN 11) são as constantes ajustadas
 
 O quadro de exatamente 262 scanlines foi, adicionalmente, medido no
 depurador do Stella em uma sessão gráfica local (deltas de `print _cyclesLo`

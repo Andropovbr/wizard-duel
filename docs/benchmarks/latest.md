@@ -4,11 +4,11 @@ Measured from the assembled build artifacts.
 
 | Metric | Value |
 | ------ | ----- |
-| ROM used | 528 / 4096 bytes |
-| RAM used | 7 / 128 bytes |
+| ROM used | 1296 / 4096 bytes |
+| RAM used | 121 / 128 bytes |
 | Frame scanlines | 262 |
-| Kernel worst case | 62 / 76 cycles |
-| Kernel best case | 62 cycles |
-| Kernel slack | 14 cycles |
-| VBLANK timer value | 43 |
-| OVERSCAN timer value | 37 |
+| Kernel worst case | 69 / 76 cycles |
+| Kernel best case | 18 cycles |
+| Kernel slack | 7 cycles |
+| VBLANK timer value | 69 |
+| OVERSCAN timer value | 11 |

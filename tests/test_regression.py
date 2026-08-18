@@ -23,17 +23,17 @@ from regression import (EXPECTED_SCANLINES, SCANLINE_BUDGET,
                         resolve_baseline, warning_for)
 
 BASE = {
-    "rom_used": 528,
-    "rom_available": 3568,
-    "ram_used": 3,
-    "ram_available": 125,
+    "rom_used": 1296,
+    "rom_available": 2800,
+    "ram_used": 121,
+    "ram_available": 7,
     "scanlines": 262,
-    "kernel_worst": 56,
-    "kernel_best": 44,
+    "kernel_worst": 69,
+    "kernel_best": 18,
     "kernel_budget": 76,
-    "kernel_slack": 20,
-    "vblank_timer": 44,
-    "overscan_timer": 37,
+    "kernel_slack": 7,
+    "vblank_timer": 69,
+    "overscan_timer": 11,
 }
 
 
@@ -47,15 +47,15 @@ class TestDeltas(unittest.TestCase):
 
     def test_absolute_delta_computed(self):
         cur = dict(BASE)
-        cur["rom_used"] = 612
+        cur["rom_used"] = 1380
         rows, _, _ = compare(BASE, cur)
         row = next(r for r in rows if r[0] == "ROM used")
         self.assertEqual(row[3], 84)
-        self.assertAlmostEqual(row[4], 84 / 528 * 100.0)
+        self.assertAlmostEqual(row[4], 84 / 1296 * 100.0)
 
     def test_negative_delta_for_slack_regression(self):
         cur = dict(BASE)
-        cur["kernel_slack"] = 12
+        cur["kernel_slack"] = -1
         rows, _, _ = compare(BASE, cur)
         row = next(r for r in rows if r[0] == "Kernel slack")
         self.assertEqual(row[3], -8)
@@ -80,7 +80,7 @@ class TestFormatting(unittest.TestCase):
 
     def test_render_report_status_warning(self):
         cur = dict(BASE)
-        cur["rom_used"] = 528 + 64
+        cur["rom_used"] = 1296 + 64
         rows, warnings, hard = compare(BASE, cur)
         text = render_report(rows, warnings, hard, "baseline.json", "HEAD")
         self.assertIn("Status: PASS with 1 warning", text)
@@ -88,11 +88,11 @@ class TestFormatting(unittest.TestCase):
 
     def test_render_markdown_report(self):
         cur = dict(BASE)
-        cur["rom_used"] = 612
+        cur["rom_used"] = 1380
         rows, warnings, hard = compare(BASE, cur)
         md = render_report_markdown(rows, warnings, hard, "base", "current")
         self.assertIn("## Performance comparison", md)
-        self.assertIn("| ROM used | 528 B | 612 B | +84 B (+15.9%) |", md)
+        self.assertIn("| ROM used | 1296 B | 1380 B | +84 B (+6.5%) |", md)
         self.assertIn("**Status: PASS with 1 warning**", md)
 
 
@@ -129,7 +129,7 @@ class TestWarningThresholds(unittest.TestCase):
 
     def test_compare_surfaces_warnings(self):
         cur = dict(BASE)
-        cur["rom_used"] = 528 + 64
+        cur["rom_used"] = 1296 + 64
         _, warnings, _ = compare(BASE, cur)
         self.assertEqual(len(warnings), 1)
 
@@ -167,7 +167,7 @@ class TestKernelSlackMetric(unittest.TestCase):
         m = measure()
         self.assertEqual(m["kernel_slack"],
                          m["kernel_budget"] - m["kernel_worst"])
-        self.assertEqual(m["kernel_slack"], 14)  # 76 - 62 (branchless kernel)
+        self.assertEqual(m["kernel_slack"], 7)  # 76 - 69 (event line worst)
 
     def test_latest_report_documents_slack(self):
         self.assertTrue(LATEST.exists())
@@ -202,7 +202,7 @@ class TestBaselineResolution(unittest.TestCase):
             path = Path(tmp) / "baseline.json"
             path.write_text(json.dumps(BASE))
             metrics, source = resolve_baseline(explicit=str(path))
-        self.assertEqual(metrics["rom_used"], 528)
+        self.assertEqual(metrics["rom_used"], 1296)
         self.assertIn("explicit baseline", source)
 
     def test_git_built_base_preferred(self):
@@ -236,7 +236,7 @@ class TestBaselineResolution(unittest.TestCase):
             metrics, source = resolve_baseline(
                 baseline_path=baseline_path,
                 base_ref_provider=lambda: None)
-        self.assertEqual(metrics["ram_used"], 3)
+        self.assertEqual(metrics["ram_used"], 121)
         self.assertIn("persisted baseline", source)
 
     def test_no_baseline_available(self):
