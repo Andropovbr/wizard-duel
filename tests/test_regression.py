@@ -25,7 +25,7 @@ from regression import (EXPECTED_SCANLINES, SCANLINE_BUDGET,
 BASE = {
     "rom_used": 1296,
     "rom_available": 2800,
-    "ram_used": 121,
+    "ram_used": 122,
     "ram_available": 7,
     "scanlines": 262,
     "kernel_worst": 69,
@@ -236,7 +236,7 @@ class TestBaselineResolution(unittest.TestCase):
             metrics, source = resolve_baseline(
                 baseline_path=baseline_path,
                 base_ref_provider=lambda: None)
-        self.assertEqual(metrics["ram_used"], 121)
+        self.assertEqual(metrics["ram_used"], 122)
         self.assertIn("persisted baseline", source)
 
     def test_no_baseline_available(self):

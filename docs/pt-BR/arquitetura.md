@@ -126,10 +126,24 @@ bordas da arena para que a posição nunca ultrapasse os limites.
 
 Cada jogador pode disparar um míssil com o botão de fogo. Os botões são lidos
 pelos latches INPT do TIA: o bit 7 de `INPT4` (P0) e `INPT5` (P1) é 0 enquanto
-pressionado. `UpdateMissiles` amostra os dois botões a cada quadro e dispara
-um míssil na borda de subida (botão solto, depois pressionado); segurar o
-botão não produz uma rajada de mísseis (`fire_prev` guarda o estado do quadro
-anterior).
+pressionado. `UpdateMissiles` amostra os dois botões de forma independente a
+cada quadro e dispara na **borda de subida** do botão (solto -> pressionado),
+apenas enquanto o míssil daquele jogador estiver inativo:
+
+* segurar o botão não produz uma rajada de mísseis (`fire_prev` guarda o
+  estado do quadro anterior);
+* uma borda de subida com o míssil ainda voando não cria um segundo míssil
+  nem reinicia o existente;
+* soltar o botão apenas rearmer a entrada, então a próxima transição solto ->
+  pressionado dispara novamente.
+
+**Sincronização de boot**: em hardware real (e no Stella) os latches INPT do
+TIA leem as linhas de fogo como pressionadas nos primeiros quadros após o
+RESET. A primeira chamada de `UpdateMissiles` após ligar, portanto, apenas
+adota o estado real dos botões em `fire_prev` (flag `fire_sync`), nunca
+dispara. Isso garante que iniciar com FIRE solto não produza tiro, e iniciar
+com FIRE segurado não produza tiro automático - o jogador precisa soltar e
+pressionar novamente.
 
 Um míssil tem `MISSILE_HEIGHT = 4` scanlines de altura e `MISSILE_WIDTH = 2`
 pixels de largura (bits de tamanho de míssil do NUSIZ0/NUSIZ1). Ele nasce
@@ -216,7 +230,7 @@ disparar dentro do kernel de 192 linhas.
 
 ## Alocação de variáveis
 
-121 de 128 bytes de RAM do RIOT são usados:
+122 de 128 bytes de RAM do RIOT são usados:
 
 | Endereço | Nome      | Propósito                            |
 | ------- | --------- | ------------------------------------ |

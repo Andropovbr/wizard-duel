@@ -47,8 +47,8 @@ class TestRamLimit(unittest.TestCase):
     def test_round3_ram_usage(self):
         # Round 3 RAM: players/ball/joystate (7) + missiles (6) + fire/event
         # kernel state (4) + event table (55) + event records (30) + count (1)
-        # + order array (10) + builder temps (8) = 121 bytes.
-        self.assertEqual(self.used, 121)
+        # + order array (10) + builder temps (8) + fire_sync (1) = 122 bytes.
+        self.assertEqual(self.used, 122)
 
 
 if __name__ == "__main__":

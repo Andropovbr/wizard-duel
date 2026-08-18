@@ -125,10 +125,24 @@ arena boundaries so the position never wraps.
 
 Each player can fire one missile with the fire button. Fire buttons are read
 through the TIA INPT latches: bit 7 of `INPT4` (P0) and `INPT5` (P1) is 0
-while pressed. `UpdateMissiles` samples both buttons each frame and spawns a
-missile on the rising edge (button released, then pressed); holding the
-button does not produce a stream of missiles (`fire_prev` remembers the
-previous frame's state).
+while pressed. `UpdateMissiles` samples both buttons independently each frame
+and fires on the **rising edge** of the button (released -> pressed), and only
+while that player's missile is inactive:
+
+* holding the button does not produce a stream of missiles (`fire_prev`
+  remembers the previous frame's state);
+* a rising edge while a missile is still flying neither spawns a second one
+  nor resets the existing one;
+* releasing the button only rearms the input, so the next released -> pressed
+  transition fires again.
+
+**Boot synchronisation**: on real hardware (and in Stella) the TIA INPT
+latches read the fire lines as pressed for the first frames after RESET. The
+first `UpdateMissiles` call after power-on therefore only adopts the real
+button state into `fire_prev` (the `fire_sync` flag), it never fires. This
+guarantees that booting with FIRE released produces no shot, and booting with
+FIRE held produces no automatic shot either - the player must release and
+press again.
 
 A missile is `MISSILE_HEIGHT = 4` scanlines tall and `MISSILE_WIDTH = 2`
 pixels wide (set through the NUSIZ0/NUSIZ1 missile size bits). It spawns
@@ -212,7 +226,7 @@ inside the 192-line kernel.
 
 ## Variable allocation
 
-121 of 128 bytes of RIOT RAM are used:
+122 of 128 bytes of RIOT RAM are used:
 
 | Address | Name      | Purpose                              |
 | ------- | --------- | ------------------------------------ |

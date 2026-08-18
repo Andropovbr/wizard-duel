@@ -67,7 +67,8 @@ os números. A Rodada 3 usa 1296 dos 4096 bytes.
 | `$E6`    | `evCount`  | 1    | número de registros deste quadro      |
 | `$E7-$F0`| `evOrder`  | 10   | offsets dos registros, ordenados      |
 | `$F1-$F8`| temporários| 8    | armazenamento de trabalho             |
-| `$F9-$FF`| -          | 7    | não alocado                          |
+| `$F9`    | `fire_sync`| 1   | sincronização de boot do input de fogo|
+| `$FA-$FF`| -          | 6    | não alocado                          |
 
 121 dos 128 bytes são usados na Rodada 3. As variáveis ficam na zero page
 para que todos os acessos usem os modos de endereçamento curtos e rápidos de

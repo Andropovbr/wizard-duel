@@ -98,8 +98,10 @@ Reset:
     LDA #DIR_DOWN
     STA ball_dy
 
-    ; fire_prev is cleared by the RAM zeroing above, so the first button
-    ; press after power-on is always treated as a fresh edge.
+    ; fire_prev and fire_sync are cleared by the RAM zeroing above. The first
+    ; UpdateMissiles call after power-on synchronizes fire_prev with the real
+    ; button state instead of treating the boot-time INPT latch reading
+    ; (which reads the fire lines as pressed) as a fresh rising edge.
 
 ; =============================================================================
 ; StartOfFrame - one complete frame
@@ -375,17 +377,26 @@ UpdateBall:
 ; UpdateMissiles
 ;
 ; Reads the two joystick fire buttons (INPT4 = P0, INPT5 = P1, bit 7 is 0
-; while pressed) and spawns a missile on the falling edge of the button
-; (button released, then pressed). A spawned missile keeps its spawn row
-; (player row + MISSILE_SPAWN_OFFSET), moves horizontally at MISSILE_SPEED
-; pixels per frame and despawns when it leaves the arena.
+; while pressed) and spawns a missile on the rising edge of the button
+; (released -> pressed), and only while that player's missile is inactive.
+; Holding the button does not produce a stream of missiles, and a rising edge
+; while a missile is still flying neither spawns a second one nor resets the
+; existing one.
 ;
 ;   M0 (left player): x = M0_X_INIT (18), moves right, despawns at x > 158
 ;   M1 (right player): x = M1_X_INIT (134), moves left, despawns at x < 2
 ;
 ; fire_prev stores the previous frame's button state (bit 0 = P0, bit 1 =
-; P1, 1 = pressed) so a fire is detected on the rising edge only; holding
-; the button does not produce a stream of missiles.
+; P1, 1 = pressed) so a fire is detected on the rising edge only.
+;
+; Boot synchronisation: on real hardware (and in Stella) the TIA INPT latches
+; read the fire lines as pressed for the first frames after RESET.  If the
+; first UpdateMissiles treated that as a rising edge, every player would fire
+; a missile at boot without touching the button.  fire_sync is cleared by
+; Reset; on the first call UpdateMissiles only adopts the real button state
+; into fire_prev (no spawn), so a genuine released->pressed transition is
+; required to fire, and a button held at boot does not fire until it is
+; released and pressed again.
 ; =============================================================================
 UpdateMissiles:
     ; ---- sample both fire buttons into tempA (1 = pressed) ----
@@ -406,13 +417,24 @@ UpdateMissiles:
     STA tempA               ; 3
 .p1NotPressed:
 
-    ; ---- M0: spawn on rising edge of the P0 fire button ----
+    ; ---- first frame after reset: adopt the real button state ----
+    LDA fire_sync           ; 3
+    BNE .edgeDetect         ; 2/3  already synchronised
+    LDA tempA               ; 3
+    STA fire_prev           ; 3   no spawn, just remember the real state
+    INC fire_sync           ; 5
+    JMP .movement           ; 3
+
+.edgeDetect:
+    ; ---- M0: spawn on rising edge while inactive ----
     LDA tempA               ; 3
     AND #FIRE_P0            ; 2
     BEQ .m0NoSpawn          ; 2/3  not pressed this frame
     LDA fire_prev           ; 3
     AND #FIRE_P0            ; 2
     BNE .m0NoSpawn          ; 2/3  was already pressed -> no new edge
+    LDA m0_active           ; 3
+    BNE .m0NoSpawn          ; 2/3  still flying -> don't respawn
     LDA #1                  ; 2
     STA m0_active           ; 3
     LDA #M0_X_INIT          ; 2
@@ -423,13 +445,15 @@ UpdateMissiles:
     STA m0_y                ; 3
 .m0NoSpawn:
 
-    ; ---- M1: spawn on rising edge of the P1 fire button ----
+    ; ---- M1: spawn on rising edge while inactive ----
     LDA tempA               ; 3
     AND #FIRE_P1            ; 2
     BEQ .m1NoSpawn          ; 2/3
     LDA fire_prev           ; 3
     AND #FIRE_P1            ; 2
     BNE .m1NoSpawn          ; 2/3
+    LDA m1_active           ; 3
+    BNE .m1NoSpawn          ; 2/3  still flying -> don't respawn
     LDA #1                  ; 2
     STA m1_active           ; 3
     LDA #M1_X_INIT          ; 2
@@ -444,6 +468,7 @@ UpdateMissiles:
     LDA tempA               ; 3
     STA fire_prev           ; 3
 
+.movement:
     ; ---- M0: move right, despawn past the right edge ----
     LDA m0_active           ; 3
     BEQ .m0MoveDone         ; 2/3
@@ -1018,6 +1043,7 @@ tempA       DS 1            ; UpdateMissiles fire state / AddEvent value / Bubbl
 evTblPtr    DS 1            ; EmitEvents: evTbl byte offset
 nextOff     DS 1            ; EmitEvents: second record's byte offset during a merge
 bubbleIdx   DS 1            ; EmitEvents/BubbleOrder: order index being bubbled
+fire_sync   DS 1            ; UpdateMissiles: 0 until the first frame's state sync
 
 ; =============================================================================
 ; 6502 vectors

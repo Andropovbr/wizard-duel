@@ -145,7 +145,7 @@ Kernel best case:  62 cycles   (the kernel is branchless: best == worst)
 
 Round 3 current (event-driven kernel + missiles):
 ROM used:          1296 bytes  (event builder + missiles)
-RAM used:          121 bytes   (event table + records + order array)
+RAM used:          122 bytes   (event table + records + order array)
 Frame scanlines:   262
 Kernel worst case: 69 / 76 cycles   (two-write event line)
 Kernel slack:      7 cycles

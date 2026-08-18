@@ -67,7 +67,8 @@ uses 1296 of the 4096 bytes.
 | `$E6`     | `evCount`  | 1    | number of event records this frame   |
 | `$E7-$F0` | `evOrder`  | 10   | record byte offsets, sorted by row   |
 | `$F1-$F8` | temps      | 8    | builder/kernel working storage       |
-| `$F9-$FF` | -          | 7    | unallocated                          |
+| `$F9`     | `fire_sync`| 1    | fire-input boot synchronisation      |
+| `$FA-$FF` | -          | 6    | unallocated                          |
 
 121 of the 128 bytes are used in Round 3. Variables live in zero page so all
 accesses use the short, fast zero-page addressing modes. The event table (55

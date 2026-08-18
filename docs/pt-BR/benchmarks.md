@@ -147,7 +147,7 @@ Melhor caso do kernel: 62 ciclos   (kernel sem ramificações: melhor == pior)
 
 Rodada 3 atual (kernel orientado a eventos + mísseis):
 ROM usada:          1296 bytes  (builder de eventos + mísseis)
-RAM usada:          121 bytes   (tabela de eventos + registros + array de ordem)
+RAM usada:          122 bytes   (tabela de eventos + registros + array de ordem)
 Scanlines do quadro: 262
 Pior caso do kernel: 69 / 76 ciclos   (linha de evento de duas escritas)
 Kernel slack:       7 ciclos
