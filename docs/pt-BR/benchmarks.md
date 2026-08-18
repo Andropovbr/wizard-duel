@@ -12,15 +12,17 @@ Medidas deterministicamente a partir dos artefatos do build (sem tela):
 | Pior caso do kernel | maior custo de scanline do kernel, recalculado do listing |
 | Melhor caso do kernel | menor custo de scanline do kernel              |
 | Kernel slack      | `kernel_budget - kernel_worst`                     |
-| VBLANK/OVERSCAN   | valores ajustados do timer do RIOT (43 / 37)       |
+| VBLANK/OVERSCAN   | valores ajustados do timer do RIOT (69 / 11)       |
 
 ## Kernel slack
 
-Uma scanline NTSC tem 76 ciclos de CPU. O kernel visível é sem ramificações
-e custa 62 ciclos em toda scanline, portanto:
+Uma scanline NTSC tem 76 ciclos de CPU. O kernel da Rodada 3.1 é orientado a
+eventos: uma linha sem evento custa 18 ciclos, uma linha de evento de escrita
+única custa 54 ciclos e uma linha de evento de duas escritas (o pior caso)
+custa 65 ciclos, portanto:
 
 ```text
-kernel slack = 76 - 62 = 14 ciclos
+kernel slack = 76 - 65 = 11 ciclos
 ```
 
 O slack é uma **métrica de primeira classe**: é registrado em `latest.md`,
@@ -77,13 +79,19 @@ não reprova o CI. Os limites estão centralizados como constantes em
 | Métrica           | Limite de aviso                              |
 | ----------------- | -------------------------------------------- |
 | Crescimento de ROM | > 32 bytes OU > 5,0%                        |
-| Crescimento de RAM | > 4 bytes                                    |
+| Crescimento de RAM | > 4 bytes OU > 10,0%                        |
+| Pressão de RAM    | RAM usada >= 75% do orçamento de 64 bytes    |
+| Pressão forte de RAM | RAM usada >= 90% do orçamento de 64 bytes |
 | Pior caso do kernel | aumento > 4 ciclos                         |
 | Kernel slack      | redução > 4 ciclos                            |
 
-Esses valores são intencionalmente conservadores; servem para tornar
-regressões significativas visíveis, não para falhar a cada byte. Atualize-os
-somente com uma razão técnica documentada.
+Os limites de RAM sustentam o objetivo da Rodada 3.1 de manter o jogo abaixo
+de 64 dos 128 bytes do RIOT: cruzar 75% desse orçamento avisa, cruzar 90%
+avisa com força, e usar mais de 64 bytes reprova o CI (um portão hard). O
+crescimento de RAM também é comparado com o baseline por bytes absolutos e
+percentual. Esses valores são intencionalmente conservadores; servem para
+tornar regressões significativas visíveis, não para falhar a cada byte.
+Atualize-os somente com uma razão técnica documentada.
 
 ## Lendo o relatório do CI
 
@@ -143,6 +151,22 @@ Scanlines do quadro: 262
 Pior caso do kernel: 62 / 76 ciclos
 Kernel slack:       14 ciclos
 Melhor caso do kernel: 62 ciclos   (kernel sem ramificações: melhor == pior)
+
+Rodada 3 atual (kernel orientado a eventos + mísseis):
+ROM usada:          1296 bytes  (builder de eventos + mísseis)
+RAM usada:          122 bytes   (tabela de eventos + registros + array de ordem)
+Scanlines do quadro: 262
+Pior caso do kernel: 69 / 76 ciclos   (linha de evento de duas escritas)
+Kernel slack:       7 ciclos
+Melhor caso do kernel: 18 ciclos   (linha sem evento)
+
+Rodada 3.1 atual (entradas de evento de tamanho variável + redução de RAM):
+ROM usada:          1296 bytes  (igual; builder substituído, não maior)
+RAM usada:          48 bytes    (122 -> 48, sem buffers de registros/ordem)
+Scanlines do quadro: 262
+Pior caso do kernel: 65 / 76 ciclos   (linha de evento de duas escritas)
+Kernel slack:       11 ciclos   (7 -> 11)
+Melhor caso do kernel: 18 ciclos   (linha sem evento)
 ```
 
 Esses números são medidos a partir dos artefatos a cada execução, não

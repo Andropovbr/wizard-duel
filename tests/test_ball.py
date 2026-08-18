@@ -3,8 +3,7 @@
 Executes the assembled UpdateBall routine from the ROM with a small 6502
 interpreter and verifies movement and boundary bounces deterministically,
 without needing an emulator or a display.  Also validates the ball constants,
-the RAM budget and that ENABL is written on every kernel scanline so the ball
-never sticks.
+the RAM budget and the event-driven kernel that renders the ball.
 """
 
 import sys
@@ -17,23 +16,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 from common import (ROM_ORIGIN, ROM_PATH, parse_listing, parse_symbols,
                     ram_usage, require_build)
 from test_timing import read_constants
-
-
-def _loop_body_bytes(rom, sym):
-    """ROM bytes of one kernel loop iteration (KernelLoop..tail BNE)."""
-    start = sym["KernelLoop"]
-    for row in parse_listing():
-        if row["addr"] < start:
-            continue
-        bts = row["bytes"]
-        if bts[0] == 0xD0:  # BNE
-            rel = bts[1]
-            if rel & 0x80:
-                rel -= 0x100
-            if ((row["addr"] + 2 + rel) & 0xFFFF) < row["addr"]:
-                end = row["addr"] + len(bts)
-                return rom[start - ROM_ORIGIN:end - ROM_ORIGIN]
-    raise AssertionError("no backward BNE found after KernelLoop")
 
 
 class Mini6502:
@@ -245,27 +227,28 @@ class TestBallConstants(unittest.TestCase):
         self.assertEqual(self.c.get("BALL_X_MIN"), 0)
         self.assertEqual(self.c.get("BALL_X_MAX"), 160 - 4)
         self.assertEqual(self.c.get("BALL_Y_MIN"), 0)
-        # ball_y is the first drawn (ENABL = 1) scanline; the ball is then
-        # displayed on ball_y + 1 .. ball_y + BALL_HEIGHT (convention A).
-        # BALL_Y_MAX keeps the bottom row on the last visible kernel line
-        # (191); ENABL is cleared explicitly during overscan init.
-        self.assertEqual(self.c.get("BALL_Y_MAX"), 192 - height - 1)
+        # ball_y is the FIRST display row; the ball occupies rows
+        # ball_y .. ball_y + BALL_HEIGHT - 1.  BALL_Y_MAX keeps the last row
+        # on the last visible kernel line (191); the ball OFF event at row
+        # 192 is dropped by the event builder and ENABL is cleared during
+        # overscan init.
+        self.assertEqual(self.c.get("BALL_Y_MAX"), 192 - height)
 
     def test_ball_display_rows_stay_inside_visible_area(self):
         # For every allowed ball_y the ball is displayed on scanlines
-        # ball_y + 1 .. ball_y + BALL_HEIGHT, all within 1..191.
+        # ball_y .. ball_y + BALL_HEIGHT - 1, all within 0..191.
         height = self.c.get("BALL_HEIGHT")
         y_min = self.c.get("BALL_Y_MIN")
         y_max = self.c.get("BALL_Y_MAX")
-        self.assertGreaterEqual(y_min + 1, 1)
-        self.assertLessEqual(y_max + height, 192 - 1)
+        self.assertGreaterEqual(y_min, 0)
+        self.assertLessEqual(y_max + height - 1, 192 - 1)
 
     def test_ball_color_enable_and_size_register(self):
         self.assertEqual(self.c.get("BALL_COLOR"), 0x0E)
-        # The kernel computes the enable value branchlessly as
-        # LDA #0 / SBC #0 -> $FF on a ball row, $00 otherwise; only bit 0
-        # matters to the TIA.
-        self.assertEqual(self.c.get("BALL_ENABLE"), 0xFF)
+        # The TIA only samples bit 1 of the ball enable register, so the
+        # event table writes %00000010 on a ball row (verified against the
+        # Stella source: myEnam = value & 0x02).
+        self.assertEqual(self.c.get("BALL_ENABLE"), 0x02)
 
     def test_ball_initial_position_within_bounds(self):
         x = self.c.get("BALL_X_INIT")
@@ -288,12 +271,15 @@ class TestBallRamBudget(unittest.TestCase):
         require_build()
         cls.used, _ = ram_usage()
 
-    def test_ram_usage_is_seven_bytes(self):
-        # P0Y + P1Y + joystate + ball_x/ball_y/ball_dx/ball_dy.
-        self.assertEqual(self.used, 7)
+    def test_ram_usage(self):
+        # Round 3.1: P0Y..ball_dy (5) + missiles (5) + m_active/fire_prev (2)
+        # + evCnt/scanCnt (2) + evTbl (31) + builder temps (3) = 48 bytes.
+        self.assertEqual(self.used, 48)
 
 
-class TestKernelBallEnable(unittest.TestCase):
+class TestEventKernel(unittest.TestCase):
+    """Round 3 kernel: event-driven, ball rendered through the event table."""
+
     @classmethod
     def setUpClass(cls):
         require_build()
@@ -302,70 +288,58 @@ class TestKernelBallEnable(unittest.TestCase):
         start = cls.sym["KernelLoop"]
         end = cls.sym["OverscanWait"]
         cls.kernel_bytes = cls.rom[start - ROM_ORIGIN:end - ROM_ORIGIN]
-        cls.loop_bytes = _loop_body_bytes(cls.rom, cls.sym)
         cls.c = read_constants()
 
-    def test_enabl_written_every_scanline_via_shared_store(self):
-        # The kernel stores ENABL once per scanline from the value the tail
-        # precomputed for the current line, so the register never holds a
-        # stale value from a previous line. Exactly one STA ENABL in the
-        # loop body guarantees the write on every scanline.
-        self.assertEqual(self.loop_bytes.count(bytes([0x85, 0x1F])), 1,
-                         "kernel must write ENABL exactly once per scanline")
+    def test_kernel_counts_down_scanlines_in_ram(self):
+        # The kernel counts its 192 lines with a RAM countdown (DEC zp) so the
+        # event code can freely use X (TAX) as the TIA register index.  An X
+        # line counter would be clobbered on every event line.
+        scan = self.sym["scanCnt"] & 0xFF
+        self.assertIn(bytes([0xC6, scan]), self.kernel_bytes,
+                      "kernel must DEC the scanline countdown (scanCnt)")
 
-    def test_graphic_write_order(self):
-        # Relative TIA write timing. ENABL must be written during horizontal
-        # blanking, immediately after STA WSYNC and before any visible pixel,
-        # because the enable bit is sampled at the ball's horizontal position
-        # (not latched for the next line). GRP0/GRP1 then follow, each before
-        # the beam reaches the player's fixed position.
-        e = self.loop_bytes.find(bytes([0x85, 0x1F]))   # STA ENABL
-        g0 = self.loop_bytes.find(bytes([0x85, 0x1B]))  # STA GRP0
-        g1 = self.loop_bytes.find(bytes([0x85, 0x1C]))  # STA GRP1
-        self.assertEqual(e, 2, "ENABL write must immediately follow STA WSYNC")
-        self.assertGreater(g0, e, "GRP0 must follow the ENABL write")
-        self.assertGreater(g1, g0, "GRP1 must follow the GRP0 write")
+    def test_kernel_counts_down_event_delta(self):
+        # evCnt holds the scanlines until the next event fires.
+        evc = self.sym["evCnt"] & 0xFF
+        self.assertIn(bytes([0xC6, evc]), self.kernel_bytes,
+                      "kernel must DEC evCnt")
 
-    def test_ball_vertical_rendering_independent_of_ball_x(self):
-        # Regression test for the Round 2 vertical displacement bug: the
-        # enable precompute must use only the scanline index X and ball_y,
-        # never ball_x, so the ball's vertical span is identical at every
-        # horizontal position.
+    def test_kernel_writes_registers_via_register_index(self):
+        # The kernel writes GRP0..ENABL with STA EV_WRITE_BASE,X where X is
+        # the register index from the event table (95 1A = STA $1A,X).
+        base = self.c["EV_WRITE_BASE"]
+        self.assertEqual(base, 0x1A)
+        self.assertIn(bytes([0x95, 0x1A]), self.kernel_bytes,
+                      "kernel must write GRP0..ENABL via STA $1A,X")
+
+    def test_kernel_does_not_reference_ball_x(self):
+        # Regression: the ball's vertical span must be independent of ball_x.
+        # In the event kernel the ball is drawn by events at ball_y, so the
+        # kernel body must not reference ball_x at all.
         ball_x_zp = self.sym["ball_x"] & 0xFF
-        self.assertNotIn(ball_x_zp, self.loop_bytes,
+        self.assertNotIn(ball_x_zp, self.kernel_bytes,
                          "kernel must not reference ball_x")
 
-    def test_ball_range_check_present(self):
-        # The tail must compare the scanline index against ball_y with
-        # SBC zp followed by CMP #BALL_HEIGHT (row = X - ball_y; enable while
-        # row < BALL_HEIGHT).
-        height = self.c["BALL_HEIGHT"]
-        ball_zp = self.sym["ball_y"] & 0xFF
-        self.assertIn(bytes([0xE5, ball_zp, 0xC9, height]),
-                      self.kernel_bytes,
-                      "kernel must range-check X against ball_y..+height")
-
-    def test_ball_enabled_for_exactly_height_scanlines(self):
-        # Model the tail range check: enable(X) = 1 exactly when
-        # ball_y <= X < ball_y + BALL_HEIGHT.
-        height = self.c["BALL_HEIGHT"]
-        for ball_y in (0, 1, 95, self.c["BALL_Y_MAX"]):
-            on_rows = [x for x in range(192) if ball_y <= x < ball_y + height]
-            self.assertEqual(len(on_rows), height, f"ball_y={ball_y}")
-            self.assertEqual(on_rows[0], ball_y)
+    def test_ball_events_are_height_apart(self):
+        # The builder emits the ball ON event at ball_y and OFF at ball_y +
+        # BALL_HEIGHT, so the ball is visible for exactly BALL_HEIGHT rows.
+        self.assertEqual(self.c["BALL_HEIGHT"], 4)
 
     def test_no_ball_bleed_into_overscan(self):
-        # The ball is displayed on ball_y+1 .. ball_y+BALL_HEIGHT; BALL_Y_MAX
-        # keeps the bottom row on the last visible kernel line (191). ENABL
-        # is then cleared explicitly during overscan init (LDA #0 immediately
-        # before STA ENABL), so it can never hold 1 into overscan even when
-        # the ball rests at the bottom of the arena.
+        # BALL_Y_MAX = 192 - BALL_HEIGHT keeps the ball's last row on the last
+        # kernel line (191); the ball OFF event at row 192 is dropped and the
+        # overscan init clears ENABL, so the ball can never bleed into
+        # overscan.
         height = self.c["BALL_HEIGHT"]
         y_max = self.c["BALL_Y_MAX"]
-        self.assertLessEqual(y_max + height - 1, 191)
-        overscan = self.kernel_bytes[len(self.loop_bytes):]
-        self.assertIn(bytes([0xA9, 0x00, 0x85, 0x1F]), overscan,
-                      "overscan init must clear ENABL")
+        self.assertEqual(y_max, 192 - height)
+        self.assertEqual(y_max + height - 1, 191)
+        # Overscan init clears GRP0..ENABL (LDA #0 + five consecutive STAs),
+        # so ENABL can never hold 1 into overscan.
+        clear_all = bytes([0xA9, 0x00, 0x85, 0x1B, 0x85, 0x1C,
+                           0x85, 0x1D, 0x85, 0x1E, 0x85, 0x1F])
+        self.assertIn(clear_all, self.kernel_bytes,
+                      "overscan init must clear GRP0..ENABL")
 
     def test_kernel_region_does_not_exceed_page(self):
         # The kernel body must stay within a single 256-byte page so every

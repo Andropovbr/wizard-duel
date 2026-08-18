@@ -2,22 +2,42 @@
 ; Wizard Duel - Atari 2600
 ; main.asm
 ;
-; Round 2 - paddles and a bouncing ball.
+; Round 3.1 - RAM optimization: the event kernel and builder were redesigned
+; to cut RIOT RAM from 122 to 48 bytes (see the VARS segment and
+; docs/en/memory-map.md).
 ;
 ;   * stable NTSC frame, 262 scanlines
 ;   * two TIA players visible simultaneously (P0 left, P1 right)
 ;   * players rendered as simple vertical paddles (Pong-style rectangles)
 ;   * vertical-only movement, driven by joystick 1 and joystick 2
 ;   * a TIA Ball object moving continuously and bouncing off the arena edges
-;   * the ball does NOT interact with the players yet (no collision,
-;     collection, power-up, scoring or spells)
+;   * each player can fire one missile with the joystick fire button
+;     (INPT4 for P0, INPT5 for P1); missiles fly horizontally and despawn
+;     at the arena edges
+;   * the ball does NOT interact with the players or missiles yet (no
+;     collision, collection, power-up, scoring or spells)
+;
+; The visible kernel is EVENT-DRIVEN. Round 2 rendered every object every
+; scanline with a branchless "compute enable, write register" block; with a
+; second pair of objects (the missiles) that no longer fits in the 76-cycle
+; scanline budget. Instead, BuildEvents runs during VBLANK and writes a small
+; table (evTbl) describing the register writes each scanline must perform.
+; The kernel then only has to count down to the next event and apply its
+; writes, which keeps every scanline well under 76 cycles (see the kernel
+; comment below for the exact budget).
+;
+; Round 3.1 change: entries are now VARIABLE-SIZE. A single write occupies 3
+; bytes, a double write 5 bytes, and the table is terminated by a single $FF
+; byte.  Because the common case is one write per scanline, the table shrank
+; from a fixed 55 bytes to at most 31 bytes (10 singles + terminator), which
+; allowed the builder scratch space to be removed entirely.
 ;
 ; Frame structure (NTSC):
 ;
-;   VSYNC     3 scanlines   (lines 1..3,   explicit WSYNC)
-;   VBLANK   37 scanlines   (lines 4..40,  TIM64T = VBLANK_TIMER_VALUE)
-;   KERNEL  192 scanlines   (lines 41..232, explicit WSYNC loop)
-;   OVERSCAN 30 scanlines   (lines 233..262, TIM64T = OVERSCAN_TIMER_VALUE)
+;   VSYNC     3 scanlines   (lines 1..3,    explicit WSYNC)
+;   VBLANK   57 scanlines   (lines 4..60,   TIM64T = VBLANK_TIMER_VALUE)
+;   KERNEL  192 scanlines   (lines 61..252, explicit WSYNC loop)
+;   OVERSCAN 10 scanlines   (lines 253..262, TIM64T = OVERSCAN_TIMER_VALUE)
 ;   TOTAL   262 scanlines
 ;
 ; Gameplay input/update happens during VBLANK; the visible kernel only
@@ -54,7 +74,7 @@ Reset:
     LDA #PLAYER2_COLOR
     STA COLUP1
     LDA #BALL_COLOR
-    STA COLUPF              ; the ball is drawn with the playfield/ball color
+    STA COLUPF              ; the ball and the missiles share this color
     LDA #BACKGR_COLOR
     STA COLUBK
     LDA #0
@@ -62,6 +82,9 @@ Reset:
     STA NUSIZ1              ; player 1: 1 copy, normal size
     STA VDELP0
     STA VDELP1
+    LDA #MISSILE_NUSIZ      ; missiles 2 pixels wide (NUSIZ D5:D4 = %01)
+    STA NUSIZ0
+    STA NUSIZ1
     LDA #BALL_SIZE_CTRLPF   ; CTRLPF D5:D4 = %10 -> 4-pixel ball
     STA CTRLPF
     LDA #0
@@ -83,6 +106,11 @@ Reset:
     LDA #DIR_DOWN
     STA ball_dy
 
+    ; fire_prev and fire_sync are cleared by the RAM zeroing above. The first
+    ; UpdateMissiles call after power-on synchronizes fire_prev with the real
+    ; button state instead of treating the boot-time INPT latch reading
+    ; (which reads the fire lines as pressed) as a fresh rising edge.
+
 ; =============================================================================
 ; StartOfFrame - one complete frame
 ; =============================================================================
@@ -95,146 +123,157 @@ StartOfFrame:
     STA WSYNC               ; 3   scanline 2
     STA WSYNC               ; 3   scanline 3
     LDA #VBLANK_TIMER_VALUE ; 2
-    STA TIM64T              ; 4   VBLANK countdown (43 * 64 = 2752 cycles)
+    STA TIM64T              ; 4   VBLANK countdown (56 * 64 = 3584 cycles)
     LDA #0                  ; 2
     STA VSYNC               ; 3   release vertical sync
 
     ; ---- VBLANK: game logic (input + movement + placement) --------------
     JSR UpdatePlayers       ; move both players vertically (see below)
     JSR UpdateBall          ; move the ball and bounce it off the arena edges
+    JSR UpdateMissiles      ; fire, move and despawn both missiles
     JSR PositionPlayers     ; fixed horizontal placement (RESP + HMP)
     JSR PositionBall        ; ball horizontal placement (RESBL + HMBL)
+    JSR PositionMissiles    ; missile horizontal placement (RESM + HMM)
+    JSR BuildEvents         ; rebuild the event table for the visible kernel
 
     ; Wait for the VBLANK timer to expire on the penultimate VBLANK line.
-    ; The timer expires while line 39 is being drawn; the WSYNC below then
-    ; syncs to line 40 so the HMOVE can immediately follow it. The Stella
-    ; Programmer's Guide requires HMOVE to immediately follow a WSYNC so the
-    ; motion registers act during horizontal blanking of the last VBLANK line.
+    ; The timer expires while the second-to-last VBLANK line is being drawn;
+    ; the WSYNC below then syncs to the last VBLANK line so the HMOVE can
+    ; immediately follow it. The Stella Programmer's Guide requires HMOVE to
+    ; immediately follow a WSYNC so the motion registers act during
+    ; horizontal blanking of the last VBLANK line.
 WaitVBlank:
     LDA INTIM               ; 3
     BNE WaitVBlank          ; 2/3
 
-    ; Last VBLANK line (line 40): apply the horizontal fine movement, enable
-    ; the display and clear the sprite graphics for the first visible line.
-    STA WSYNC               ; 3   sync to line 40
-    STA HMOVE               ; 3   apply HMP0/HMP1 fine adjustments
+    ; Last VBLANK line: apply the horizontal fine movement, enable the
+    ; display, clear every sprite/missile/ball output (the event table only
+    ; turns objects on, it never blanks a full scanline) and prime the event
+    ; kernel with the first entry's delta.
+    STA WSYNC               ; 3   sync to the last VBLANK line
+    STA HMOVE               ; 3   apply all HMP0..HMBL fine adjustments
     LDA #0                  ; 2
     STA VBLANK              ; 3   picture on from the next scanline
-    STA GRP0                ; 3   first visible line shows a cleared sprite
+    STA GRP0                ; 3   clear objects for the first visible line
     STA GRP1                ; 3
-    LDX #0                  ; 2   scanline counter (0..191)
-    ; A = 0 here: the first kernel line (X = 0) stores it to ENABL, so the
-    ; very first visible scanline is always ball-free.
+    STA ENAM0               ; 3
+    STA ENAM1               ; 3
+    STA ENABL               ; 3
+    LDA #KERNEL_SCANLINES   ; 2   prime the kernel line countdown
+    STA scanCnt             ; 3
+    LDY #0                  ; 2   Y = byte offset of the current entry
+    LDA evTbl               ; 3   first delta
+    STA evCnt               ; 3
+    JMP KernelLoop          ; 3
 
-    ; ---- Visible kernel: 192 scanlines -----------------------------------
-    ;
-    ; Scanline budget: 76 cycles. The kernel is BRANCHLESS (the only branch
-    ; is the tail BNE that loops back), so every scanline costs exactly the
-    ; same 62 cycles regardless of player or ball state. Cycle accounting
-    ; (verified by the automated test suite from the assembled listing):
-    ;
-    ;   STA WSYNC            3   start of scanline
-    ;   STA ENABL            3   apply the enable computed in the tail
-    ;
-    ;   Player block (one player):
-    ;     TXA                 2   scanline index
-    ;     SEC                 2
-    ;     SBC PLAYERxY        3   row = X - Y (borrow when X < Y)
-    ;     CMP #PLAYER_HEIGHT  2   row >= height -> off the paddle
-    ;     LDA #0              2
-    ;     SBC #0              2   A = $FF on paddle rows, $00 elsewhere
-    ;     AND #PADDLE_BITS    2   A = %00111100 / $00
-    ;     STA GRPx            3
-    ;     Subtotal           18
-    ;
-    ;   Tail (per scanline):
-    ;     TXA                 2
-    ;     SEC                 2
-    ;     SBC ball_y          3
-    ;     CMP #BALL_HEIGHT    2
-    ;     LDA #0              2
-    ;     SBC #0              2   A = BALL_ENABLE on ball rows, $00 otherwise
-    ;     INX                 2
-    ;     CPX #KERNEL_SCANLINES 2
-    ;     BNE KernelLoop      3   (taken, backward, same page)
-    ;     Subtotal           20
-    ;
-    ; Total: 3 + 3 + 18 + 18 + 20 = 62 cycles < 76. Slack = 14 cycles.
-    ;
-    ; ENABL timing: the TIA samples the ball enable bit at the ball's
-    ; horizontal position, NOT by latching the register for the following
-    ; scanline (contrary to an earlier comment in this file). The old kernel
-    ; wrote ENABL late in the scanline (~cycle 67), so whether the ball drew
-    ; with the current or the previous line's value depended on ball_x vs
-    ; the beam position at the write: the ball jumped one scanline in some
-    ; horizontal regions. The fix writes ENABL during the horizontal
-    ; blanking of every scanline (STA ENABL right after STA WSYNC, completing
-    ; at ~cycle 5, far before the first visible pixel at ~cycle 22.7). The
-    ; value is PRE-COMPUTED in the tail of the previous scanline for the
-    ; current line, so the ball draws on exactly BALL_HEIGHT consecutive
-    ; lines regardless of ball_x: line L shows the ball iff L-1 was a ball
-    ; row, i.e. L in ball_y+1 .. ball_y+BALL_HEIGHT.
-    ;
-    ; Player timing: GRP0/GRP1 must be written before the beam reaches the
-    ; player's fixed position (P0 at x=16 -> ~cycle 28.3; P1 at x=136 ->
-    ; ~cycle 68). The branchless rectangle block completes GRP0 at ~cycle 23,
-    ; leaving a safe margin. A table-driven player (indexed LDA + JMP) could
-    ; not fit after the ENABL write that must lead the scanline.
-    ;
-    ; Line 0 (X = 0) stores the A = 0 left over from the pre-kernel, so the
-    ; first visible scanline is always ball-free.
-    ;
-    ; Every iteration starts with STA WSYNC, so each iteration is exactly
-    ; one scanline regardless of the branch taken. The frame therefore
-    ; stays at 262 scanlines whether a player is still, rising, descending,
-    ; the ball is present on the line or not.
+; =============================================================================
+; Visible kernel: 192 scanlines.
+;
+; Scanline budget: 76 cycles. The kernel is event-driven: each scanline just
+; counts down evCnt and, when it reaches zero, applies the register writes of
+; the current entry (evTbl indexed by Y) and reloads the next delta.  Entries
+; are variable-size: a double entry (5 bytes) performs two writes, a single
+; entry (3 bytes, marked by EV_SINGLE_FLAG = bit 7 of reg1) performs one.
+; The three paths below are the only code executed during display.
+;
+; The kernel counts exactly KERNEL_SCANLINES lines with a RAM countdown
+; (scanCnt, primed to 192 before the kernel).  The line counter deliberately
+; lives in RAM rather than in X: the event code uses X (TAX) as the register
+; index, so an X line counter would be clobbered on every event line and the
+; frame would drift longer than 262 scanlines.  Y holds the table byte offset
+; across the whole kernel (no STY/LDY per event line).
+;
+; Worst case (a scanline where a double-entry fires):
+;   STA WSYNC            3   start of scanline
+;   DEC scanCnt          5   kernel line countdown
+;   BEQ .kernelEnd       2   (192 lines done)
+;   DEC evCnt            5   count down to the next event
+;   BNE KernelLoop       2   event line: not taken
+;   LDA evTbl+1,Y        4   register index 1 (bit 7 = single flag)
+;   BMI .singleWrite     2   double entry: not taken
+;   TAX                  2   X = register index 1
+;   LDA evTbl+2,Y        4   value 1
+;   STA EV_WRITE_BASE,X  4   GRP0..ENABL
+;   LDA evTbl+3,Y        4   register index 2
+;   TAX                  2
+;   LDA evTbl+4,Y        4   value 2
+;   STA EV_WRITE_BASE,X  4
+;   TYA                  2   advance Y past the 5-byte entry
+;   CLC                  2
+;   ADC #5               2
+;   TAY                  2
+;   LDA evTbl,Y          4   next delta
+;   STA evCnt            3
+;   JMP KernelLoop       3
+;   Total               65   < 76, slack = 11
+;
+; Single-write event line: 54 cycles (BMI taken, one write, advance by 3).
+; Non-event line: 3 + 5 + 2 + 5 + 3 (BNE taken) = 18 cycles.
+;
+; Write timing: on the double path the first register write happens during
+; CPU cycles 30..33 and the second during cycles 44..47 of the scanline.  A
+; write before the beam passes the object's horizontal position applies to
+; the current scanline; otherwise it applies one line later.  With the
+; standard beam model (pixel p is reached at CPU cycle ~(p + 69) / 3) the
+; gates are x >= 30 for the first write and x >= 72 for the second, so P0
+; (x = 16) and P1 (x = 136) behave exactly as in Round 3, and only objects
+; in a 3-pixel band (x in 30..32 / 72..74) gain one scanline of margin.
+; See docs/en/timing.md.
+;
+; The kernel body is kept inside a single 256-byte page (ALIGN 256 before
+; KernelLoop) so the backward branches have deterministic timing.
+; =============================================================================
+    ALIGN 256
 KernelLoop:
-    STA WSYNC               ; 3   start of scanline (physical line 41 + X)
-    STA ENABL               ; 3   apply the enable precomputed in the tail
+    STA WSYNC               ; 3   start of scanline
+    DEC scanCnt             ; 5   kernel line countdown (192 lines total)
+    BEQ .kernelEnd          ; 2/3  192 lines drawn -> overscan
+    DEC evCnt               ; 5   count down to the next event
+    BNE KernelLoop          ; 2/3  not an event line -> loop back
+    ; ---- event line: apply the current entry ----
+    LDA evTbl+1,Y           ; 4   register index 1 (bit 7 = single flag)
+    BMI .singleWrite        ; 2/3  single entry (flag set) -> one write
+    ; ---- double entry (5 bytes): two register writes ----
+    TAX                     ; 2   X = register index 1
+    LDA evTbl+2,Y           ; 4   value 1
+    STA EV_WRITE_BASE,X     ; 4   write GRP0..ENABL
+    LDA evTbl+3,Y           ; 4   register index 2
+    TAX                     ; 2
+    LDA evTbl+4,Y           ; 4   value 2
+    STA EV_WRITE_BASE,X     ; 4
+    TYA                     ; 2   advance Y past the 5-byte entry
+    CLC                     ; 2
+    ADC #5                  ; 2
+    TAY                     ; 2
+    LDA evTbl,Y             ; 4   next delta
+    STA evCnt               ; 3
+    JMP KernelLoop          ; 3
+.singleWrite:
+    ; ---- single entry (3 bytes): one register write ----
+    AND #$7F                ; 2   mask EV_SINGLE_FLAG off the index
+    TAX                     ; 2   X = register index
+    LDA evTbl+2,Y           ; 4   value
+    STA EV_WRITE_BASE,X     ; 4
+    TYA                     ; 2   advance Y past the 3-byte entry
+    CLC                     ; 2
+    ADC #3                  ; 2
+    TAY                     ; 2
+    LDA evTbl,Y             ; 4   next delta
+    STA evCnt               ; 3
+    JMP KernelLoop          ; 3
 
-    ; Player 0 (left): solid rectangle of PADDLE_BITS on its rows.
-    TXA                     ; 2
-    SEC                     ; 2
-    SBC P0Y                 ; 3   row = X - P0Y (borrow when X < P0Y)
-    CMP #PLAYER_HEIGHT      ; 2   row >= height -> off the paddle
-    LDA #0                  ; 2
-    SBC #0                  ; 2   A = $FF on paddle rows, $00 elsewhere
-    AND #PADDLE_BITS        ; 2   A = %00111100 on the paddle rows
-    STA GRP0                ; 3
-
-    ; Player 1 (right): same branchless rectangle, separate position.
-    TXA                     ; 2
-    SEC                     ; 2
-    SBC P1Y                 ; 3   row = X - P1Y (borrow when X < P1Y)
-    CMP #PLAYER_HEIGHT      ; 2
-    LDA #0                  ; 2
-    SBC #0                  ; 2
-    AND #PADDLE_BITS        ; 2
-    STA GRP1                ; 3
-
-    ; Tail: precompute the ball enable for the NEXT scanline and loop back.
-    ; On the ball rows (ball_y <= X < ball_y + BALL_HEIGHT) A becomes
-    ; BALL_ENABLE ($FF), otherwise $00; the next iteration stores that value
-    ; to ENABL at its top.
-    TXA                     ; 2
-    SEC                     ; 2
-    SBC ball_y              ; 3   row = X - ball_y (borrow when X < ball_y)
-    CMP #BALL_HEIGHT        ; 2   row >= height -> not a ball row
-    LDA #0                  ; 2
-    SBC #0                  ; 2   A = BALL_ENABLE on ball rows, $00 otherwise
-    INX                     ; 2
-    CPX #KERNEL_SCANLINES   ; 2
-    BNE KernelLoop          ; 3   (taken; backward, same page)
-
-    ; ---- Overscan: 30 scanlines ------------------------------------------
+    ; ---- Overscan: 10 scanlines ------------------------------------------
+.kernelEnd:
     LDA #VBLANK_BLANK       ; 2
     STA VBLANK              ; 3   blank output again
     LDA #0                  ; 2
-    STA ENABL               ; 3   ball off during overscan: the last kernel
-                            ;     line may have left ENABL = 1 when the ball
-                            ;     rests at the bottom of the arena
+    STA GRP0                ; 3   clear every object: the last kernel lines
+    STA GRP1                ; 3   may have left a register enabled (e.g. the
+    STA ENAM0               ; 3   ball OFF event at row 192 is dropped), and
+    STA ENAM1               ; 3   the display must never bleed into overscan
+    STA ENABL               ; 3
     LDA #OVERSCAN_TIMER_VALUE ; 2
-    STA TIM64T              ; 4   overscan countdown (36 * 64 = 2304 cycles)
+    STA TIM64T              ; 4   overscan countdown (22 * 64 = 1408 cycles)
 OverscanWait:
     LDA INTIM               ; 3
     BNE OverscanWait        ; 2/3
@@ -246,24 +285,25 @@ OverscanWait:
 ;
 ; Moves each player up/down by one scanline per frame based on its joystick
 ; and clamps the position to the arena. Runs during VBLANK so the visible
-; kernel stays branch-free regarding gameplay state.
+; kernel stays free of gameplay state.
 ;
 ; SWCHA bits (active low: 0 = pressed):
 ;   P0 (joystick 1, port 0): D4 up, D5 down
 ;   P1 (joystick 2, port 1): D0 up, D1 down
-; Horizontal directions and fire buttons are intentionally ignored this round.
+; Horizontal directions are intentionally ignored this round.
 ;
 ; Movement is applied only when the player is not already at the relevant
 ; boundary, which prevents the position from wrapping below PLAYER_Y_MIN or
 ; above PLAYER_Y_MAX.
+;
+; SWCHA is re-read for each direction (4 reads/frame).  The previous joystate
+; scratch byte was removed to save RAM; the port reads are cheap and happen
+; during VBLANK, where cycle count is not display-critical.
 ; =============================================================================
 UpdatePlayers:
-    LDA SWCHA               ; 3   sample the joysticks once
-    STA joystate            ; 3   (avoid repeated reads of the port)
-
     ; Player 0 - up
-    LDA #JOY1_UP            ; 2
-    BIT joystate            ; 3
+    LDA SWCHA               ; 4   sample the joysticks
+    AND #JOY1_UP            ; 2
     BNE .p0UpDone           ; 2/3
     LDA P0Y                 ; 3
     BEQ .p0UpDone           ; 2/3  already at the top of the arena
@@ -271,8 +311,8 @@ UpdatePlayers:
 .p0UpDone:
 
     ; Player 0 - down
-    LDA #JOY1_DOWN          ; 2
-    BIT joystate            ; 3
+    LDA SWCHA               ; 4
+    AND #JOY1_DOWN          ; 2
     BNE .p0DownDone         ; 2/3
     LDA P0Y                 ; 3
     CMP #PLAYER_Y_MAX       ; 2
@@ -281,8 +321,8 @@ UpdatePlayers:
 .p0DownDone:
 
     ; Player 1 - up
-    LDA #JOY2_UP            ; 2
-    BIT joystate            ; 3
+    LDA SWCHA               ; 4
+    AND #JOY2_UP            ; 2
     BNE .p1UpDone           ; 2/3
     LDA P1Y                 ; 3
     BEQ .p1UpDone           ; 2/3
@@ -290,8 +330,8 @@ UpdatePlayers:
 .p1UpDone:
 
     ; Player 1 - down
-    LDA #JOY2_DOWN          ; 2
-    BIT joystate            ; 3
+    LDA SWCHA               ; 4
+    AND #JOY2_DOWN          ; 2
     BNE .p1DownDone         ; 2/3
     LDA P1Y                 ; 3
     CMP #PLAYER_Y_MAX       ; 2
@@ -306,7 +346,8 @@ UpdatePlayers:
 ;
 ; Moves the ball one pixel per frame on both axes (constant speed, no
 ; acceleration) and reverses a direction when the ball reaches an arena
-; edge. Runs during VBLANK so the visible kernel stays branch-free.
+; edge. Runs during VBLANK so the visible kernel stays free of gameplay
+; state.
 ;
 ; Bounce strategy: the ball moves exactly 1 pixel per frame, so it always
 ; lands exactly on a boundary pixel before reversing. Reversing AT the
@@ -315,6 +356,8 @@ UpdatePlayers:
 ; an unsigned wrap below the minimum can never occur.
 ;
 ; ball_dx/ball_dy hold the direction step (+1 = right/down, $FF = left/up).
+; ball_y is the first scanline on which the ball is displayed (rows
+; ball_y .. ball_y + BALL_HEIGHT - 1).
 ; =============================================================================
 UpdateBall:
     ; ---- Horizontal bounce (reverse at the exact left/right edges) ----
@@ -354,6 +397,137 @@ UpdateBall:
     CLC                     ; 2
     ADC ball_dy             ; 3
     STA ball_y              ; 3
+    RTS                     ; 6
+
+; =============================================================================
+; UpdateMissiles
+;
+; Reads the two joystick fire buttons (INPT4 = P0, INPT5 = P1, bit 7 is 0
+; while pressed) and spawns a missile on the rising edge of the button
+; (released -> pressed), and only while that player's missile is inactive.
+; Holding the button does not produce a stream of missiles, and a rising edge
+; while a missile is still flying neither spawns a second one nor resets the
+; existing one.
+;
+;   M0 (left player): x = M0_X_INIT (18), moves right, despawns at x > 158
+;   M1 (right player): x = M1_X_INIT (134), moves left, despawns at x < 2
+;
+; fire_prev stores the previous frame's button state (bit 0 = P0, bit 1 =
+; P1, 1 = pressed) so a fire is detected on the rising edge only.  Both
+; missiles share one packed "active" byte (m_active): bit 0 = M0, bit 1 =
+; M1, which replaces the two separate m0_active/m1_active bytes of Round 3.
+;
+; Boot synchronisation: on real hardware (and in Stella) the TIA INPT latches
+; read the fire lines as pressed for the first frames after RESET.  If the
+; first UpdateMissiles treated that as a rising edge, every player would fire
+; a missile at boot without touching the button.  Bit 7 of fire_prev
+; (FIRE_SYNC) is cleared by Reset; on the first call UpdateMissiles only
+; adopts the real button state into fire_prev (no spawn), so a genuine
+; released->pressed transition is required to fire, and a button held at boot
+; does not fire until it is released and pressed again.
+; =============================================================================
+UpdateMissiles:
+    ; ---- sample both fire buttons into X (bits 1:0 = pressed mask) ----
+    LDX #0                  ; 2
+    LDA INPT4               ; 3   P0 fire button
+    AND #$80                ; 2
+    BNE .p0NotPressed       ; 2/3
+    INX                     ; 2   bit 0
+.p0NotPressed:
+    LDA INPT5               ; 3   P1 fire button
+    AND #$80                ; 2
+    BNE .p1NotPressed       ; 2/3
+    INX                     ; 2   bit 1
+    INX                     ; 2
+.p1NotPressed:
+
+    ; ---- first frame after reset: adopt the real button state ----
+    LDA fire_prev           ; 3
+    BMI .edgeDetect         ; 2/3  bit 7 set -> already synchronised
+    TXA                     ; 2
+    ORA #FIRE_SYNC          ; 2   mark as synchronised
+    STA fire_prev           ; 3   no spawn, just remember the real state
+    JMP .movement           ; 3
+
+.edgeDetect:
+    ; ---- M0: spawn on rising edge while inactive ----
+    TXA                     ; 2
+    AND #FIRE_P0            ; 2
+    BEQ .m0NoSpawn          ; 2/3  not pressed this frame
+    LDA fire_prev           ; 3
+    AND #FIRE_P0            ; 2
+    BNE .m0NoSpawn          ; 2/3  was already pressed -> no new edge
+    LDA m_active            ; 3
+    AND #M0_BIT             ; 2
+    BNE .m0NoSpawn          ; 2/3  still flying -> don't respawn
+    LDA m_active            ; 3
+    ORA #M0_BIT             ; 2
+    STA m_active            ; 3
+    LDA #M0_X_INIT          ; 2
+    STA m0_x                ; 3
+    LDA P0Y                 ; 3
+    CLC                     ; 2
+    ADC #MISSILE_SPAWN_OFFSET ; 2
+    STA m0_y                ; 3
+.m0NoSpawn:
+
+    ; ---- M1: spawn on rising edge while inactive ----
+    TXA                     ; 2
+    AND #FIRE_P1            ; 2
+    BEQ .m1NoSpawn          ; 2/3
+    LDA fire_prev           ; 3
+    AND #FIRE_P1            ; 2
+    BNE .m1NoSpawn          ; 2/3
+    LDA m_active            ; 3
+    AND #M1_BIT             ; 2
+    BNE .m1NoSpawn          ; 2/3  still flying -> don't respawn
+    LDA m_active            ; 3
+    ORA #M1_BIT             ; 2
+    STA m_active            ; 3
+    LDA #M1_X_INIT          ; 2
+    STA m1_x                ; 3
+    LDA P1Y                 ; 3
+    CLC                     ; 2
+    ADC #MISSILE_SPAWN_OFFSET ; 2
+    STA m1_y                ; 3
+.m1NoSpawn:
+
+    ; ---- remember this frame's button state (keep the sync bit) ----
+    TXA                     ; 2
+    ORA #FIRE_SYNC          ; 2
+    STA fire_prev           ; 3
+
+.movement:
+    ; ---- M0: move right, despawn past the right edge ----
+    LDA m_active            ; 3
+    AND #M0_BIT             ; 2
+    BEQ .m0MoveDone         ; 2/3
+    LDA m0_x                ; 3
+    CLC                     ; 2
+    ADC #MISSILE_SPEED      ; 2
+    STA m0_x                ; 3
+    CMP #M0_X_MAX + 1       ; 2   keep while x <= M0_X_MAX (fully visible)
+    BCC .m0MoveDone         ; 2/3
+    LDA m_active            ; 3
+    AND #%11111110          ; 2   clear the M0 bit
+    STA m_active            ; 3
+.m0MoveDone:
+
+    ; ---- M1: move left, despawn past the left edge ----
+    LDA m_active            ; 3
+    AND #M1_BIT             ; 2
+    BEQ .m1MoveDone         ; 2/3
+    LDA m1_x                ; 3
+    SEC                     ; 2
+    SBC #MISSILE_SPEED      ; 2
+    STA m1_x                ; 3
+    CMP #M1_X_MIN           ; 2   keep while x >= M1_X_MIN
+    BCS .m1MoveDone         ; 2/3
+    LDA m_active            ; 3
+    AND #%11111101          ; 2   clear the M1 bit
+    STA m_active            ; 3
+.m1MoveDone:
+
     RTS                     ; 6
 
 ; =============================================================================
@@ -424,6 +598,330 @@ PositionBallOk:
     RTS                     ; 6
 
 ; =============================================================================
+; PositionMissiles
+;
+; Horizontally places the two missiles with PosObject. Missiles are TIA
+; Missile objects and, like the ball, render 1 pixel left of a player for the
+; same input, so the compensation is identical to PositionBall (input = x + 8
+; or x + 5 for the first 15-pixel region). Objects 2 (M0) and 3 (M1) map to
+; RESM0/HMM0 and RESM1/HMM1.
+;
+; Inactive missiles are skipped: without a RESP write their position counter
+; holds a stale value, but the event table never enables them, so they remain
+; invisible.
+; =============================================================================
+PositionMissiles:
+    LDA m_active            ; 3
+    AND #M0_BIT             ; 2
+    BEQ .m0PosDone          ; 2/3
+    LDA m0_x                ; 3
+    CLC                     ; 2
+    ADC #8                  ; 2   q >= 1 compensation (ball/missile offset)
+    CMP #15                 ; 2
+    BCS .m0PosOk            ; 2/3
+    SEC                     ; 2
+    SBC #3                  ; 2   q = 0 compensation
+.m0PosOk:
+    LDX #2                  ; 2   object 2 = missile 0
+    JSR PosObject           ; 6
+.m0PosDone:
+    LDA m_active            ; 3
+    AND #M1_BIT             ; 2
+    BEQ .m1PosDone          ; 2/3
+    LDA m1_x                ; 3
+    CLC                     ; 2
+    ADC #8                  ; 2
+    CMP #15                 ; 2
+    BCS .m1PosOk            ; 2/3
+    SEC                     ; 2
+    SBC #3                  ; 2
+.m1PosOk:
+    LDX #3                  ; 2   object 3 = missile 1
+    JSR PosObject           ; 6
+.m1PosDone:
+    RTS                     ; 6
+
+; =============================================================================
+; BuildEvents
+;
+; Rebuilds the event table (evTbl) for the visible kernel from the current
+; positions of the players, ball and missiles. Runs during VBLANK after all
+; movement and horizontal placement, so the table always describes exactly
+; the frame about to be rendered.
+;
+; Every object contributes an ON event (turn the register on) and an OFF
+; event (turn it off) at its display rows:
+;
+;     P0   ON (P0Y, GRP0, PADDLE_BITS)          OFF (P0Y+12, GRP0, 0)
+;     P1   ON (P1Y, GRP1, PADDLE_BITS)          OFF (P1Y+12, GRP1, 0)
+;     Ball ON (ball_y, ENABL, BALL_ENABLE)      OFF (ball_y+4, ENABL, 0)
+;     M0   ON (m0_y, ENAM0, MISSILE_ENABLE)     OFF (m0_y+4, ENAM0, 0)
+;     M1   ON (m1_y, ENAM1, MISSILE_ENABLE)     OFF (m1_y+4, ENAM1, 0)
+;
+;   Inactive missiles contribute nothing.  InsertEvent inserts every event
+;   directly into evTbl in row order, merging same-row singles into doubles
+;   and bumping surplus same-row events to row+1, so no scanline ever needs
+;   more than two writes.  The table holds ABSOLUTE rows while it is built;
+;   ConvertDeltas turns them into the deltas the kernel counts down.  Because
+;   the table is variable-size and never exceeds EV_TBL_SIZE bytes (10 singles
+;   + terminator = 31), no separate record/order scratch buffer is needed.
+;
+; The builder runs in VBLANK (up to ~56*64 cycles available), so its own
+; cycle count is not display-critical.
+; =============================================================================
+BuildEvents:
+    ; ---- reset the table to just its terminator ----
+    LDA #EV_TERMINATOR_DELTA ; 2
+    STA evTbl               ; 3
+    LDA #1                  ; 2
+    STA tblLen              ; 3   table length in bytes
+    ; ---- P0 ON / OFF ----
+    LDA P0Y                 ; 3
+    LDX #EV_REG_GRP0        ; 2
+    LDY #PADDLE_BITS        ; 2
+    JSR InsertEvent         ; 6
+    LDA P0Y                 ; 3
+    CLC                     ; 2
+    ADC #PLAYER_HEIGHT      ; 2
+    LDX #EV_REG_GRP0        ; 2
+    LDY #0                  ; 2
+    JSR InsertEvent         ; 6
+    ; ---- P1 ON / OFF ----
+    LDA P1Y                 ; 3
+    LDX #EV_REG_GRP1        ; 2
+    LDY #PADDLE_BITS        ; 2
+    JSR InsertEvent         ; 6
+    LDA P1Y                 ; 3
+    CLC                     ; 2
+    ADC #PLAYER_HEIGHT      ; 2
+    LDX #EV_REG_GRP1        ; 2
+    LDY #0                  ; 2
+    JSR InsertEvent         ; 6
+    ; ---- Ball ON / OFF ----
+    LDA ball_y              ; 3
+    LDX #EV_REG_ENABL       ; 2
+    LDY #BALL_ENABLE        ; 2
+    JSR InsertEvent         ; 6
+    LDA ball_y              ; 3
+    CLC                     ; 2
+    ADC #BALL_HEIGHT        ; 2
+    LDX #EV_REG_ENABL       ; 2
+    LDY #0                  ; 2
+    JSR InsertEvent         ; 6
+    ; ---- M0 ON / OFF (only while active) ----
+    LDA m_active            ; 3
+    AND #M0_BIT             ; 2
+    BEQ .m0EventsDone       ; 2/3
+    LDA m0_y                ; 3
+    LDX #EV_REG_ENAM0       ; 2
+    LDY #MISSILE_ENABLE     ; 2
+    JSR InsertEvent         ; 6
+    LDA m0_y                ; 3
+    CLC                     ; 2
+    ADC #MISSILE_HEIGHT     ; 2
+    LDX #EV_REG_ENAM0       ; 2
+    LDY #0                  ; 2
+    JSR InsertEvent         ; 6
+.m0EventsDone:
+    ; ---- M1 ON / OFF (only while active) ----
+    LDA m_active            ; 3
+    AND #M1_BIT             ; 2
+    BEQ .m1EventsDone       ; 2/3
+    LDA m1_y                ; 3
+    LDX #EV_REG_ENAM1       ; 2
+    LDY #MISSILE_ENABLE     ; 2
+    JSR InsertEvent         ; 6
+    LDA m1_y                ; 3
+    CLC                     ; 2
+    ADC #MISSILE_HEIGHT     ; 2
+    LDX #EV_REG_ENAM1       ; 2
+    LDY #0                  ; 2
+    JSR InsertEvent         ; 6
+.m1EventsDone:
+
+    ; ---- convert absolute rows to kernel deltas ----
+    JMP ConvertDeltas       ; 3
+
+; =============================================================================
+; InsertEvent
+;
+; Inserts one event (row, reg, val) into evTbl, which holds ABSOLUTE rows
+; while the builder runs.  Entries are variable-size and kept sorted by row:
+;
+;   single entry:  [row, reg | EV_SINGLE_FLAG, val]      (3 bytes)
+;   double entry:  [row, reg1, val1, reg2, val2]         (5 bytes)
+;
+; The scan walks the table from the first byte:
+;   * the terminator (row $FF) is reached, or the current entry's row is
+;     larger: insert a new single entry before it (shift-by-3);
+;   * the current entry shares the row AND is a single: merge the new event
+;     into it as its second write (shift-by-2), converting it to a double;
+;   * the current entry shares the row but is already a double: bump the new
+;     event's row to row+1 and continue the scan (a table entry never holds
+;     three writes, which would break the 76-cycle kernel budget).
+;
+; Because merging a same-row event replaces two separate singles with one
+; double (6 -> 5 bytes), the table can never exceed EV_TBL_SIZE bytes.
+;
+; A = row, X = register index, Y = value.
+; Uses evRow, tempCount, tblLen and the stack (row/reg/val are held on the
+; stack while the table is scanned and shifted).
+; =============================================================================
+InsertEvent:
+    STA evRow               ; 3   save the event row
+    PHA                     ; 3   save the row on the stack
+    TXA                     ; 2
+    PHA                     ; 3   save reg on the stack
+    TYA                     ; 2
+    PHA                     ; 3   save val on the stack
+    LDY #0                  ; 2   scan from the first table byte
+.scan:
+    LDA evTbl,Y             ; 4   row of the current entry ($FF = terminator)
+    CMP #EV_TERMINATOR_DELTA ; 2
+    BEQ .insertSingle       ; 2/3  end of the table -> insert a single entry
+    CMP evRow               ; 3
+    BCC .advance            ; 2/3  current row < new row -> keep scanning
+    BEQ .sameRow            ; 2/3  current row == new row
+    JMP .insertSingle       ; 3   current row > new row -> insert before it
+.advance:
+    LDA evTbl+1,Y           ; 4   reg1 of the current entry (flag in bit 7)
+    AND #EV_SINGLE_FLAG     ; 2
+    BNE .advanceSingle      ; 2/3  single entry -> advance by 3
+    TYA                     ; 2   double entry -> advance by 5
+    CLC                     ; 2
+    ADC #5                  ; 2
+    TAY                     ; 2
+    JMP .scan               ; 3
+.advanceSingle:
+    TYA                     ; 2
+    CLC                     ; 2
+    ADC #3                  ; 2
+    TAY                     ; 2
+    JMP .scan               ; 3
+.sameRow:
+    LDA evTbl+1,Y           ; 4   reg1 of the same-row entry
+    AND #EV_SINGLE_FLAG     ; 2
+    BNE .mergeSingle        ; 2/3  single entry -> merge into a double
+    INC evRow               ; 5   double entry: bump the new event to row+1
+    JMP .advance            ; 3   and keep scanning
+.mergeSingle:
+    ; convert the 3-byte single at Y into a 5-byte double:
+    TYA                     ; 2
+    CLC                     ; 2
+    ADC #2                  ; 2   make room for reg2/val2 at oldY+2
+    TAY                     ; 2
+    JSR ShiftBy2            ; 6   (Y is preserved)
+    PLA                     ; 4   val
+    STA evTbl+2,Y           ; 4   val2   (Y+2 = oldY+4)
+    PLA                     ; 4   reg
+    STA evTbl+1,Y           ; 4   reg2   (Y+1 = oldY+3)
+    LDA evTbl-1,Y           ; 4   reg1   (Y-1 = oldY+1, flag in bit 7)
+    AND #$7F                ; 2   clear the single flag -> now a double
+    STA evTbl-1,Y           ; 4
+    LDA tblLen              ; 3
+    CLC                     ; 2
+    ADC #2                  ; 2
+    STA tblLen              ; 3
+    PLA                     ; 4   discard the saved row
+    RTS                     ; 6
+.insertSingle:
+    JSR ShiftBy3            ; 6   make room for the 3-byte entry (Y preserved)
+    PLA                     ; 4   val
+    STA evTbl+2,Y           ; 4
+    PLA                     ; 4   reg
+    ORA #EV_SINGLE_FLAG     ; 2
+    STA evTbl+1,Y           ; 4
+    PLA                     ; 4   row
+    STA evTbl,Y             ; 4
+    LDA tblLen              ; 3
+    CLC                     ; 2
+    ADC #3                  ; 2
+    STA tblLen              ; 3
+    RTS                     ; 6
+
+; =============================================================================
+; ShiftBy2 / ShiftBy3
+;
+; Shift every byte at index >= Y up by 2 (ShiftBy2) or 3 (ShiftBy3) so
+; InsertEvent can extend a same-row single into a double (2 bytes) or insert
+; a new single entry (3 bytes) at Y.  Runs from the top of the table down so
+; no byte is overwritten before it is read.  Preserves Y; clobbers A, X and
+; tempCount.
+;
+; Bounds: a shift-by-3 happens only when inserting a new single, which can
+; push the table to at most 31 bytes, so tblLen is <= 28 before it and the
+; largest write index is 30 (evTbl+3,X with X = tblLen-1 <= 27).  A
+; shift-by-2 (a merge) never needs more than index 30 either.  All accesses
+; stay inside the 31-byte table.
+;
+; The loop terminates when X == tempCount (after copying the insertion point's
+; byte).  DEX wraps 0 -> $FF, so the loop must test X before it can wrap:
+; CPX + BNE stops at X == tempCount instead of comparing X >= tempCount.
+; =============================================================================
+ShiftBy2:                    ; Y = first index to move
+    STY tempCount            ; 3   remember the insertion point
+    LDX tblLen               ; 3   X = table length in bytes
+.shift2Loop:
+    DEX                     ; 2   next byte down
+    LDA evTbl,X              ; 4   copy the byte...
+    STA evTbl+2,X            ; 4   ...two positions up
+    CPX tempCount            ; 3   stop after the insertion point
+    BNE .shift2Loop           ; 2/3
+    RTS                     ; 6
+
+ShiftBy3:                    ; Y = first index to move
+    STY tempCount            ; 3
+    LDX tblLen               ; 3
+.shift3Loop:
+    DEX                     ; 2
+    LDA evTbl,X              ; 4
+    STA evTbl+3,X            ; 4   ...three positions up
+    CPX tempCount            ; 3
+    BNE .shift3Loop           ; 2/3
+    RTS                     ; 6
+
+; =============================================================================
+; ConvertDeltas
+;
+; Walks the finished table and replaces every absolute row with the delta the
+; kernel counts down: delta(first) = row + 1 (prevRow starts at $FF = -1) and
+; delta(next) = row - prevRow.  Events with a row >= KERNEL_SCANLINES are
+; emitted harmlessly: their delta never reaches zero inside the 192-line
+; kernel.  The terminator keeps delta = EV_TERMINATOR_DELTA ($FF), which can
+; never fire.  Clobbers A, X, Y, evRow and tempCount.
+; =============================================================================
+ConvertDeltas:
+    LDY #0                  ; 2   scan from the first byte
+    LDA #$FF                ; 2
+    STA tempCount           ; 3   prevRow sentinel
+.deltaLoop:
+    LDA evTbl,Y             ; 4   absolute row of the current entry
+    CMP #EV_TERMINATOR_DELTA ; 2
+    BEQ .deltaDone          ; 2/3  terminator: its $FF is already a delta
+    STA evRow               ; 3   remember the absolute row
+    SEC                     ; 2
+    SBC tempCount           ; 3   delta = row - prevRow
+    STA evTbl,Y             ; 4   store the delta
+    LDA evRow               ; 3   restore the absolute row
+    STA tempCount           ; 3   prevRow = row
+    LDA evTbl+1,Y           ; 4   reg1 of the current entry (flag in bit 7)
+    AND #EV_SINGLE_FLAG     ; 2
+    BNE .deltaSingle        ; 2/3
+    TYA                     ; 2   double entry -> advance by 5
+    CLC                     ; 2
+    ADC #5                  ; 2
+    TAY                     ; 2
+    JMP .deltaLoop          ; 3
+.deltaSingle:
+    TYA                     ; 2   single entry -> advance by 3
+    CLC                     ; 2
+    ADC #3                  ; 2
+    TAY                     ; 2
+    JMP .deltaLoop          ; 3
+.deltaDone:
+    RTS                     ; 6
+
+; =============================================================================
 ; PosObject - position object X (0..5) at horizontal pixel position A.
 ;
 ; Timing contract (from the reference):
@@ -475,16 +973,43 @@ fineAdjustTable EQU fineAdjustBegin - %11110001
 
 ; =============================================================================
 ; Zero page RAM (RIOT RAM, $80-$FF)
+;
+; Round 3.1 layout - 48 bytes (was 122).  The event table is now variable-size
+; (EV_TBL_SIZE = 31 bytes max) and the builder inserts events directly into
+; it, so the events/evOrder scratch buffers, evCount, evIdx, joystate, the two
+; separate missile-active bytes and fire_sync are all gone.  m_active packs
+; both missiles into one byte and fire_prev carries the boot-sync flag in its
+; bit 7.  Builder temps are three shared bytes; InsertEvent holds its payload
+; on the CPU stack while the table is scanned/shifted.
 ; =============================================================================
     SEG.U VARS
     ORG $80
 P0Y         DS 1            ; player 0 vertical position (0..PLAYER_Y_MAX)
 P1Y         DS 1            ; player 1 vertical position (0..PLAYER_Y_MAX)
-joystate    DS 1            ; sampled SWCHA value
 ball_x      DS 1            ; ball visible left pixel (BALL_X_MIN..BALL_X_MAX)
-ball_y      DS 1            ; ball ENABL write scanline (BALL_Y_MIN..BALL_Y_MAX)
+ball_y      DS 1            ; ball first display row (BALL_Y_MIN..BALL_Y_MAX)
 ball_dx     DS 1            ; horizontal step (+1 = right, $FF = left)
 ball_dy     DS 1            ; vertical step (+1 = down, $FF = up)
+
+; Missile state. m?_x is the leftmost visible pixel while active; m_active is
+; the packed active mask (bit 0 = M0, bit 1 = M1).
+m0_x        DS 1            ; missile 0 horizontal position
+m0_y        DS 1            ; missile 0 row (fixed while flying)
+m1_x        DS 1            ; missile 1 horizontal position
+m1_y        DS 1            ; missile 1 row (fixed while flying)
+m_active    DS 1            ; M0_BIT = M0 flying, M1_BIT = M1 flying
+
+fire_prev   DS 1            ; packed fire state (FIRE_P0/FIRE_P1 + FIRE_SYNC)
+evCnt       DS 1            ; kernel: scanlines until the next event fires
+scanCnt     DS 1            ; kernel: line countdown (primed to KERNEL_SCANLINES)
+
+evTbl       DS EV_TBL_SIZE  ; event table (<= 31 bytes, see constants.inc)
+
+; BuildEvents shared temps (written before use, so the same bytes are reused
+; across the insert and convert phases).
+evRow       DS 1            ; InsertEvent: event row  /  ConvertDeltas: row
+tempCount   DS 1            ; InsertEvent: shift point / ConvertDeltas: prevRow
+tblLen      DS 1            ; table length in bytes
 
 ; =============================================================================
 ; 6502 vectors

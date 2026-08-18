@@ -17,6 +17,8 @@ Baseline resolution (first match wins):
 Hard regressions (hardware limits) fail with exit code 1:
   * ROM > 4096 bytes
   * RAM > 128 bytes
+  * RAM > PROJECT_RAM_BUDGET (the current round's RAM target, tighter than
+    the hardware limit so budget pressure is caught before it becomes fatal)
   * kernel worst case > 76 cycles
   * frame scanline count != 262
 
@@ -53,8 +55,18 @@ EXPECTED_SCANLINES = 262
 WARN_ROM_GROWTH_BYTES = 32
 WARN_ROM_GROWTH_PCT = 5.0
 WARN_RAM_GROWTH_BYTES = 4
+WARN_RAM_GROWTH_PCT = 10.0
 WARN_KERNEL_WORST_INCREASE = 4
 WARN_KERNEL_SLACK_DECREASE = 4
+
+# RAM pressure: warn when utilization crosses these fractions of the 128-byte
+# hardware limit.  The project RAM budget (below) is a harder, earlier gate.
+RAM_PRESSURE_WARN_PCT = 75.0
+RAM_PRESSURE_STRONG_PCT = 90.0
+
+# Current round's RAM target.  Exceeding it is a hard regression even though
+# the hardware limit is 128 bytes, so budget pressure is caught early.
+PROJECT_RAM_BUDGET = 64
 
 # (key, label, unit) -- the labels/order used in the report.
 METRICS = [
@@ -75,8 +87,21 @@ def warning_for(key, base, current):
             return f"ROM grew by {growth} B ({pct:+.1f}%)"
     elif key == "ram_used":
         growth = current - base
+        pct = (growth / base * 100.0) if base else 0.0
+        pressure = 100.0 * current / RAM_LIMIT
+        reasons = []
         if growth > WARN_RAM_GROWTH_BYTES:
-            return f"RAM grew by {growth} B"
+            reasons.append(f"grew by {growth} B")
+        elif base and pct > WARN_RAM_GROWTH_PCT:
+            reasons.append(f"grew by {growth} B ({pct:+.1f}%)")
+        if pressure >= RAM_PRESSURE_STRONG_PCT:
+            reasons.append(f"utilization {pressure:.0f}% >= "
+                           f"{RAM_PRESSURE_STRONG_PCT:.0f}%")
+        elif pressure >= RAM_PRESSURE_WARN_PCT:
+            reasons.append(f"utilization {pressure:.0f}% >= "
+                           f"{RAM_PRESSURE_WARN_PCT:.0f}%")
+        if reasons:
+            return "RAM " + "; ".join(reasons)
     elif key == "kernel_worst":
         increase = current - base
         if increase > WARN_KERNEL_WORST_INCREASE:
@@ -112,6 +137,9 @@ def compare(base, current):
         hard.append(f"ROM {current['rom_used']} > {ROM_LIMIT} bytes")
     if current.get("ram_used", 0) > RAM_LIMIT:
         hard.append(f"RAM {current['ram_used']} > {RAM_LIMIT} bytes")
+    if current.get("ram_used", 0) > PROJECT_RAM_BUDGET:
+        hard.append(f"RAM {current['ram_used']} > project budget "
+                    f"{PROJECT_RAM_BUDGET} bytes")
     if current.get("kernel_worst", 0) > SCANLINE_BUDGET:
         hard.append(f"kernel worst case {current['kernel_worst']} > "
                     f"{SCANLINE_BUDGET} cycles")

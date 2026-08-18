@@ -15,25 +15,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 
 from common import ROM_PATH, ROM_LIMIT, RAM_LIMIT
 from benchmark import LATEST, migrate_history
-from regression import (EXPECTED_SCANLINES, SCANLINE_BUDGET,
+from regression import (EXPECTED_SCANLINES, PROJECT_RAM_BUDGET, SCANLINE_BUDGET,
+                        RAM_PRESSURE_STRONG_PCT, RAM_PRESSURE_WARN_PCT,
                         WARN_KERNEL_SLACK_DECREASE, WARN_KERNEL_WORST_INCREASE,
-                        WARN_RAM_GROWTH_BYTES, WARN_ROM_GROWTH_BYTES,
-                        compare, format_delta, git_base_metrics,
-                        render_report, render_report_markdown,
+                        WARN_RAM_GROWTH_BYTES, WARN_RAM_GROWTH_PCT,
+                        WARN_ROM_GROWTH_BYTES, compare, format_delta,
+                        git_base_metrics, render_report, render_report_markdown,
                         resolve_baseline, warning_for)
 
 BASE = {
-    "rom_used": 528,
-    "rom_available": 3568,
-    "ram_used": 3,
-    "ram_available": 125,
+    "rom_used": 1296,
+    "rom_available": 2800,
+    "ram_used": 48,
+    "ram_available": 80,
     "scanlines": 262,
-    "kernel_worst": 56,
-    "kernel_best": 44,
+    "kernel_worst": 65,
+    "kernel_best": 18,
     "kernel_budget": 76,
-    "kernel_slack": 20,
-    "vblank_timer": 44,
-    "overscan_timer": 37,
+    "kernel_slack": 11,
+    "vblank_timer": 69,
+    "overscan_timer": 11,
 }
 
 
@@ -47,18 +48,18 @@ class TestDeltas(unittest.TestCase):
 
     def test_absolute_delta_computed(self):
         cur = dict(BASE)
-        cur["rom_used"] = 612
+        cur["rom_used"] = 1380
         rows, _, _ = compare(BASE, cur)
         row = next(r for r in rows if r[0] == "ROM used")
         self.assertEqual(row[3], 84)
-        self.assertAlmostEqual(row[4], 84 / 528 * 100.0)
+        self.assertAlmostEqual(row[4], 84 / 1296 * 100.0)
 
     def test_negative_delta_for_slack_regression(self):
         cur = dict(BASE)
-        cur["kernel_slack"] = 12
+        cur["kernel_slack"] = -1
         rows, _, _ = compare(BASE, cur)
         row = next(r for r in rows if r[0] == "Kernel slack")
-        self.assertEqual(row[3], -8)
+        self.assertEqual(row[3], -12)
 
 
 class TestFormatting(unittest.TestCase):
@@ -80,7 +81,7 @@ class TestFormatting(unittest.TestCase):
 
     def test_render_report_status_warning(self):
         cur = dict(BASE)
-        cur["rom_used"] = 528 + 64
+        cur["rom_used"] = 1296 + 64
         rows, warnings, hard = compare(BASE, cur)
         text = render_report(rows, warnings, hard, "baseline.json", "HEAD")
         self.assertIn("Status: PASS with 1 warning", text)
@@ -88,11 +89,11 @@ class TestFormatting(unittest.TestCase):
 
     def test_render_markdown_report(self):
         cur = dict(BASE)
-        cur["rom_used"] = 612
+        cur["rom_used"] = 1380
         rows, warnings, hard = compare(BASE, cur)
         md = render_report_markdown(rows, warnings, hard, "base", "current")
         self.assertIn("## Performance comparison", md)
-        self.assertIn("| ROM used | 528 B | 612 B | +84 B (+15.9%) |", md)
+        self.assertIn("| ROM used | 1296 B | 1380 B | +84 B (+6.5%) |", md)
         self.assertIn("**Status: PASS with 1 warning**", md)
 
 
@@ -114,6 +115,34 @@ class TestWarningThresholds(unittest.TestCase):
     def test_ram_growth_warns(self):
         warning = warning_for("ram_used", 3, 3 + WARN_RAM_GROWTH_BYTES + 1)
         self.assertIsNotNone(warning)
+        self.assertIn("grew", warning)
+
+    def test_ram_growth_within_bytes_no_warning(self):
+        # growth under WARN_RAM_GROWTH_BYTES, low pct and far from the
+        # pressure bands
+        self.assertIsNone(warning_for("ram_used", 48, 48 + 3))
+
+    def test_ram_growth_percent_warns_when_bytes_small(self):
+        # On a small base, a large percentage growth triggers the % threshold
+        # even though the byte growth is under WARN_RAM_GROWTH_BYTES.
+        warning = warning_for("ram_used", 4, 6)
+        self.assertIsNotNone(warning)
+        self.assertIn("50.0%", warning)
+
+    def test_ram_pressure_warns_at_75_percent(self):
+        # 96/128 = 75% hits the warning band without exceeding the project
+        # budget (64), so it must be a soft warning, not a hard failure.
+        warning = warning_for("ram_used", 10, 96)
+        self.assertIsNotNone(warning)
+        self.assertIn(f"{RAM_PRESSURE_WARN_PCT:.0f}%", warning)
+
+    def test_ram_pressure_strong_warns_at_90_percent(self):
+        warning = warning_for("ram_used", 10, 115)
+        self.assertIsNotNone(warning)
+        self.assertIn(f"{RAM_PRESSURE_STRONG_PCT:.0f}%", warning)
+
+    def test_ram_no_warning_below_pressure_and_growth(self):
+        self.assertIsNone(warning_for("ram_used", 48, 50))
 
     def test_kernel_worst_increase_warns(self):
         warning = warning_for("kernel_worst", 56,
@@ -129,7 +158,7 @@ class TestWarningThresholds(unittest.TestCase):
 
     def test_compare_surfaces_warnings(self):
         cur = dict(BASE)
-        cur["rom_used"] = 528 + 64
+        cur["rom_used"] = 1296 + 64
         _, warnings, _ = compare(BASE, cur)
         self.assertEqual(len(warnings), 1)
 
@@ -146,6 +175,20 @@ class TestHardRegressions(unittest.TestCase):
         cur["ram_used"] = RAM_LIMIT + 1
         _, _, hard = compare(BASE, cur)
         self.assertTrue(any("RAM" in h for h in hard))
+
+    def test_ram_over_project_budget_fails(self):
+        # Exceeding the current round's RAM budget is a hard regression even
+        # though 65 bytes is well inside the 128-byte hardware limit.
+        cur = dict(BASE)
+        cur["ram_used"] = PROJECT_RAM_BUDGET + 1
+        _, _, hard = compare(BASE, cur)
+        self.assertTrue(any("project budget" in h for h in hard))
+
+    def test_ram_within_project_budget_passes(self):
+        cur = dict(BASE)
+        cur["ram_used"] = PROJECT_RAM_BUDGET
+        _, _, hard = compare(BASE, cur)
+        self.assertTrue(all("RAM" not in h for h in hard))
 
     def test_kernel_over_budget_fails(self):
         cur = dict(BASE)
@@ -167,7 +210,7 @@ class TestKernelSlackMetric(unittest.TestCase):
         m = measure()
         self.assertEqual(m["kernel_slack"],
                          m["kernel_budget"] - m["kernel_worst"])
-        self.assertEqual(m["kernel_slack"], 14)  # 76 - 62 (branchless kernel)
+        self.assertEqual(m["kernel_slack"], 11)  # 76 - 65 (two-write event line)
 
     def test_latest_report_documents_slack(self):
         self.assertTrue(LATEST.exists())
@@ -202,7 +245,7 @@ class TestBaselineResolution(unittest.TestCase):
             path = Path(tmp) / "baseline.json"
             path.write_text(json.dumps(BASE))
             metrics, source = resolve_baseline(explicit=str(path))
-        self.assertEqual(metrics["rom_used"], 528)
+        self.assertEqual(metrics["rom_used"], 1296)
         self.assertIn("explicit baseline", source)
 
     def test_git_built_base_preferred(self):
@@ -236,7 +279,7 @@ class TestBaselineResolution(unittest.TestCase):
             metrics, source = resolve_baseline(
                 baseline_path=baseline_path,
                 base_ref_provider=lambda: None)
-        self.assertEqual(metrics["ram_used"], 3)
+        self.assertEqual(metrics["ram_used"], 48)
         self.assertIn("persisted baseline", source)
 
     def test_no_baseline_available(self):

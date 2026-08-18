@@ -161,22 +161,107 @@ def parse_listing(lst_path=LST_PATH):
     return rows
 
 
+def _resolve_constant_expr(expr, consts):
+    """Resolve a numeric DS-size expression to an int, or None.
+
+    Handles decimal/$hex/%binary literals, identifiers resolved against
+    `consts`, and the + - * / operators with standard precedence (the only
+    constructs used by the DS directives and constants.inc).
+    """
+    expr = expr.strip()
+    if not expr:
+        return None
+
+    def atom(tok):
+        if tok.startswith("$"):
+            return int(tok[1:], 16)
+        if tok.startswith("%"):
+            return int(tok[1:], 2)
+        if re.fullmatch(r"\d+", tok):
+            return int(tok, 10)
+        return consts.get(tok)
+
+    tokens = re.findall(r"\$[0-9a-fA-F]+|%[01]+|\d+|[A-Za-z_]\w*|[()+*/-]", expr)
+    if not tokens:
+        return None
+    # Convert to [value, op, value, op, ...] via a shunting-yard evaluation.
+    # Only + - * / and parentheses appear; handle with two precedence levels.
+    ops = {"+": lambda a, b: a + b,
+           "-": lambda a, b: a - b,
+           "*": lambda a, b: a * b,
+           "/": lambda a, b: a // b}
+    precedence = {"+": 1, "-": 1, "*": 2, "/": 2}
+    values = []
+    opstack = []
+
+    def apply_op():
+        op = opstack.pop()
+        b = values.pop()
+        a = values.pop()
+        values.append(ops[op](a, b))
+
+    for tok in tokens:
+        if tok == "(":
+            opstack.append(tok)
+        elif tok == ")":
+            while opstack and opstack[-1] != "(":
+                apply_op()
+            if not opstack or opstack.pop() != "(":
+                return None
+        elif tok in ops:
+            while (opstack and opstack[-1] != "("
+                   and precedence[opstack[-1]] >= precedence[tok]):
+                apply_op()
+            opstack.append(tok)
+        else:
+            v = atom(tok)
+            if v is None:
+                return None
+            values.append(v)
+    while opstack:
+        if opstack[-1] == "(":
+            return None
+        apply_op()
+    return values[0] if len(values) == 1 else None
+
+
 def ram_usage(symbols=None):
     """Return (used_bytes, available_bytes) for RIOT RAM.
 
     Usage is derived from the DS (define storage) directives in the listing
     VARS segment.  Counting every symbol whose value falls in $80-$FF is not
-    valid because many EQU constants have such values.
+    valid because many EQU constants have such values.  DS sizes may be
+    symbolic (e.g. ``DS EV_TBL_SIZE``), which are resolved against the EQU
+    constants in constants.inc.
     """
     used = 0
     if lst_path := LST_PATH:
+        consts = {}
+        for line in (SRC_DIR / "constants.inc").read_text().splitlines():
+            m = re.match(r"^\s*(\w+)\s*=\s*([^;]+)", line)
+            if m and re.fullmatch(r"[A-Za-z_]\w*", m.group(1)):
+                value = _resolve_constant_expr(m.group(2), consts)
+                if value is not None:
+                    consts[m.group(1)] = value
         for line in LST_PATH.read_text().splitlines():
-            m = re.match(r"^\s*\d+\s+U([0-9a-f]{4})\s+[0-9a-f]{2}\s+\S+\s+DS\s+(\d+)", line)
-            if m:
-                addr = int(m.group(1), 16)
-                size = int(m.group(2))
-                if RAM_ORIGIN <= addr < RAM_ORIGIN + RAM_LIMIT:
-                    used += size
+            # Symbolic sizes render as "00 00 00 00*<name> DS <expr>"; the
+            # expression may span multiple tokens (e.g. "EV_MAX_EVENTS * 3"),
+            # so capture everything up to the trailing ';' comment.
+            m = re.match(
+                r"^\s*\d+\s+U([0-9a-f]{4})\s+[0-9a-f]{2}(?:\s+[0-9a-f]{2})*\*?\s+\S+\s+DS\s+([^;]+)",
+                line)
+            if not m:
+                m = re.match(
+                    r"^\s*\d+\s+U([0-9a-f]{4})\s+[0-9a-f]{2}\s+\S+\s+DS\s+(\d+)",
+                    line)
+            if not m:
+                continue
+            addr = int(m.group(1), 16)
+            size = _resolve_constant_expr(m.group(2).strip(), consts)
+            if size is None:
+                continue
+            if RAM_ORIGIN <= addr < RAM_ORIGIN + RAM_LIMIT:
+                used += size
     return used, RAM_LIMIT - used
 
 
