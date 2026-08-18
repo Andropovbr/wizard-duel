@@ -267,8 +267,12 @@ JOY2_DOWN = %00000010
 
 ; Fire buttons are read through the TIA INPT latches. For joysticks (VBLANK
 ; bit 6 clear), bit 7 of INPT4/INPT5 is 0 while the button is pressed.
-INPT4 = $04              ; P0 fire button (bit 7, active low)
-INPT5 = $05              ; P1 fire button (bit 7, active low)
+; The TIA maps INPT0-3 at $38-$3B (paddle/keypad inputs) and INPT4/INPT5 at
+; $3C/$3D (the fire-button latches).  $04/$05 are NUSIZ0/NUSIZ1, write-only
+; registers: reading them would return the register address on the data bus
+; (open bus) instead of the fire-button state.
+INPT4 = $3C              ; P0 fire button (bit 7, active low)
+INPT5 = $3D              ; P1 fire button (bit 7, active low)
 
 ; Packed fire-button edge state (fire_prev): bit 0 = P0 pressed last frame,
 ; bit 1 = P1 pressed last frame.

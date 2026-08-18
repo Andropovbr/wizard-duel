@@ -67,10 +67,12 @@ class Cpu:
         if 0x100 <= addr <= 0x1FF:
             return self.stack[addr - 0x100]
         if addr < 0x40:
-            if addr < 6:
-                return self.inpt[addr]          # INPT0-5 reads
+            if 0x38 <= addr <= 0x3D:    # INPT0-5 reads
+                return self.inpt[addr - 0x38]
             return self.tia[addr]
         if addr < 0x80:
+            if 0x78 <= addr <= 0x7D:    # mirrored INPT0-5 reads
+                return self.inpt[addr - 0x78]
             return self.tia[addr & 0x3F]
         if 0x280 <= addr <= 0x29F:
             if addr == 0x284:                   # INTIM
@@ -90,17 +92,16 @@ class Cpu:
             self.stack[addr - 0x100] = value
             return
         if addr < 0x40:
-            # Writes to $00-$05 are real TIA write registers (VSYNC, VBLANK,
-            # WSYNC, ...); only the READS at those addresses are the read-only
-            # INPT latches.
+            # All $00-$3F TIA writes go to write registers; the read-only
+            # INPT latches live at $38-$3D and are ignored for writes.
             self.tia[addr] = value
             if addr == 0x02:                    # WSYNC: hold to next scanline
                 rem = self.cycles % 76
                 self.cycles += 76 - rem if rem else 76
             return
         if addr < 0x80:
-            if (addr & 0x3F) < 6:
-                return                          # mirrored INPT reads are read-only
+            if 0x38 <= (addr & 0x3F) <= 0x3D:
+                return                          # INPT reads are read-only
             self.tia[addr & 0x3F] = value
             return
         if 0x280 <= addr <= 0x29F:
