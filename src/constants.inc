@@ -86,8 +86,8 @@ TIM64T  = $0296  ; write timer value, countdown clock = 64 cycles
 ;
 ; VBLANK is larger than in Round 2 because the event table for the visible
 ; kernel (players, ball and up to two missiles) is rebuilt every frame during
-; VBLANK by BuildEvents, which keeps up to 10 event records sorted. OVERSCAN
-; shrinks accordingly to keep the frame at 262 lines.
+; VBLANK by BuildEvents.  OVERSCAN shrinks accordingly to keep the frame at
+; 262 lines.
 ; ---------------------------------------------------------------------------
 FRAME_SCANLINES      = 262
 VSYNC_SCANLINES      = 3
@@ -217,41 +217,61 @@ M1_X_INIT            = 134    ; right player's missile spawn x
 M0_X_MAX             = 158    ; M0 despawns when x > M0_X_MAX
 M1_X_MIN             = 2      ; M1 despawns when x < M1_X_MIN
 
+; Packed missile-active state (m_active): one bit per missile, so both missiles
+; share a single RAM byte.  M0_BIT clears as "AND #%11111110", M1_BIT as
+; "AND #%11111101".
+M0_BIT = %00000001
+M1_BIT = %00000010
+
 ; ---------------------------------------------------------------------------
 ; Event kernel constants
 ; ---------------------------------------------------------------------------
 ; The visible kernel is event-driven: instead of computing every object's
 ; enable every scanline, BuildEvents (run during VBLANK) writes a small table
-; of "register write" entries. Each entry is 5 bytes:
+; of variable-size "register write" entries.  Each entry is either:
 ;
-;   byte 0  delta   scanlines until this entry fires (counted down per line)
-;   byte 1  reg1    register index of the first write
-;   byte 2  val1    value of the first write
-;   byte 3  reg2    register index of the second write
-;   byte 4  val2    value of the second write
+;   single entry (3 bytes):   byte 0  delta
+;                             byte 1  reg1 | EV_SINGLE_FLAG
+;                             byte 2  val1
+;   double entry (5 bytes):   byte 0  delta
+;                             byte 1  reg1
+;                             byte 2  val1
+;                             byte 3  reg2
+;                             byte 4  val2
 ;
-; Register indices are offsets from EV_WRITE_BASE = AUDV1 ($1A), so index 0
-; writes AUDV1 (a harmless dummy used when an entry only needs one write) and
-; indices 1..5 address GRP0..ENABL. The kernel always performs both writes.
+; EV_SINGLE_FLAG (bit 7 of reg1) marks a single entry.  The kernel loads reg1
+; and tests bit 7 with BMI: flag set -> one write, flag clear -> two writes.
+; Entries are stored in ascending row order; a terminator entry (delta =
+; EV_TERMINATOR_DELTA, a single byte) closes the table.
+;
+; Register indices are offsets from EV_WRITE_BASE = AUDV1 ($1A); indices 1..5
+; address GRP0..ENABL.  A single entry performs exactly one write (no dummy),
+; which is what makes the variable-size entries worth their code.
 ;
 ; Deltas: the first entry fires on line (delta - 1) and every following entry
 ; fires `delta` lines after the previous one, so the builder computes
-; delta(first) = row + 1 and delta(next) = row - prevRow. The kernel counts
-; exactly KERNEL_SCANLINES lines with an X counter, so the table only holds
-; real events followed by a terminator entry whose delta can never fire
+; delta(first) = row + 1 and delta(next) = row - prevRow.  The kernel counts
+; exactly KERNEL_SCANLINES lines with a RAM countdown, so the table only holds
+; real events followed by a terminator whose delta can never fire
 ; (EV_TERMINATOR_DELTA = $FF > any possible remaining line count).
+;
+; Size bound: 10 events, each contributing at most one single entry (3 bytes)
+; when on a distinct row -> 30 bytes + 1 terminator = 31.  Merging two
+; same-row singles into a double saves one byte, so the table can never exceed
+; EV_TBL_SIZE bytes.  A row that already holds a double never accepts a third
+; write: the builder bumps the extra event to row+1 instead, keeping every
+; scanline inside the kernel's cycle budget.
 ; ---------------------------------------------------------------------------
-EV_REG_DUMMY  = 0       ; writes AUDV1 ($1A) - harmless, never displayed
 EV_REG_GRP0   = 1       ; GRP0  ($1B) - player 0 sprite
 EV_REG_GRP1   = 2       ; GRP1  ($1C) - player 1 sprite
 EV_REG_ENAM0  = 3       ; ENAM0 ($1D) - missile 0
 EV_REG_ENAM1  = 4       ; ENAM1 ($1E) - missile 1
 EV_REG_ENABL  = 5       ; ENABL ($1F) - ball
 EV_WRITE_BASE = $1A     ; AUDV1; STA EV_WRITE_BASE,X writes the register above
+EV_SINGLE_FLAG = $80    ; bit 7 of reg1 marks a 3-byte single entry
 
 EV_MAX_EVENTS     = 10      ; 2 players + ball + 2 missiles, 2 events each
-EV_TBL_ENTRIES    = EV_MAX_EVENTS + 1   ; + 1 terminator entry
-EV_TBL_SIZE       = EV_TBL_ENTRIES * 5
+EV_TBL_SIZE       = EV_MAX_EVENTS * 3 + 1   ; 10 singles + terminator = 31
 EV_TERMINATOR_DELTA = $FF   ; never fires inside a 192-line kernel
 
 ; ---------------------------------------------------------------------------
@@ -275,9 +295,11 @@ INPT4 = $3C              ; P0 fire button (bit 7, active low)
 INPT5 = $3D              ; P1 fire button (bit 7, active low)
 
 ; Packed fire-button edge state (fire_prev): bit 0 = P0 pressed last frame,
-; bit 1 = P1 pressed last frame.
+; bit 1 = P1 pressed last frame, bit 7 (FIRE_SYNC) = the first-frame boot
+; synchronisation already happened.
 FIRE_P0 = %00000001
 FIRE_P1 = %00000010
+FIRE_SYNC = %10000000
 
 ; VBLANK values. Bit 1 blanks the display; bit 6 ($40) only controls the
 ; INPT latches used for paddles, which are not used yet.

@@ -2,7 +2,9 @@
 ; Wizard Duel - Atari 2600
 ; main.asm
 ;
-; Round 3 - basic projectiles and an event-driven kernel.
+; Round 3.1 - RAM optimization: the event kernel and builder were redesigned
+; to cut RIOT RAM from 122 to 48 bytes (see the VARS segment and
+; docs/en/memory-map.md).
 ;
 ;   * stable NTSC frame, 262 scanlines
 ;   * two TIA players visible simultaneously (P0 left, P1 right)
@@ -23,6 +25,12 @@
 ; The kernel then only has to count down to the next event and apply its
 ; writes, which keeps every scanline well under 76 cycles (see the kernel
 ; comment below for the exact budget).
+;
+; Round 3.1 change: entries are now VARIABLE-SIZE. A single write occupies 3
+; bytes, a double write 5 bytes, and the table is terminated by a single $FF
+; byte.  Because the common case is one write per scanline, the table shrank
+; from a fixed 55 bytes to at most 31 bytes (10 singles + terminator), which
+; allowed the builder scratch space to be removed entirely.
 ;
 ; Frame structure (NTSC):
 ;
@@ -153,8 +161,7 @@ WaitVBlank:
     STA ENABL               ; 3
     LDA #KERNEL_SCANLINES   ; 2   prime the kernel line countdown
     STA scanCnt             ; 3
-    LDY #0                  ; 2
-    STY evIdx               ; 3   first table entry
+    LDY #0                  ; 2   Y = byte offset of the current entry
     LDA evTbl               ; 3   first delta
     STA evCnt               ; 3
     JMP KernelLoop          ; 3
@@ -163,50 +170,55 @@ WaitVBlank:
 ; Visible kernel: 192 scanlines.
 ;
 ; Scanline budget: 76 cycles. The kernel is event-driven: each scanline just
-; counts down evCnt and, when it reaches zero, applies the two register
-; writes of the current entry (evTbl + evIdx) and reloads the next delta.
-; Because the writes are always present in the table entry (a single-write
-; entry writes a harmless audio register as its second write), the event path
-; is straight-line code with no conditional branches.
+; counts down evCnt and, when it reaches zero, applies the register writes of
+; the current entry (evTbl indexed by Y) and reloads the next delta.  Entries
+; are variable-size: a double entry (5 bytes) performs two writes, a single
+; entry (3 bytes, marked by EV_SINGLE_FLAG = bit 7 of reg1) performs one.
+; The three paths below are the only code executed during display.
 ;
 ; The kernel counts exactly KERNEL_SCANLINES lines with a RAM countdown
 ; (scanCnt, primed to 192 before the kernel).  The line counter deliberately
 ; lives in RAM rather than in X: the event code uses X (TAX) as the register
 ; index, so an X line counter would be clobbered on every event line and the
-; frame would drift longer than 262 scanlines.
+; frame would drift longer than 262 scanlines.  Y holds the table byte offset
+; across the whole kernel (no STY/LDY per event line).
 ;
-; Worst case (a scanline where a two-write entry fires):
+; Worst case (a scanline where a double-entry fires):
 ;   STA WSYNC            3   start of scanline
 ;   DEC scanCnt          5   kernel line countdown
 ;   BEQ .kernelEnd       2   (192 lines done)
 ;   DEC evCnt            5   count down to the next event
 ;   BNE KernelLoop       2   event line: not taken
-;   LDY evIdx            3
-;   LDA evTbl+1,Y        4   register index 1
-;   TAX                  2
+;   LDA evTbl+1,Y        4   register index 1 (bit 7 = single flag)
+;   BMI .singleWrite     2   double entry: not taken
+;   TAX                  2   X = register index 1
 ;   LDA evTbl+2,Y        4   value 1
-;   STA EV_WRITE_BASE,X  4   GRP0..ENABL (or harmless AUDV1)
+;   STA EV_WRITE_BASE,X  4   GRP0..ENABL
 ;   LDA evTbl+3,Y        4   register index 2
 ;   TAX                  2
 ;   LDA evTbl+4,Y        4   value 2
 ;   STA EV_WRITE_BASE,X  4
-;   TYA                  2   advance to the next entry
+;   TYA                  2   advance Y past the 5-byte entry
 ;   CLC                  2
 ;   ADC #5               2
 ;   TAY                  2
-;   STY evIdx            3
 ;   LDA evTbl,Y          4   next delta
 ;   STA evCnt            3
 ;   JMP KernelLoop       3
-;   Total               69   < 76, slack = 7
+;   Total               65   < 76, slack = 11
 ;
-; Best case (no event on the line): 3 + 5 + 2 + 5 + 3 = 18 cycles.
+; Single-write event line: 54 cycles (BMI taken, one write, advance by 3).
+; Non-event line: 3 + 5 + 2 + 5 + 3 (BNE taken) = 18 cycles.
 ;
-; Write timing: all object registers (GRP0..ENABL, EV_WRITE_BASE+X) are
-; written early in the scanline, long before the beam reaches any object's
-; horizontal position (P0 is leftmost at x=16 -> ~cycle 28), so the values
-; always apply to the current line. This is the same invariant the Round 2
-; kernel relied on for the ball enable.
+; Write timing: on the double path the first register write happens during
+; CPU cycles 30..33 and the second during cycles 44..47 of the scanline.  A
+; write before the beam passes the object's horizontal position applies to
+; the current scanline; otherwise it applies one line later.  With the
+; standard beam model (pixel p is reached at CPU cycle ~(p + 69) / 3) the
+; gates are x >= 30 for the first write and x >= 72 for the second, so P0
+; (x = 16) and P1 (x = 136) behave exactly as in Round 3, and only objects
+; in a 3-pixel band (x in 30..32 / 72..74) gain one scanline of margin.
+; See docs/en/timing.md.
 ;
 ; The kernel body is kept inside a single 256-byte page (ALIGN 256 before
 ; KernelLoop) so the backward branches have deterministic timing.
@@ -219,20 +231,33 @@ KernelLoop:
     DEC evCnt               ; 5   count down to the next event
     BNE KernelLoop          ; 2/3  not an event line -> loop back
     ; ---- event line: apply the current entry ----
-    LDY evIdx               ; 3
-    LDA evTbl+1,Y           ; 4   register index 1
-    TAX                     ; 2
+    LDA evTbl+1,Y           ; 4   register index 1 (bit 7 = single flag)
+    BMI .singleWrite        ; 2/3  single entry (flag set) -> one write
+    ; ---- double entry (5 bytes): two register writes ----
+    TAX                     ; 2   X = register index 1
     LDA evTbl+2,Y           ; 4   value 1
     STA EV_WRITE_BASE,X     ; 4   write GRP0..ENABL
     LDA evTbl+3,Y           ; 4   register index 2
     TAX                     ; 2
     LDA evTbl+4,Y           ; 4   value 2
     STA EV_WRITE_BASE,X     ; 4
-    TYA                     ; 2   advance the table pointer by one entry
+    TYA                     ; 2   advance Y past the 5-byte entry
     CLC                     ; 2
     ADC #5                  ; 2
     TAY                     ; 2
-    STY evIdx               ; 3
+    LDA evTbl,Y             ; 4   next delta
+    STA evCnt               ; 3
+    JMP KernelLoop          ; 3
+.singleWrite:
+    ; ---- single entry (3 bytes): one register write ----
+    AND #$7F                ; 2   mask EV_SINGLE_FLAG off the index
+    TAX                     ; 2   X = register index
+    LDA evTbl+2,Y           ; 4   value
+    STA EV_WRITE_BASE,X     ; 4
+    TYA                     ; 2   advance Y past the 3-byte entry
+    CLC                     ; 2
+    ADC #3                  ; 2
+    TAY                     ; 2
     LDA evTbl,Y             ; 4   next delta
     STA evCnt               ; 3
     JMP KernelLoop          ; 3
@@ -270,14 +295,15 @@ OverscanWait:
 ; Movement is applied only when the player is not already at the relevant
 ; boundary, which prevents the position from wrapping below PLAYER_Y_MIN or
 ; above PLAYER_Y_MAX.
+;
+; SWCHA is re-read for each direction (4 reads/frame).  The previous joystate
+; scratch byte was removed to save RAM; the port reads are cheap and happen
+; during VBLANK, where cycle count is not display-critical.
 ; =============================================================================
 UpdatePlayers:
-    LDA SWCHA               ; 3   sample the joysticks once
-    STA joystate            ; 3   (avoid repeated reads of the port)
-
     ; Player 0 - up
-    LDA #JOY1_UP            ; 2
-    BIT joystate            ; 3
+    LDA SWCHA               ; 4   sample the joysticks
+    AND #JOY1_UP            ; 2
     BNE .p0UpDone           ; 2/3
     LDA P0Y                 ; 3
     BEQ .p0UpDone           ; 2/3  already at the top of the arena
@@ -285,8 +311,8 @@ UpdatePlayers:
 .p0UpDone:
 
     ; Player 0 - down
-    LDA #JOY1_DOWN          ; 2
-    BIT joystate            ; 3
+    LDA SWCHA               ; 4
+    AND #JOY1_DOWN          ; 2
     BNE .p0DownDone         ; 2/3
     LDA P0Y                 ; 3
     CMP #PLAYER_Y_MAX       ; 2
@@ -295,8 +321,8 @@ UpdatePlayers:
 .p0DownDone:
 
     ; Player 1 - up
-    LDA #JOY2_UP            ; 2
-    BIT joystate            ; 3
+    LDA SWCHA               ; 4
+    AND #JOY2_UP            ; 2
     BNE .p1UpDone           ; 2/3
     LDA P1Y                 ; 3
     BEQ .p1UpDone           ; 2/3
@@ -304,8 +330,8 @@ UpdatePlayers:
 .p1UpDone:
 
     ; Player 1 - down
-    LDA #JOY2_DOWN          ; 2
-    BIT joystate            ; 3
+    LDA SWCHA               ; 4
+    AND #JOY2_DOWN          ; 2
     BNE .p1DownDone         ; 2/3
     LDA P1Y                 ; 3
     CMP #PLAYER_Y_MAX       ; 2
@@ -387,56 +413,56 @@ UpdateBall:
 ;   M1 (right player): x = M1_X_INIT (134), moves left, despawns at x < 2
 ;
 ; fire_prev stores the previous frame's button state (bit 0 = P0, bit 1 =
-; P1, 1 = pressed) so a fire is detected on the rising edge only.
+; P1, 1 = pressed) so a fire is detected on the rising edge only.  Both
+; missiles share one packed "active" byte (m_active): bit 0 = M0, bit 1 =
+; M1, which replaces the two separate m0_active/m1_active bytes of Round 3.
 ;
 ; Boot synchronisation: on real hardware (and in Stella) the TIA INPT latches
 ; read the fire lines as pressed for the first frames after RESET.  If the
 ; first UpdateMissiles treated that as a rising edge, every player would fire
-; a missile at boot without touching the button.  fire_sync is cleared by
-; Reset; on the first call UpdateMissiles only adopts the real button state
-; into fire_prev (no spawn), so a genuine released->pressed transition is
-; required to fire, and a button held at boot does not fire until it is
-; released and pressed again.
+; a missile at boot without touching the button.  Bit 7 of fire_prev
+; (FIRE_SYNC) is cleared by Reset; on the first call UpdateMissiles only
+; adopts the real button state into fire_prev (no spawn), so a genuine
+; released->pressed transition is required to fire, and a button held at boot
+; does not fire until it is released and pressed again.
 ; =============================================================================
 UpdateMissiles:
-    ; ---- sample both fire buttons into tempA (1 = pressed) ----
-    LDA #0                  ; 2
-    STA tempA               ; 3
+    ; ---- sample both fire buttons into X (bits 1:0 = pressed mask) ----
+    LDX #0                  ; 2
     LDA INPT4               ; 3   P0 fire button
     AND #$80                ; 2
     BNE .p0NotPressed       ; 2/3
-    LDA tempA               ; 3
-    ORA #FIRE_P0            ; 2
-    STA tempA               ; 3
+    INX                     ; 2   bit 0
 .p0NotPressed:
     LDA INPT5               ; 3   P1 fire button
     AND #$80                ; 2
     BNE .p1NotPressed       ; 2/3
-    LDA tempA               ; 3
-    ORA #FIRE_P1            ; 2
-    STA tempA               ; 3
+    INX                     ; 2   bit 1
+    INX                     ; 2
 .p1NotPressed:
 
     ; ---- first frame after reset: adopt the real button state ----
-    LDA fire_sync           ; 3
-    BNE .edgeDetect         ; 2/3  already synchronised
-    LDA tempA               ; 3
+    LDA fire_prev           ; 3
+    BMI .edgeDetect         ; 2/3  bit 7 set -> already synchronised
+    TXA                     ; 2
+    ORA #FIRE_SYNC          ; 2   mark as synchronised
     STA fire_prev           ; 3   no spawn, just remember the real state
-    INC fire_sync           ; 5
     JMP .movement           ; 3
 
 .edgeDetect:
     ; ---- M0: spawn on rising edge while inactive ----
-    LDA tempA               ; 3
+    TXA                     ; 2
     AND #FIRE_P0            ; 2
     BEQ .m0NoSpawn          ; 2/3  not pressed this frame
     LDA fire_prev           ; 3
     AND #FIRE_P0            ; 2
     BNE .m0NoSpawn          ; 2/3  was already pressed -> no new edge
-    LDA m0_active           ; 3
+    LDA m_active            ; 3
+    AND #M0_BIT             ; 2
     BNE .m0NoSpawn          ; 2/3  still flying -> don't respawn
-    LDA #1                  ; 2
-    STA m0_active           ; 3
+    LDA m_active            ; 3
+    ORA #M0_BIT             ; 2
+    STA m_active            ; 3
     LDA #M0_X_INIT          ; 2
     STA m0_x                ; 3
     LDA P0Y                 ; 3
@@ -446,16 +472,18 @@ UpdateMissiles:
 .m0NoSpawn:
 
     ; ---- M1: spawn on rising edge while inactive ----
-    LDA tempA               ; 3
+    TXA                     ; 2
     AND #FIRE_P1            ; 2
     BEQ .m1NoSpawn          ; 2/3
     LDA fire_prev           ; 3
     AND #FIRE_P1            ; 2
     BNE .m1NoSpawn          ; 2/3
-    LDA m1_active           ; 3
+    LDA m_active            ; 3
+    AND #M1_BIT             ; 2
     BNE .m1NoSpawn          ; 2/3  still flying -> don't respawn
-    LDA #1                  ; 2
-    STA m1_active           ; 3
+    LDA m_active            ; 3
+    ORA #M1_BIT             ; 2
+    STA m_active            ; 3
     LDA #M1_X_INIT          ; 2
     STA m1_x                ; 3
     LDA P1Y                 ; 3
@@ -464,13 +492,15 @@ UpdateMissiles:
     STA m1_y                ; 3
 .m1NoSpawn:
 
-    ; ---- remember this frame's button state ----
-    LDA tempA               ; 3
+    ; ---- remember this frame's button state (keep the sync bit) ----
+    TXA                     ; 2
+    ORA #FIRE_SYNC          ; 2
     STA fire_prev           ; 3
 
 .movement:
     ; ---- M0: move right, despawn past the right edge ----
-    LDA m0_active           ; 3
+    LDA m_active            ; 3
+    AND #M0_BIT             ; 2
     BEQ .m0MoveDone         ; 2/3
     LDA m0_x                ; 3
     CLC                     ; 2
@@ -478,12 +508,14 @@ UpdateMissiles:
     STA m0_x                ; 3
     CMP #M0_X_MAX + 1       ; 2   keep while x <= M0_X_MAX (fully visible)
     BCC .m0MoveDone         ; 2/3
-    LDA #0                  ; 2
-    STA m0_active           ; 3
+    LDA m_active            ; 3
+    AND #%11111110          ; 2   clear the M0 bit
+    STA m_active            ; 3
 .m0MoveDone:
 
     ; ---- M1: move left, despawn past the left edge ----
-    LDA m1_active           ; 3
+    LDA m_active            ; 3
+    AND #M1_BIT             ; 2
     BEQ .m1MoveDone         ; 2/3
     LDA m1_x                ; 3
     SEC                     ; 2
@@ -491,8 +523,9 @@ UpdateMissiles:
     STA m1_x                ; 3
     CMP #M1_X_MIN           ; 2   keep while x >= M1_X_MIN
     BCS .m1MoveDone         ; 2/3
-    LDA #0                  ; 2
-    STA m1_active           ; 3
+    LDA m_active            ; 3
+    AND #%11111101          ; 2   clear the M1 bit
+    STA m_active            ; 3
 .m1MoveDone:
 
     RTS                     ; 6
@@ -578,7 +611,8 @@ PositionBallOk:
 ; invisible.
 ; =============================================================================
 PositionMissiles:
-    LDA m0_active           ; 3
+    LDA m_active            ; 3
+    AND #M0_BIT             ; 2
     BEQ .m0PosDone          ; 2/3
     LDA m0_x                ; 3
     CLC                     ; 2
@@ -591,7 +625,8 @@ PositionMissiles:
     LDX #2                  ; 2   object 2 = missile 0
     JSR PosObject           ; 6
 .m0PosDone:
-    LDA m1_active           ; 3
+    LDA m_active            ; 3
+    AND #M1_BIT             ; 2
     BEQ .m1PosDone          ; 2/3
     LDA m1_x                ; 3
     CLC                     ; 2
@@ -614,8 +649,8 @@ PositionMissiles:
 ; movement and horizontal placement, so the table always describes exactly
 ; the frame about to be rendered.
 ;
-; Phase 1 - generate records. Every object contributes an ON event (turn the
-;   register on) and an OFF event (turn it off) at its display rows:
+; Every object contributes an ON event (turn the register on) and an OFF
+; event (turn it off) at its display rows:
 ;
 ;     P0   ON (P0Y, GRP0, PADDLE_BITS)          OFF (P0Y+12, GRP0, 0)
 ;     P1   ON (P1Y, GRP1, PADDLE_BITS)          OFF (P1Y+12, GRP1, 0)
@@ -623,327 +658,267 @@ PositionMissiles:
 ;     M0   ON (m0_y, ENAM0, MISSILE_ENABLE)     OFF (m0_y+4, ENAM0, 0)
 ;     M1   ON (m1_y, ENAM1, MISSILE_ENABLE)     OFF (m1_y+4, ENAM1, 0)
 ;
-;   Inactive missiles contribute nothing. AddEvent inserts each record into
-;   the scratch buffer (events, 3 bytes each: row, reg, val) keeping it sorted
-;   by row, and enforces the invariant that no row holds more than two
-;   records (a third event on a full row is shifted to row+1).
-;
-; Phase 2 - emit. EmitEvents walks the sorted records once (linear), merging
-;   at most two same-row records into a single entry (two writes) and writing
-;   the deltas.  This is O(records), so the whole builder stays well inside
-;   the VBLANK timer budget.
-;
-;   Deltas follow the kernel convention: delta(first) = row + 1 and
-;   delta(next) = row - prevRow. Events with a row >= KERNEL_SCANLINES are
-;   emitted harmlessly: their delta never reaches zero inside the 192-line
-;   kernel. A terminator entry with delta = EV_TERMINATOR_DELTA ($FF) closes
-;   the table so the kernel never reads past it.
+;   Inactive missiles contribute nothing.  InsertEvent inserts every event
+;   directly into evTbl in row order, merging same-row singles into doubles
+;   and bumping surplus same-row events to row+1, so no scanline ever needs
+;   more than two writes.  The table holds ABSOLUTE rows while it is built;
+;   ConvertDeltas turns them into the deltas the kernel counts down.  Because
+;   the table is variable-size and never exceeds EV_TBL_SIZE bytes (10 singles
+;   + terminator = 31), no separate record/order scratch buffer is needed.
 ;
 ; The builder runs in VBLANK (up to ~56*64 cycles available), so its own
 ; cycle count is not display-critical.
 ; =============================================================================
 BuildEvents:
-    ; ---- Phase 1: generate records ----
-    LDA #0                  ; 2
-    STA evCount             ; 3   reset the record count
-    ; P0 ON / OFF
+    ; ---- reset the table to just its terminator ----
+    LDA #EV_TERMINATOR_DELTA ; 2
+    STA evTbl               ; 3
+    LDA #1                  ; 2
+    STA tblLen              ; 3   table length in bytes
+    ; ---- P0 ON / OFF ----
     LDA P0Y                 ; 3
     LDX #EV_REG_GRP0        ; 2
     LDY #PADDLE_BITS        ; 2
-    JSR AddEvent            ; 6
+    JSR InsertEvent         ; 6
     LDA P0Y                 ; 3
     CLC                     ; 2
     ADC #PLAYER_HEIGHT      ; 2
     LDX #EV_REG_GRP0        ; 2
     LDY #0                  ; 2
-    JSR AddEvent            ; 6
-    ; P1 ON / OFF
+    JSR InsertEvent         ; 6
+    ; ---- P1 ON / OFF ----
     LDA P1Y                 ; 3
     LDX #EV_REG_GRP1        ; 2
     LDY #PADDLE_BITS        ; 2
-    JSR AddEvent            ; 6
+    JSR InsertEvent         ; 6
     LDA P1Y                 ; 3
     CLC                     ; 2
     ADC #PLAYER_HEIGHT      ; 2
     LDX #EV_REG_GRP1        ; 2
     LDY #0                  ; 2
-    JSR AddEvent            ; 6
-    ; Ball ON / OFF
+    JSR InsertEvent         ; 6
+    ; ---- Ball ON / OFF ----
     LDA ball_y              ; 3
     LDX #EV_REG_ENABL       ; 2
     LDY #BALL_ENABLE        ; 2
-    JSR AddEvent            ; 6
+    JSR InsertEvent         ; 6
     LDA ball_y              ; 3
     CLC                     ; 2
     ADC #BALL_HEIGHT        ; 2
     LDX #EV_REG_ENABL       ; 2
     LDY #0                  ; 2
-    JSR AddEvent            ; 6
-    ; M0 ON / OFF (only while active)
-    LDA m0_active           ; 3
+    JSR InsertEvent         ; 6
+    ; ---- M0 ON / OFF (only while active) ----
+    LDA m_active            ; 3
+    AND #M0_BIT             ; 2
     BEQ .m0EventsDone       ; 2/3
     LDA m0_y                ; 3
     LDX #EV_REG_ENAM0       ; 2
     LDY #MISSILE_ENABLE     ; 2
-    JSR AddEvent            ; 6
+    JSR InsertEvent         ; 6
     LDA m0_y                ; 3
     CLC                     ; 2
     ADC #MISSILE_HEIGHT     ; 2
     LDX #EV_REG_ENAM0       ; 2
     LDY #0                  ; 2
-    JSR AddEvent            ; 6
+    JSR InsertEvent         ; 6
 .m0EventsDone:
-    ; M1 ON / OFF (only while active)
-    LDA m1_active           ; 3
+    ; ---- M1 ON / OFF (only while active) ----
+    LDA m_active            ; 3
+    AND #M1_BIT             ; 2
     BEQ .m1EventsDone       ; 2/3
     LDA m1_y                ; 3
     LDX #EV_REG_ENAM1       ; 2
     LDY #MISSILE_ENABLE     ; 2
-    JSR AddEvent            ; 6
+    JSR InsertEvent         ; 6
     LDA m1_y                ; 3
     CLC                     ; 2
     ADC #MISSILE_HEIGHT     ; 2
     LDX #EV_REG_ENAM1       ; 2
     LDY #0                  ; 2
-    JSR AddEvent            ; 6
+    JSR InsertEvent         ; 6
 .m1EventsDone:
 
-    ; ---- Phase 2: sort the records by row, then emit the table ----
-    JSR SortEvents          ; 6
-    JMP EmitEvents          ; 3
+    ; ---- convert absolute rows to kernel deltas ----
+    JMP ConvertDeltas       ; 3
 
 ; =============================================================================
-; AddEvent
+; InsertEvent
 ;
-; Appends one event record (row, reg, val) to the events scratch buffer and
-; records its byte offset in evOrder (the order array sorted by SortEvents).
-;   A = row, X = register index, Y = value
-; Clobbers A, X, Y and tempA.
-; =============================================================================
-AddEvent:
-    STY tempA               ; 3   save value
-    PHA                     ; 3   save row
-    LDA evCount             ; 3
-    ASL                     ; 2
-    CLC                     ; 2
-    ADC evCount             ; 3   A = evCount * 3 (byte offset of the new record)
-    TAY                     ; 2   Y = record byte offset
-    PLA                     ; 4   A = row
-    STA events,Y            ; 4   store row
-    TXA                     ; 2
-    STA events+1,Y          ; 4   store register index
-    LDA tempA               ; 3
-    STA events+2,Y          ; 4   store value
-    LDX evCount             ; 3   X = order index of the new record
-    TYA                     ; 2   A = record byte offset
-    STA evOrder,X           ; 4   evOrder[evCount] = offset
-    INC evCount             ; 5
-    RTS                     ; 6
-
-; =============================================================================
-; SortEvents
+; Inserts one event (row, reg, val) into evTbl, which holds ABSOLUTE rows
+; while the builder runs.  Entries are variable-size and kept sorted by row:
 ;
-; Insertion-sorts evOrder[0..evCount) so that the rows of the referenced
-; records are non-decreasing.  evOrder holds record byte offsets (0, 3, 6, ...),
-; so shifting an order entry is a single-byte move (much cheaper than moving
-; the 3-byte records themselves).
+;   single entry:  [row, reg | EV_SINGLE_FLAG, val]      (3 bytes)
+;   double entry:  [row, reg1, val1, reg2, val2]         (5 bytes)
+;
+; The scan walks the table from the first byte:
+;   * the terminator (row $FF) is reached, or the current entry's row is
+;     larger: insert a new single entry before it (shift-by-3);
+;   * the current entry shares the row AND is a single: merge the new event
+;     into it as its second write (shift-by-2), converting it to a double;
+;   * the current entry shares the row but is already a double: bump the new
+;     event's row to row+1 and continue the scan (a table entry never holds
+;     three writes, which would break the 76-cycle kernel budget).
+;
+; Because merging a same-row event replaces two separate singles with one
+; double (6 -> 5 bytes), the table can never exceed EV_TBL_SIZE bytes.
+;
+; A = row, X = register index, Y = value.
+; Uses evRow, tempCount, tblLen and the stack (row/reg/val are held on the
+; stack while the table is scanned and shifted).
 ; =============================================================================
-SortEvents:
-    LDA evCount             ; 3
-    CMP #2                  ; 2
-    BCC .sortDone               ; 2/3  zero or one record: already sorted
-    LDA #1                  ; 2
-    STA recOff               ; 3   outer index i
-.sortOuter:
-    LDA recOff               ; 3
-    CMP evCount             ; 3
-    BCS .sortDone               ; 2/3
-    LDX recOff               ; 3
-    LDA evOrder,X           ; 4   key: record byte offset at order index i
-    STA evOrderIdx             ; 3
-    TAY                     ; 2
-    LDA events,Y            ; 4   key row
-    STA groupRow             ; 3
-    LDX recOff               ; 3
+InsertEvent:
+    STA evRow               ; 3   save the event row
+    PHA                     ; 3   save the row on the stack
     TXA                     ; 2
-    TAY                     ; 2   Y = inner index j
-.sortInner:
+    PHA                     ; 3   save reg on the stack
     TYA                     ; 2
-    BEQ .sortPlace              ; 2/3  j == 0 -> insert at 0
-    LDX evOrder-1,Y         ; 4   offset of the record at order index j-1
-    LDA events,X            ; 4   row of j-1
-    CMP groupRow             ; 3
-    BCC .sortPlace              ; 2/3  row[j-1] < key -> insert at j
-    LDA evOrder-1,Y         ; 4   shift evOrder[j-1] -> evOrder[j]
-    STA evOrder,Y           ; 4
-    DEY                     ; 2
-    JMP .sortInner              ; 3
-.sortPlace:
-    LDA evOrderIdx             ; 3
-    STA evOrder,Y           ; 4
-    INC recOff               ; 5
-    JMP .sortOuter              ; 3
-.sortDone:
-    RTS                     ; 6
-
-; =============================================================================
-; EmitEvents
-;
-; Walks evOrder (sorted by row) and writes the event table.  Two adjacent
-; records on the same row are merged into a single entry (two writes).  If a
-; pathological third record shares the row, its row is bumped to row+1 and its
-; order entry is bubbled forward by BubbleOrder so it is emitted on the later
-; line; this keeps every scanline inside the 76-cycle kernel budget.
-;
-; Deltas follow the kernel convention: delta(first) = row + 1 (prevRow starts
-; at $FF = -1) and delta(next) = row - prevRow.  Records with a row >=
-; KERNEL_SCANLINES are emitted harmlessly: their delta never reaches zero
-; inside the 192-line kernel.  A terminator entry with delta =
-; EV_TERMINATOR_DELTA ($FF) closes the table.
-; =============================================================================
-EmitEvents:
-    LDA #$FF                ; 2
-    STA prevRow             ; 3   sentinel -> first delta = row + 1
-    LDA #0                  ; 2
-    STA evOrderIdx          ; 3   order index
-    STA evTblPtr            ; 3   evTbl byte offset
-
-.recordLoop:
-    LDA evOrderIdx          ; 3
-    CMP evCount             ; 3
-    BCC .processRecord      ; 2/3  records remain
-    JMP .emitDone           ; 3
-
-.processRecord:
-    LDY evTblPtr            ; 3
-    LDX evOrderIdx          ; 3
-    LDA evOrder,X           ; 4   record byte offset
-    TAX                     ; 2   X = record offset
-    LDA events,X            ; 4   row
-    STA groupRow            ; 3
-    LDA events+1,X          ; 4   first write: register index
-    STA evTbl+1,Y           ; 4
-    LDA events+2,X          ; 4   first write: value
-    STA evTbl+2,Y           ; 4
-    LDA #0                  ; 2   default second write: dummy register
-    STA evTbl+3,Y           ; 4
-    STA evTbl+4,Y           ; 4
-
-    ; ---- try to merge the next sorted record if it shares the row ----
-    LDA evOrderIdx          ; 3
-    CLC                     ; 2
-    ADC #1                  ; 2
-    STA recOff              ; 3   recOff = i+1 (emit continues here if no merge)
-    TAX                     ; 2   X = i+1
-    TXA                     ; 2
-    CMP evCount             ; 3
-    BCS .writeDelta         ; 2/3  no next record
-    LDA evOrder,X           ; 4   A = next record offset
-    STA nextOff             ; 3   save it
-    TAY                     ; 2
-    LDA events,Y            ; 4   next record's row
-    CMP groupRow            ; 3
-    BNE .writeDelta         ; 2/3  different row -> single write
-    ; ---- merge the second record into the entry ----
-    LDY evTblPtr            ; 3
-    LDX nextOff             ; 3
-    LDA events+1,X          ; 4
-    STA evTbl+3,Y           ; 4
-    LDA events+2,X          ; 4
-    STA evTbl+4,Y           ; 4
-    ; recOff = i+2 (skip past the merged pair)
-    LDA recOff              ; 3
-    CLC                     ; 2
-    ADC #1                  ; 2
-    STA recOff              ; 3
-    ; ---- a pathological third record on the same row? ----
-    TAX                     ; 2   X = i+2
-    TXA                     ; 2
-    CMP evCount             ; 3
-    BCS .writeDelta         ; 2/3  no third record
-    LDA evOrder,X           ; 4   A = third record offset
-    TAY                     ; 2
-    LDA events,Y            ; 4   third row
-    CMP groupRow            ; 3
-    BNE .writeDelta         ; 2/3  different row -> fine
-    ; 3-way collision: bump the third record's row and bubble its order entry
-    LDA events,Y            ; 4
-    CLC                     ; 2
-    ADC #1                  ; 2
-    STA events,Y            ; 4   row++
-    LDA recOff              ; 3
-    STA bubbleIdx           ; 3   the nudged record's order index (i+2)
-    JSR BubbleOrder         ; 6
-
-.writeDelta:
-    LDY evTblPtr            ; 3
-    LDA groupRow            ; 3
-    SEC                     ; 2
-    SBC prevRow             ; 3
-    STA evTbl,Y             ; 4   delta
-    LDA groupRow            ; 3
-    STA prevRow             ; 3
-    LDA recOff              ; 3
-    STA evOrderIdx          ; 3   advance the order index
-    TYA                     ; 2   advance the table pointer
+    PHA                     ; 3   save val on the stack
+    LDY #0                  ; 2   scan from the first table byte
+.scan:
+    LDA evTbl,Y             ; 4   row of the current entry ($FF = terminator)
+    CMP #EV_TERMINATOR_DELTA ; 2
+    BEQ .insertSingle       ; 2/3  end of the table -> insert a single entry
+    CMP evRow               ; 3
+    BCC .advance            ; 2/3  current row < new row -> keep scanning
+    BEQ .sameRow            ; 2/3  current row == new row
+    JMP .insertSingle       ; 3   current row > new row -> insert before it
+.advance:
+    LDA evTbl+1,Y           ; 4   reg1 of the current entry (flag in bit 7)
+    AND #EV_SINGLE_FLAG     ; 2
+    BNE .advanceSingle      ; 2/3  single entry -> advance by 3
+    TYA                     ; 2   double entry -> advance by 5
     CLC                     ; 2
     ADC #5                  ; 2
-    STA evTblPtr            ; 3
-    JMP .recordLoop         ; 3
-
-.emitDone:
-    ; ---- terminator entry: delta can never fire inside the kernel ----
-    LDY evTblPtr            ; 3
-    LDA #EV_TERMINATOR_DELTA ; 2
-    STA evTbl,Y             ; 4
-    LDA #0                  ; 2
-    STA evTbl+1,Y           ; 4
+    TAY                     ; 2
+    JMP .scan               ; 3
+.advanceSingle:
+    TYA                     ; 2
+    CLC                     ; 2
+    ADC #3                  ; 2
+    TAY                     ; 2
+    JMP .scan               ; 3
+.sameRow:
+    LDA evTbl+1,Y           ; 4   reg1 of the same-row entry
+    AND #EV_SINGLE_FLAG     ; 2
+    BNE .mergeSingle        ; 2/3  single entry -> merge into a double
+    INC evRow               ; 5   double entry: bump the new event to row+1
+    JMP .advance            ; 3   and keep scanning
+.mergeSingle:
+    ; convert the 3-byte single at Y into a 5-byte double:
+    TYA                     ; 2
+    CLC                     ; 2
+    ADC #2                  ; 2   make room for reg2/val2 at oldY+2
+    TAY                     ; 2
+    JSR ShiftBy2            ; 6   (Y is preserved)
+    PLA                     ; 4   val
+    STA evTbl+2,Y           ; 4   val2   (Y+2 = oldY+4)
+    PLA                     ; 4   reg
+    STA evTbl+1,Y           ; 4   reg2   (Y+1 = oldY+3)
+    LDA evTbl-1,Y           ; 4   reg1   (Y-1 = oldY+1, flag in bit 7)
+    AND #$7F                ; 2   clear the single flag -> now a double
+    STA evTbl-1,Y           ; 4
+    LDA tblLen              ; 3
+    CLC                     ; 2
+    ADC #2                  ; 2
+    STA tblLen              ; 3
+    PLA                     ; 4   discard the saved row
+    RTS                     ; 6
+.insertSingle:
+    JSR ShiftBy3            ; 6   make room for the 3-byte entry (Y preserved)
+    PLA                     ; 4   val
     STA evTbl+2,Y           ; 4
-    STA evTbl+3,Y           ; 4
-    STA evTbl+4,Y           ; 4
+    PLA                     ; 4   reg
+    ORA #EV_SINGLE_FLAG     ; 2
+    STA evTbl+1,Y           ; 4
+    PLA                     ; 4   row
+    STA evTbl,Y             ; 4
+    LDA tblLen              ; 3
+    CLC                     ; 2
+    ADC #3                  ; 2
+    STA tblLen              ; 3
     RTS                     ; 6
 
 ; =============================================================================
-; BubbleOrder
+; ShiftBy2 / ShiftBy3
 ;
-; Bubbles the order entry at index bubbleIdx toward the end of evOrder while
-; the row of the record it references (which was just bumped to a higher row)
-; is larger than the row of the following entry.  Restores the sorted order
-; after a 3-way-collision nudge.  The emit continues from recOff (unchanged),
-; so the rearranged entries are emitted in their new row order.
-; Clobbers A, X, Y, bubbleIdx, tempA.
+; Shift every byte at index >= Y up by 2 (ShiftBy2) or 3 (ShiftBy3) so
+; InsertEvent can extend a same-row single into a double (2 bytes) or insert
+; a new single entry (3 bytes) at Y.  Runs from the top of the table down so
+; no byte is overwritten before it is read.  Preserves Y; clobbers A, X and
+; tempCount.
+;
+; Bounds: a shift-by-3 happens only when inserting a new single, which can
+; push the table to at most 31 bytes, so tblLen is <= 28 before it and the
+; largest write index is 30 (evTbl+3,X with X = tblLen-1 <= 27).  A
+; shift-by-2 (a merge) never needs more than index 30 either.  All accesses
+; stay inside the 31-byte table.
+;
+; The loop terminates when X == tempCount (after copying the insertion point's
+; byte).  DEX wraps 0 -> $FF, so the loop must test X before it can wrap:
+; CPX + BNE stops at X == tempCount instead of comparing X >= tempCount.
 ; =============================================================================
-BubbleOrder:
-.bubLoop:
-    LDA bubbleIdx           ; 3
+ShiftBy2:                    ; Y = first index to move
+    STY tempCount            ; 3   remember the insertion point
+    LDX tblLen               ; 3   X = table length in bytes
+.shift2Loop:
+    DEX                     ; 2   next byte down
+    LDA evTbl,X              ; 4   copy the byte...
+    STA evTbl+2,X            ; 4   ...two positions up
+    CPX tempCount            ; 3   stop after the insertion point
+    BNE .shift2Loop           ; 2/3
+    RTS                     ; 6
+
+ShiftBy3:                    ; Y = first index to move
+    STY tempCount            ; 3
+    LDX tblLen               ; 3
+.shift3Loop:
+    DEX                     ; 2
+    LDA evTbl,X              ; 4
+    STA evTbl+3,X            ; 4   ...three positions up
+    CPX tempCount            ; 3
+    BNE .shift3Loop           ; 2/3
+    RTS                     ; 6
+
+; =============================================================================
+; ConvertDeltas
+;
+; Walks the finished table and replaces every absolute row with the delta the
+; kernel counts down: delta(first) = row + 1 (prevRow starts at $FF = -1) and
+; delta(next) = row - prevRow.  Events with a row >= KERNEL_SCANLINES are
+; emitted harmlessly: their delta never reaches zero inside the 192-line
+; kernel.  The terminator keeps delta = EV_TERMINATOR_DELTA ($FF), which can
+; never fire.  Clobbers A, X, Y, evRow and tempCount.
+; =============================================================================
+ConvertDeltas:
+    LDY #0                  ; 2   scan from the first byte
+    LDA #$FF                ; 2
+    STA tempCount           ; 3   prevRow sentinel
+.deltaLoop:
+    LDA evTbl,Y             ; 4   absolute row of the current entry
+    CMP #EV_TERMINATOR_DELTA ; 2
+    BEQ .deltaDone          ; 2/3  terminator: its $FF is already a delta
+    STA evRow               ; 3   remember the absolute row
+    SEC                     ; 2
+    SBC tempCount           ; 3   delta = row - prevRow
+    STA evTbl,Y             ; 4   store the delta
+    LDA evRow               ; 3   restore the absolute row
+    STA tempCount           ; 3   prevRow = row
+    LDA evTbl+1,Y           ; 4   reg1 of the current entry (flag in bit 7)
+    AND #EV_SINGLE_FLAG     ; 2
+    BNE .deltaSingle        ; 2/3
+    TYA                     ; 2   double entry -> advance by 5
     CLC                     ; 2
-    ADC #1                  ; 2
-    CMP evCount             ; 3
-    BCS .bubDone               ; 2/3  reached the end
-    TAX                     ; 2   X = bubbleIdx + 1
-    ; row of the nudged record: events[evOrder[bubbleIdx]]
-    LDY bubbleIdx           ; 3
-    LDA evOrder,Y           ; 4
+    ADC #5                  ; 2
     TAY                     ; 2
-    LDA events,Y            ; 4
-    STA tempA            ; 3
-    ; row of the following record: events[evOrder[X]]
-    LDA evOrder,X           ; 4
+    JMP .deltaLoop          ; 3
+.deltaSingle:
+    TYA                     ; 2   single entry -> advance by 3
+    CLC                     ; 2
+    ADC #3                  ; 2
     TAY                     ; 2
-    LDA events,Y            ; 4
-    CMP tempA            ; 3
-    BCS .bubDone               ; 2/3  next >= nudged -> stop
-    ; swap evOrder[bubbleIdx] and evOrder[X]
-    LDY bubbleIdx           ; 3
-    LDA evOrder,Y           ; 4
-    PHA                     ; 3
-    LDA evOrder,X           ; 4
-    STA evOrder,Y           ; 4
-    PLA                     ; 4
-    STA evOrder,X           ; 4
-    STX bubbleIdx           ; 3   nudged entry now at X
-    JMP .bubLoop             ; 3
-.bubDone:
+    JMP .deltaLoop          ; 3
+.deltaDone:
     RTS                     ; 6
 
 ; =============================================================================
@@ -998,52 +973,43 @@ fineAdjustTable EQU fineAdjustBegin - %11110001
 
 ; =============================================================================
 ; Zero page RAM (RIOT RAM, $80-$FF)
+;
+; Round 3.1 layout - 48 bytes (was 122).  The event table is now variable-size
+; (EV_TBL_SIZE = 31 bytes max) and the builder inserts events directly into
+; it, so the events/evOrder scratch buffers, evCount, evIdx, joystate, the two
+; separate missile-active bytes and fire_sync are all gone.  m_active packs
+; both missiles into one byte and fire_prev carries the boot-sync flag in its
+; bit 7.  Builder temps are three shared bytes; InsertEvent holds its payload
+; on the CPU stack while the table is scanned/shifted.
 ; =============================================================================
     SEG.U VARS
     ORG $80
 P0Y         DS 1            ; player 0 vertical position (0..PLAYER_Y_MAX)
 P1Y         DS 1            ; player 1 vertical position (0..PLAYER_Y_MAX)
-joystate    DS 1            ; sampled SWCHA value
 ball_x      DS 1            ; ball visible left pixel (BALL_X_MIN..BALL_X_MAX)
 ball_y      DS 1            ; ball first display row (BALL_Y_MIN..BALL_Y_MAX)
 ball_dx     DS 1            ; horizontal step (+1 = right, $FF = left)
 ball_dy     DS 1            ; vertical step (+1 = down, $FF = up)
 
-; Missile state. m?_x is the leftmost visible pixel while active.
+; Missile state. m?_x is the leftmost visible pixel while active; m_active is
+; the packed active mask (bit 0 = M0, bit 1 = M1).
 m0_x        DS 1            ; missile 0 horizontal position
 m0_y        DS 1            ; missile 0 row (fixed while flying)
-m0_active   DS 1            ; 1 = flying
 m1_x        DS 1            ; missile 1 horizontal position
 m1_y        DS 1            ; missile 1 row (fixed while flying)
-m1_active   DS 1            ; 1 = flying
+m_active    DS 1            ; M0_BIT = M0 flying, M1_BIT = M1 flying
 
-fire_prev   DS 1            ; packed fire-button state (bits FIRE_P0/FIRE_P1)
+fire_prev   DS 1            ; packed fire state (FIRE_P0/FIRE_P1 + FIRE_SYNC)
 evCnt       DS 1            ; kernel: scanlines until the next event fires
-evIdx       DS 1            ; kernel: byte offset of the current table entry
 scanCnt     DS 1            ; kernel: line countdown (primed to KERNEL_SCANLINES)
 
-evTbl       DS EV_TBL_SIZE  ; event table (55 bytes, see constants.inc)
+evTbl       DS EV_TBL_SIZE  ; event table (<= 31 bytes, see constants.inc)
 
-; BuildEvents scratch: up to EV_MAX_EVENTS records of 3 bytes (row, reg, val).
-events      DS EV_MAX_EVENTS * 3
-
-evCount     DS 1            ; number of event records generated this frame
-
-; Order array: evOrder[i] = byte offset of the i-th record when sorted by row.
-; Sorting these single bytes is much cheaper than moving 3-byte records.
-evOrder     DS EV_MAX_EVENTS
-
-; BuildEvents working storage (each phase writes the shared temps before
-; reading them, so the same byte is reused across phases).
-groupRow    DS 1            ; SortEvents: key row  /  EmitEvents: entry row
-prevRow     DS 1            ; EmitEvents: row of the previously written entry
-evOrderIdx  DS 1            ; SortEvents: key offset  /  EmitEvents: order index
-recOff      DS 1            ; SortEvents: outer index  /  EmitEvents: next order index
-tempA       DS 1            ; UpdateMissiles fire state / AddEvent value / BubbleOrder row
-evTblPtr    DS 1            ; EmitEvents: evTbl byte offset
-nextOff     DS 1            ; EmitEvents: second record's byte offset during a merge
-bubbleIdx   DS 1            ; EmitEvents/BubbleOrder: order index being bubbled
-fire_sync   DS 1            ; UpdateMissiles: 0 until the first frame's state sync
+; BuildEvents shared temps (written before use, so the same bytes are reused
+; across the insert and convert phases).
+evRow       DS 1            ; InsertEvent: event row  /  ConvertDeltas: row
+tempCount   DS 1            ; InsertEvent: shift point / ConvertDeltas: prevRow
+tblLen      DS 1            ; table length in bytes
 
 ; =============================================================================
 ; 6502 vectors

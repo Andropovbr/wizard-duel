@@ -58,7 +58,7 @@ def measure():
     c = read_constants()
     kernel = TestKernelCycleBudget()
     kernel.setUpClass()
-    worst = kernel._simulate(event_line=True)   # event line (two writes)
+    worst = kernel._simulate(event_line=True, two_write=True)  # two-write event line
     best = kernel._simulate(event_line=False)   # non-event line
     return {
         "rom_used": used_r,

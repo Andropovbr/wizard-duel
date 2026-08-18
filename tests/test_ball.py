@@ -272,10 +272,9 @@ class TestBallRamBudget(unittest.TestCase):
         cls.used, _ = ram_usage()
 
     def test_ram_usage(self):
-        # P0Y..ball_dy (7) + missiles (6) + fire_prev/evCnt/evIdx/scanCnt (4)
-        # + evTbl (55) + events (30) + evCount (1) + evOrder (10) + builder
-        # temps (8) = 122 bytes.
-        self.assertEqual(self.used, 122)
+        # Round 3.1: P0Y..ball_dy (5) + missiles (5) + m_active/fire_prev (2)
+        # + evCnt/scanCnt (2) + evTbl (31) + builder temps (3) = 48 bytes.
+        self.assertEqual(self.used, 48)
 
 
 class TestEventKernel(unittest.TestCase):

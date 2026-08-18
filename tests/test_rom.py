@@ -24,24 +24,24 @@ class TestSymbols(unittest.TestCase):
         for name in ("Reset", "StartOfFrame", "WaitVBlank", "KernelLoop",
                      "OverscanWait", "UpdatePlayers", "UpdateBall",
                      "UpdateMissiles", "PositionPlayers", "PositionBall",
-                     "PositionMissiles", "BuildEvents", "AddEvent",
-                     "SortEvents", "EmitEvents", "BubbleOrder", "PosObject",
+                     "PositionMissiles", "BuildEvents", "InsertEvent",
+                     "ShiftBy2", "ShiftBy3", "ConvertDeltas", "PosObject",
                      "fineAdjustTable", "fineAdjustBegin", "P0Y", "P1Y",
-                     "joystate", "ball_x", "ball_y", "ball_dx", "ball_dy",
-                     "m0_x", "m0_y", "m0_active", "m1_x", "m1_y",
-                     "m1_active", "fire_prev", "evCnt", "evIdx", "scanCnt",
-                     "evTbl", "events", "evCount", "evOrder"):
+                     "ball_x", "ball_y", "ball_dx", "ball_dy",
+                     "m0_x", "m0_y", "m1_x", "m1_y",
+                     "m_active", "fire_prev", "evCnt", "scanCnt",
+                     "evTbl", "evRow", "tempCount", "tblLen"):
             self.assertIn(name, self.sym, f"missing symbol {name}")
 
     def test_reset_at_rom_origin(self):
         self.assertEqual(self.sym["Reset"], ROM_ORIGIN)
 
     def test_ram_symbols_in_riot_ram(self):
-        for name in ("P0Y", "P1Y", "joystate",
+        for name in ("P0Y", "P1Y",
                      "ball_x", "ball_y", "ball_dx", "ball_dy",
-                     "m0_x", "m0_y", "m0_active", "m1_x", "m1_y",
-                     "m1_active", "fire_prev", "evCnt", "evIdx", "scanCnt",
-                     "evTbl", "events", "evCount", "evOrder"):
+                     "m0_x", "m0_y", "m1_x", "m1_y",
+                     "m_active", "fire_prev", "evCnt", "scanCnt",
+                     "evTbl", "evRow", "tempCount", "tblLen"):
             self.assertGreaterEqual(self.sym[name], 0x80)
             self.assertLessEqual(self.sym[name], 0xFF)
 

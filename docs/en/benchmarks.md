@@ -16,12 +16,12 @@ Measured deterministically from the assembled build artifacts (no display):
 
 ## Kernel slack
 
-One NTSC scanline is 76 CPU cycles. The Round 3 kernel is event-driven: a
-non-event line costs 18 cycles and a two-write event line (the worst case)
-costs 69 cycles, so:
+One NTSC scanline is 76 CPU cycles. The Round 3.1 kernel is event-driven:
+a non-event line costs 18 cycles, a single-write event line costs 54 cycles
+and a two-write event line (the worst case) costs 65 cycles, so:
 
 ```text
-kernel slack = 76 - 69 = 7 cycles
+kernel slack = 76 - 65 = 11 cycles
 ```
 
 Slack is a **first-class metric**: it is recorded in `latest.md`, in
@@ -77,13 +77,19 @@ conservative values):
 | Metric            | Warning threshold                                  |
 | ----------------- | -------------------------------------------------- |
 | ROM growth        | > 32 bytes OR > 5.0%                               |
-| RAM growth        | > 4 bytes                                          |
+| RAM growth        | > 4 bytes OR > 10.0%                               |
+| RAM pressure      | RAM used >= 75% of the 64-byte project budget      |
+| RAM strong pressure | RAM used >= 90% of the 64-byte project budget    |
 | Kernel worst case | increase > 4 cycles                                |
 | Kernel slack      | decrease > 4 cycles                                |
 
-These values are intentionally conservative; they are meant to make
-meaningful regressions visible, not to fail on every byte. Update them only
-with a documented technical reason.
+The RAM thresholds back the Round 3.1 goal of keeping the game under 64 of
+the 128 RIOT bytes: crossing 75% of that budget warns, crossing 90% warns
+strongly, and using more than 64 bytes fails CI (a hard gate). RAM growth is
+also compared against the baseline by absolute bytes and percentage. These
+values are intentionally conservative; they are meant to make meaningful
+regressions visible, not to fail on every byte. Update them only with a
+documented technical reason.
 
 ## Reading the CI report
 
@@ -149,6 +155,14 @@ RAM used:          122 bytes   (event table + records + order array)
 Frame scanlines:   262
 Kernel worst case: 69 / 76 cycles   (two-write event line)
 Kernel slack:      7 cycles
+Kernel best case:  18 cycles   (non-event line)
+
+Round 3.1 current (variable-size event entries + RAM shrink):
+ROM used:          1296 bytes  (same; builder replaced, not larger)
+RAM used:          48 bytes    (122 -> 48, no record/order buffers)
+Frame scanlines:   262
+Kernel worst case: 65 / 76 cycles   (two-write event line)
+Kernel slack:      11 cycles   (7 -> 11)
 Kernel best case:  18 cycles   (non-event line)
 ```
 

@@ -72,12 +72,12 @@ class MissileFireHarness:
     def state(self):
         m = self.cpu.ram
         return {
-            "m0": m[self._ram("m0_active")],
-            "m1": m[self._ram("m1_active")],
+            "m0": m[self._ram("m_active")] & 0x01,          # M0_BIT
+            "m1": (m[self._ram("m_active")] >> 1) & 0x01,   # M1_BIT
             "m0_x": m[self._ram("m0_x")],
             "m1_x": m[self._ram("m1_x")],
             "fire_prev": m[self._ram("fire_prev")],
-            "fire_sync": m[self._ram("fire_sync")],
+            "fire_sync": (m[self._ram("fire_prev")] >> 7) & 0x01,  # FIRE_SYNC
         }
 
 

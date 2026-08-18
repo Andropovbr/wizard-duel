@@ -1,10 +1,11 @@
 # Wizard Duel - Timing
 
 Este documento registra a análise de timing em nível de ciclo do kernel
-orientado a eventos e do quadro da Rodada 3. Cada número abaixo foi derivado
-manualmente e depois verificado contra o listing montado pela suíte de testes
-automatizada; o comprimento do quadro foi também verificado com um emulador
-6502 determinístico que modela as paradas de WSYNC e o timer do RIOT.
+orientado a eventos e do quadro da Rodada 3.1. Cada número abaixo foi
+derivado manualmente e depois verificado contra o listing montado pela suíte
+de testes automatizada; o comprimento do quadro foi também verificado com um
+emulador 6502 determinístico que modela as paradas de WSYNC e o timer do
+RIOT.
 
 ## Estrutura do quadro (NTSC)
 
@@ -44,12 +45,18 @@ derivar quando eventos disparam.
 ### Estrutura orientada a eventos
 
 O kernel não calcula enables de objetos. `BuildEvents` (executado durante o
-VBLANK) escreve uma tabela (`evTbl`) de entradas de 5 bytes
-`[delta, reg1, val1, reg2, val2]`: `delta` é o número de scanlines até a
-entrada disparar, e os dois pares `(índice do registrador, valor)` são as
-escritas a aplicar (índices 1..5 endereçam GRP0..ENABL; índice 0 é um dummy
-inofensivo em AUDV1, então toda entrada sempre escreve dois registradores e o
-caminho de evento é código linear).
+VBLANK) escreve uma tabela (`evTbl`) de entradas de tamanho variável. Cada
+entrada começa com `delta` (scanlines até disparar) e `reg1` (índice da
+primeira escrita; índices 1..5 endereçam GRP0..ENABL, índice 0 é um dummy
+inofensivo em AUDV1). Se o bit 7 de `reg1` estiver setado, a entrada é uma
+simples de 3 bytes `[delta, reg1|$80, val1]`; caso contrário, é uma dupla de
+5 bytes `[delta, reg1, val1, reg2, val2]`.
+
+O kernel despacha no bit de flag com um único `BMI`; o byte de valor de uma
+simples nunca carrega bit 7 porque todo valor de escrita é um registrador de
+enable (`$00`, `PADDLE_BITS`, `BALL_ENABLE` ou `MISSILE_ENABLE`). É isso que
+permite a uma scanline que precisa de apenas uma escrita pular a segunda
+escrita em vez de gastar um dummy inofensivo.
 
 O kernel conta suas 192 linhas com uma contagem regressiva em RAM
 (`scanCnt`). Isso é deliberado: o código de evento usa `TAX` como índice de
@@ -58,7 +65,8 @@ evento e esticaria o quadro.
 
 ### Contabilidade de ciclos (verificada no listing)
 
-Existem dois caminhos por scanline.
+Existem três caminhos por scanline: sem evento, evento de escrita única,
+evento de duas escritas.
 
 Linha sem evento (o caso comum):
 
@@ -71,7 +79,28 @@ Linha sem evento (o caso comum):
 | `BNE KernelLoop`    | 3      |
 | **Total**           | **18** |
 
-Linha de evento, pior caso (entrada de duas escritas):
+Linha de evento, escrita única (entrada de 3 bytes):
+
+| Instrução           | Ciclos |
+| ------------------- | ------ |
+| `STA WSYNC`         | 3      |
+| `DEC scanCnt`       | 5      |
+| `BEQ .kernelEnd`    | 2      |
+| `DEC evCnt`         | 5      |
+| `BNE KernelLoop`    | 2      |
+| `LDY evIdx`         | 3      |
+| `LDA evTbl+1,Y`     | 4      |
+| `TAX`               | 2      |
+| `LDA evTbl+2,Y`     | 4      |
+| `STA EV_WRITE_BASE,X` | 4    |
+| `TYA` / `CLC` / `ADC #3` / `TAY` | 8 |
+| `STY evIdx`         | 3      |
+| `LDA evTbl,Y`       | 4      |
+| `STA evCnt`         | 3      |
+| `JMP KernelLoop`    | 3      |
+| **Total**           | **54** |
+
+Linha de evento, duas escritas (entrada de 5 bytes):
 
 | Instrução           | Ciclos |
 | ------------------- | ------ |
@@ -94,31 +123,39 @@ Linha de evento, pior caso (entrada de duas escritas):
 | `LDA evTbl,Y`       | 4      |
 | `STA evCnt`         | 3      |
 | `JMP KernelLoop`    | 3      |
-| **Total**           | **69** |
+| **Total**           | **65** |
 
 | Caminho                    | Ciclos |
 | -------------------------- | ------ |
 | Linha sem evento           | **18** |
-| Linha de evento (2 escritas)| **69** |
+| Linha de evento (1 escrita)| **54** |
+| Linha de evento (2 escritas)| **65** |
 | Orçamento do scanline      | 76     |
-| Folga (linha de evento)    | **7 ciclos** |
-
-`BuildEvents` mescla no máximo dois registros da mesma linha em uma entrada,
-então nenhuma scanline precisa de mais de duas escritas; um terceiro evento
-patológico na linha é empurrado para linha+1 (veja
-[arquitetura.md](arquitetura.md)).
+| Folga (linha de 2 escritas)| **11 ciclos** |
 
 O corpo do kernel é alinhado a página (`ALIGN 256` antes de `KernelLoop`)
 para que todo desvio tenha tempo determinístico, e todos os acessos à tabela
-são indexados em zero page (sem penalidades de passagem de página).
+são indexados em zero page (sem penalidades de passagem de página). O kernel
+tem exatamente três desvios condicionais: o `BEQ` do fim da contagem de
+linhas, o `BNE` da contagem de eventos e o `BMI` de despacho simples/dupla.
 
 ### Tempos de escrita dos registradores gráficos
 
-Todos os registradores de objeto são escritos cedo no scanline. `GRP0`
-termina em ~ciclo 18 (antes do feixe atingir P0 em x=16, ~ciclo 28), `GRP1`
-em ~ciclo 22, e os registradores de enable em ~ciclos 16-20 (antes de qualquer
-posição de míssil). Cada objeto renderiza com o valor escrito no scanline
-atual, mantendo a invariante de tempo de escrita da Rodada 2.
+Em uma linha de duas escritas, a primeira escrita de registrador executa
+durante os ciclos de CPU 30..33 e a segunda durante 44..47; em uma linha de
+escrita única, a escrita executa durante 30..33.
+
+Uma escrita no TIA se aplica ao scanline atual apenas se terminar antes de o
+feixe passar pela posição horizontal do objeto; caso contrário, aplica-se um
+scanline depois. Usando o modelo padrão de feixe (o pixel `p` é atingido no
+ciclo de CPU `~(p + 69) / 3`), as portas são portanto `x >= 30` para a
+primeira escrita e `x >= 72` para a segunda. Os dois jogadores estão bem fora
+dessas faixas (P0 em x=16, P1 em x=136) e se comportam exatamente como na
+Rodada 3; apenas um objeto cuja posição caísse nas faixas de 3 pixels
+`30..32` / `72..74` ganharia um scanline de margem, e nenhum objeto desta
+rodada ocupa essas posições. O `delta` da próxima entrada é lido até o ciclo
+65 no pior caminho, confortavelmente antes do `WSYNC` que inicia a próxima
+linha.
 
 ## Orçamentos de VBLANK e OVERSCAN
 
@@ -153,11 +190,14 @@ reset.
 A suíte automatizada valida a estrutura do quadro **estaticamente**
 (constantes, listing, soma das regiões == 262, orçamento de ciclos do kernel)
 e o builder da tabela de eventos com um modelo em Python (deltas, mesclagens,
-resolução de colisões). O comprimento de 262 scanlines também é verificado
-pelo emulador 6502 determinístico durante o desenvolvimento; esse emulador
-não faz parte do pipeline de CI commitado, então a validação de quadro em
-tempo de execução continua sendo uma etapa documentada de desenvolvimento,
-apoiada pela suíte estática no CI.
+resolução de colisões). Um teste de tempo de execução do quadro
+(`tests/test_frame_timing.py`) dirige o emulador determinístico por muitos
+quadros e afirma a estabilidade do quadro (262 scanlines), que o comprimento
+da tabela nunca excede `EV_TBL_SIZE` sob entrada de fogo agressiva e que os
+mísseis de fato aparecem e desaparecem pelo pipeline de eventos. O contador de
+ciclos do emulador é aproximado (os totais de quadro único variam alguns
+ciclos), então o teste de tempo de execução afirma a contagem de scanlines e o
+comportamento, não totais de ciclos exatos.
 
 ## Por que isso importa
 

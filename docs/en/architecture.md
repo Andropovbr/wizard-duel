@@ -1,7 +1,11 @@
 # Wizard Duel - Architecture
 
 Round 3 adds basic projectiles and replaces the Round 2 branchless display
-kernel with an event-driven one:
+kernel with an event-driven one. Round 3.1 shrinks the RAM footprint from 122
+to 48 bytes by switching the event table to variable-size entries and
+removing the separate record/order scratch buffers.
+
+Features:
 
 * a stable NTSC frame of exactly 262 scanlines
 * two TIA players visible simultaneously (P0 on the left, P1 on the right),
@@ -26,22 +30,41 @@ players, the ball and two missiles). Instead of computing every object's
 enable on every scanline, `BuildEvents` runs during VBLANK and writes a small
 table (`evTbl`) describing the register writes each scanline must perform.
 The kernel then only counts down to the next entry and applies its writes,
-keeping every scanline well under 76 cycles (69 worst case, see
+keeping every scanline well under 76 cycles (65 worst case, see
 [timing.md](timing.md)).
 
-Each table entry is 5 bytes:
+Each table entry is variable size (Round 3.1):
 
 | byte | meaning                                    |
 | ---- | ------------------------------------------ |
 | 0    | delta: scanlines until this entry fires    |
 | 1    | register index of the first write          |
+
+If the entry has a second write, bit 7 of byte 1 is clear and two more bytes
+follow:
+
+| byte | meaning                                    |
+| ---- | ------------------------------------------ |
 | 2    | value of the first write                   |
 | 3    | register index of the second write         |
 | 4    | value of the second write                  |
 
+If bit 7 of byte 1 is set, the entry is a single write and only one value
+byte follows (the value carries no bit 7 because it is always an enable
+register write of `$00`, `PADDLE_BITS`, `BALL_ENABLE` or `MISSILE_ENABLE`,
+none of which set bit 7). The kernel dispatches on that bit with a single
+`BMI`:
+
+* single entry (3 bytes): delta + `reg|$80` + value
+* double entry (5 bytes): delta + reg + value + reg + value
+
+Both paths are straight-line, so event lines keep deterministic timing (54
+cycles single, 65 double, 11 cycles slack on the worst path). A single event
+line needs no second write at all; when no event fires, the kernel spends
+only 18 cycles before `WSYNC`.
+
 Register indices are offsets from `EV_WRITE_BASE = AUDV1 ($1A)`: index 0
-writes AUDV1 (a harmless dummy), 1..5 address GRP0..ENABL. Every entry always
-performs two writes, so the event path is straight-line code.
+writes AUDV1 (a harmless dummy), 1..5 address GRP0..ENABL.
 
 Deltas: the first entry fires on line `delta - 1`, every following entry
 fires `delta` lines after the previous one, so `BuildEvents` computes
@@ -61,19 +84,19 @@ register addresses and build-time constants.
 | `$F000`  | `Reset` (initialization)                       |
 | `$F04F`  | `StartOfFrame` (VSYNC + VBLANK + kernel + OS)  |
 | `$F100`  | `KernelLoop` (event-driven display kernel)     |
-| `$F142`  | `OverscanWait`                                 |
-| `$F14A`  | `UpdatePlayers` (joystick input + movement)    |
-| `$F184`  | `UpdateBall` (ball movement + bounce)          |
-| `$F1BB`  | `UpdateMissiles` (fire buttons, movement)      |
-| `$F238`  | `PositionPlayers` (RESP0/RESP1 + HMP + HMOVE)  |
-| `$F25B`  | `PositionBall` (RESBL + HMBL)                  |
-| `$F26D`  | `PositionMissiles` (RESM0/RESM1 + HMM)         |
-| `$F298`  | `BuildEvents` (rebuild the event table)        |
-| `$F313`  | `AddEvent` (append a record)                   |
-| `$F332`  | `SortEvents` (insertion sort of the order)     |
-| `$F372`  | `EmitEvents` (write the table)                 |
-| `$F421`  | `BubbleOrder` (collision resolution)           |
-| `$F454`  | `PosObject` (generic RESPx/HMPx)               |
+| `$F155`  | `OverscanWait`                                 |
+| `$F15D`  | `UpdatePlayers` (joystick input + movement)    |
+| `$F196`  | `UpdateBall` (ball movement + bounce)          |
+| `$F1CD`  | `UpdateMissiles` (fire buttons, movement)      |
+| `$F262`  | `PositionPlayers` (RESP0/RESP1 + HMP + HMOVE)  |
+| `$F285`  | `PositionBall` (RESBL + HMBL)                  |
+| `$F297`  | `PositionMissiles` (RESM0/RESM1 + HMM)         |
+| `$F2C6`  | `BuildEvents` (insert events in row order)     |
+| `$F346`  | `InsertEvent` (insert/merge a table entry)     |
+| `$F3BC`  | `ShiftBy2` (extend a single into a double)     |
+| `$F3CA`  | `ShiftBy3` (insert a new single entry)         |
+| `$F3D8`  | `ConvertDeltas` (rows -> kernel deltas)        |
+| `$F409`  | `PosObject` (generic RESPx/HMPx)               |
 | `$F500`  | `fineAdjustBegin` (page-aligned HMP table)     |
 | `$FFFA`  | NMI / RESET / IRQ vectors                      |
 
@@ -117,9 +140,10 @@ vertical directions are used this round:
 | P1 (right, joystick 2)| up    | D0 |
 | P1 (right, joystick 2)| down  | D1 |
 
-`UpdatePlayers` samples `SWCHA` once per frame into the `joystate` RAM
-variable, then applies at most one up/down step per player, guarding the
-arena boundaries so the position never wraps.
+`UpdatePlayers` samples `SWCHA` and applies at most one up/down step per
+player, guarding the arena boundaries so the position never wraps. The value
+is consumed immediately; no `joystate` RAM variable is needed (a Round 3.1
+memory saving).
 
 ## Missiles
 
@@ -136,13 +160,17 @@ while that player's missile is inactive:
 * releasing the button only rearms the input, so the next released -> pressed
   transition fires again.
 
+Missile state is packed into two bytes: `m_active` holds both active flags
+(bit 0 = M0, bit 1 = M1) and `fire_prev` packs the two previous-frame button
+bits plus bit 7 as the boot-sync flag.
+
 **Boot synchronisation**: on real hardware (and in Stella) the TIA INPT
 latches read the fire lines as pressed for the first frames after RESET. The
 first `UpdateMissiles` call after power-on therefore only adopts the real
-button state into `fire_prev` (the `fire_sync` flag), it never fires. This
-guarantees that booting with FIRE released produces no shot, and booting with
-FIRE held produces no automatic shot either - the player must release and
-press again.
+button state into `fire_prev` (setting the `FIRE_SYNC` bit 7), it never
+fires. This guarantees that booting with FIRE released produces no shot, and
+booting with FIRE held produces no automatic shot either - the player must
+release and press again.
 
 A missile is `MISSILE_HEIGHT = 4` scanlines tall and `MISSILE_WIDTH = 2`
 pixels wide (set through the NUSIZ0/NUSIZ1 missile size bits). It spawns
@@ -208,43 +236,58 @@ play area.
 
 ## Event table builder
 
-`BuildEvents` has three phases:
+Round 3.1 replaces the record/order/emit pipeline with a direct insertion
+builder: `BuildEvents` resets the table to a single `$FF` terminator and then
+inserts each object's ON/OFF events straight into `evTbl` in row order, so no
+separate record or order buffers exist (the 40 bytes they used in Round 3 are
+gone). Because the entries are variable size, insertion needs an explicit
+move loop instead of a stable sort:
 
-1. **Generate** - `AddEvent` appends one 3-byte record `(row, reg, val)` per
-   object boundary and records its byte offset in the `evOrder` array.
-2. **Sort** - `SortEvents` insertion-sorts the `evOrder` array by row. Sorting
-   single-byte offsets (rather than the 3-byte records) keeps this cheap
-   enough for the VBLANK budget.
-3. **Emit** - `EmitEvents` walks the sorted order and writes the table,
-   merging at most two same-row records into a single two-write entry. If a
-   pathological third record shares a row, its row is bumped to row+1 and
-   `BubbleOrder` restores the sorted order. This guarantees no scanline ever
-   needs more than two writes.
+1. `InsertEvent` scans the table comparing entry rows. On a matching row it
+   merges:
+   * a single entry -> `ShiftBy2` shifts the tail by 2 and writes the second
+     value (the merged entry becomes a 5-byte double);
+   * an already-double entry -> the row is bumped to row+1 and the scan
+     continues (this can only happen transiently during a single build, so
+     the table never exceeds its bound).
+   Otherwise `ShiftBy3` shifts the tail by 3 and writes a new 3-byte single.
+2. After all events are inserted, `ConvertDeltas` rewrites the rows in place
+   as kernel deltas (first delta = row+1, next deltas = row - prevRow),
+   leaving the `$FF` terminator at the end of the table.
+
+Because a 3-byte single can merge into a 5-byte double, the worst-case table
+size is no longer 10 x 5 bytes: with 10 object boundaries and at most one
+double per row, the table needs at most 31 bytes. `EV_TBL_SIZE = 31` is a
+hard bound; `tblLen` tracks the current length and a test asserts it never
+exceeds the bound under aggressive fire input.
 
 The table ends with a terminator entry whose delta (`$FF`) can never fire
 inside the 192-line kernel.
 
 ## Variable allocation
 
-122 of 128 bytes of RIOT RAM are used:
+48 of 128 bytes of RIOT RAM are used (down from 122 in Round 3):
 
-| Address | Name      | Purpose                              |
-| ------- | --------- | ------------------------------------ |
-| `$80`   | `P0Y`     | player 0 vertical position           |
-| `$81`   | `P1Y`     | player 1 vertical position           |
-| `$82`   | `joystate`| sampled SWCHA value                  |
-| `$83`   | `ball_x`  | ball leftmost visible pixel          |
-| `$84`   | `ball_y`  | ball first display row               |
-| `$85`   | `ball_dx` | horizontal direction step            |
-| `$86`   | `ball_dy` | vertical direction step              |
-| `$87-$8C` | `m0_x/m0_y/m0_active`, `m1_x/m1_y/m1_active` | missiles |
-| `$8D`   | `fire_prev` | packed fire-button edge state      |
-| `$8E-$90` | `evCnt/evIdx/scanCnt` | kernel state              |
-| `$91-$C7` | `evTbl`  | event table (11 entries x 5 bytes)   |
-| `$C8-$E5` | `events` | event records (up to 10 x 3 bytes) |
-| `$E6`   | `evCount` | number of records this frame        |
-| `$E7-$F0` | `evOrder` | sorted record offsets             |
-| `$F1-$F8` | builder/kernel temps            |
+| Address    | Name        | Purpose                              |
+| ---------- | ----------- | ------------------------------------ |
+| `$80`      | `P0Y`       | player 0 vertical position           |
+| `$81`      | `P1Y`       | player 1 vertical position           |
+| `$82`      | `ball_x`    | ball leftmost visible pixel          |
+| `$83`      | `ball_y`    | ball first display row               |
+| `$84`      | `ball_dx`   | horizontal direction step            |
+| `$85`      | `ball_dy`   | vertical direction step              |
+| `$86-$87`  | `m0_x/m0_y` | missile 0 position                   |
+| `$88-$89`  | `m1_x/m1_y` | missile 1 position                   |
+| `$8A`      | `m_active`  | packed missile active mask (M0/M1)   |
+| `$8B`      | `fire_prev` | packed fire edge + boot-sync state   |
+| `$8C-$8D`  | `evCnt/scanCnt` | kernel state                     |
+| `$8E-$AC`  | `evTbl`     | event table (variable size, max 31B) |
+| `$AD-$AF`  | `evRow/tempCount/tblLen` | builder working storage |
+
+The savings come from: variable-size table entries (31 vs 55 bytes), no
+record/order buffers (0 vs 40 bytes), no `joystate` (re-read `SWCHA`), packed
+missile flags (one byte for two), no separate `fire_sync` (bit 7 of
+`fire_prev`), and no `evIdx` (the kernel scans the table linearly).
 
 ## Why VBLANK for gameplay
 

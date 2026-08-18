@@ -35,7 +35,7 @@ CYC = {
     0xB6: 4,
     0x85: 3, 0x8D: 4, 0x99: 5, 0x95: 4, 0x84: 3, 0x86: 3,
     0xC6: 5, 0xE6: 5, 0xC5: 3, 0xE5: 3, 0x65: 3, 0xE4: 3, 0x24: 3,
-    0xD0: 2, 0xF0: 2, 0xB0: 2, 0x90: 2,
+    0xD0: 2, 0xF0: 2, 0xB0: 2, 0x90: 2, 0x30: 2,
 }
 
 
@@ -304,12 +304,13 @@ class Cpu:
             lo = self.pop()
             hi = self.pop()
             self.pc = (lo | (hi << 8) | 0x10000) & 0xFFFF
-        elif op in (0xD0, 0xF0, 0xB0, 0x90):  # BNE/BEQ/BCS/BCC
+        elif op in (0xD0, 0xF0, 0xB0, 0x90, 0x30):  # BNE/BEQ/BCS/BCC/BMI
             rel = self.fetch()
             if rel & 0x80:
                 rel -= 0x100
             taken = {0xD0: not self.z, 0xF0: self.z,
-                     0xB0: self.c, 0x90: not self.c}[op]
+                     0xB0: self.c, 0x90: not self.c,
+                     0x30: bool(self.n)}[op]
             if taken:
                 self.pc = (self.pc + rel) & 0xFFFF
         else:

@@ -1,7 +1,11 @@
 # Wizard Duel - Arquitetura
 
 A Rodada 3 adiciona projéteis básicos e substitui o kernel de exibição sem
-desvios da Rodada 2 por um kernel orientado a eventos:
+desvios da Rodada 2 por um kernel orientado a eventos. A Rodada 3.1 reduz a
+pegada de RAM de 122 para 48 bytes ao usar entradas de tabela de tamanho
+variável e remover os buffers separados de registros/ordem.
+
+Funcionalidades:
 
 * um quadro NTSC estável de exatamente 262 scanlines
 * dois jogadores TIA visíveis simultaneamente (P0 à esquerda, P1 à direita),
@@ -27,22 +31,41 @@ cada objeto em cada scanline, `BuildEvents` roda durante o VBLANK e escreve
 uma pequena tabela (`evTbl`) descrevendo as escritas de registradores que cada
 scanline deve executar. O kernel então apenas conta os ciclos até a próxima
 entrada e aplica as escritas, mantendo cada scanline bem abaixo de 76 ciclos
-(69 no pior caso, veja [timing.md](timing.md)).
+(65 no pior caso, veja [timing.md](timing.md)).
 
-Cada entrada da tabela tem 5 bytes:
+Cada entrada da tabela tem tamanho variável (Rodada 3.1):
 
 | byte | significado                               |
 | ---- | ----------------------------------------- |
 | 0    | delta: scanlines até esta entrada disparar |
 | 1    | índice do registrador da primeira escrita |
+
+Se a entrada tiver uma segunda escrita, o bit 7 do byte 1 fica limpo e mais
+dois bytes seguem:
+
+| byte | significado                               |
+| ---- | ----------------------------------------- |
 | 2    | valor da primeira escrita                 |
 | 3    | índice do registrador da segunda escrita  |
 | 4    | valor da segunda escrita                  |
 
+Se o bit 7 do byte 1 estiver setado, a entrada é de escrita única e apenas um
+byte de valor segue (o valor nunca carrega bit 7 porque é sempre uma escrita
+de registrador de enable: `$00`, `PADDLE_BITS`, `BALL_ENABLE` ou
+`MISSILE_ENABLE`, nenhum com bit 7). O kernel despacha nesse bit com um único
+`BMI`:
+
+* entrada simples (3 bytes): delta + `reg|$80` + valor
+* entrada dupla (5 bytes): delta + reg + valor + reg + valor
+
+Ambos os caminhos são lineares, então as linhas de evento mantêm temporização
+determinística (54 ciclos simples, 65 dupla, 11 ciclos de folga no pior
+caminho). Uma linha de evento único não precisa de segunda escrita; quando
+nenhum evento dispara, o kernel gasta apenas 18 ciclos antes do `WSYNC`.
+
 Os índices de registrador são deslocamentos a partir de
 `EV_WRITE_BASE = AUDV1 ($1A)`: índice 0 escreve AUDV1 (um dummy inofensivo),
-1..5 endereçam GRP0..ENABL. Toda entrada sempre executa duas escritas, então o
-caminho de evento é código linear.
+1..5 endereçam GRP0..ENABL.
 
 Deltas: a primeira entrada dispara na linha `delta - 1`; cada entrada seguinte
 dispara `delta` linhas depois da anterior, então `BuildEvents` calcula
@@ -62,19 +85,19 @@ endereços de registradores de hardware e constantes de build.
 | `$F000`  | `Reset` (inicialização)                        |
 | `$F04F`  | `StartOfFrame` (VSYNC + VBLANK + kernel + OS)  |
 | `$F100`  | `KernelLoop` (kernel de exibição por eventos)  |
-| `$F142`  | `OverscanWait`                                 |
-| `$F14A`  | `UpdatePlayers` (entrada do joystick + movimento) |
-| `$F184`  | `UpdateBall` (movimento + quique da bola)      |
-| `$F1BB`  | `UpdateMissiles` (botões de fogo, movimento)   |
-| `$F238`  | `PositionPlayers` (RESP0/RESP1 + HMP + HMOVE)  |
-| `$F25B`  | `PositionBall` (RESBL + HMBL)                  |
-| `$F26D`  | `PositionMissiles` (RESM0/RESM1 + HMM)         |
-| `$F298`  | `BuildEvents` (reconstrói a tabela de eventos) |
-| `$F313`  | `AddEvent` (anexa um registro)                 |
-| `$F332`  | `SortEvents` (ordenação por inserção)          |
-| `$F372`  | `EmitEvents` (escreve a tabela)                |
-| `$F421`  | `BubbleOrder` (resolução de colisão)           |
-| `$F454`  | `PosObject` (RESPx/HMPx genérico)              |
+| `$F155`  | `OverscanWait`                                 |
+| `$F15D`  | `UpdatePlayers` (entrada do joystick + movimento) |
+| `$F196`  | `UpdateBall` (movimento + quique da bola)      |
+| `$F1CD`  | `UpdateMissiles` (botões de fogo, movimento)   |
+| `$F262`  | `PositionPlayers` (RESP0/RESP1 + HMP + HMOVE)  |
+| `$F285`  | `PositionBall` (RESBL + HMBL)                  |
+| `$F297`  | `PositionMissiles` (RESM0/RESM1 + HMM)         |
+| `$F2C6`  | `BuildEvents` (insere eventos em ordem de linha) |
+| `$F346`  | `InsertEvent` (insere/mescla uma entrada)      |
+| `$F3BC`  | `ShiftBy2` (estende uma simples em dupla)      |
+| `$F3CA`  | `ShiftBy3` (insere uma nova entrada simples)   |
+| `$F3D8`  | `ConvertDeltas` (linhas -> deltas do kernel)   |
+| `$F409`  | `PosObject` (RESPx/HMPx genérico)              |
 | `$F500`  | `fineAdjustBegin` (tabela HMP alinhada a página) |
 | `$FFFA`  | Vetores NMI / RESET / IRQ                      |
 
@@ -118,9 +141,10 @@ Apenas as direções verticais são usadas nesta rodada:
 | P1 (direita, joystick 2)  | cima  | D0 |
 | P1 (direita, joystick 2)  | baixo | D1 |
 
-`UpdatePlayers` amostra `SWCHA` uma vez por quadro na variável RAM
-`joystate`, aplica no máximo um passo de cima/baixo por jogador e protege as
-bordas da arena para que a posição nunca ultrapasse os limites.
+`UpdatePlayers` amostra `SWCHA` e aplica no máximo um passo de cima/baixo por
+jogador, protegendo as bordas da arena para que a posição nunca ultrapasse os
+limites. O valor é consumido imediatamente; nenhuma variável RAM `joystate` é
+necessária (uma economia de memória da Rodada 3.1).
 
 ## Mísseis
 
@@ -137,13 +161,17 @@ apenas enquanto o míssil daquele jogador estiver inativo:
 * soltar o botão apenas rearmer a entrada, então a próxima transição solto ->
   pressionado dispara novamente.
 
+O estado dos mísseis é compactado em dois bytes: `m_active` guarda as duas
+flags ativas (bit 0 = M0, bit 1 = M1) e `fire_prev` compacta os dois bits dos
+botões do quadro anterior mais o bit 7 como flag de sincronização de boot.
+
 **Sincronização de boot**: em hardware real (e no Stella) os latches INPT do
 TIA leem as linhas de fogo como pressionadas nos primeiros quadros após o
 RESET. A primeira chamada de `UpdateMissiles` após ligar, portanto, apenas
-adota o estado real dos botões em `fire_prev` (flag `fire_sync`), nunca
-dispara. Isso garante que iniciar com FIRE solto não produza tiro, e iniciar
-com FIRE segurado não produza tiro automático - o jogador precisa soltar e
-pressionar novamente.
+adota o estado real dos botões em `fire_prev` (setando o bit 7 `FIRE_SYNC`),
+nunca dispara. Isso garante que iniciar com FIRE solto não produza tiro, e
+iniciar com FIRE segurado não produza tiro automático - o jogador precisa
+soltar e pressionar novamente.
 
 Um míssil tem `MISSILE_HEIGHT = 4` scanlines de altura e `MISSILE_WIDTH = 2`
 pixels de largura (bits de tamanho de míssil do NUSIZ0/NUSIZ1). Ele nasce
@@ -212,43 +240,62 @@ bordas da área de jogo.
 
 ## Builder da tabela de eventos
 
-`BuildEvents` tem três fases:
+A Rodada 3.1 substitui o pipeline de registros/ordem/emissão por um builder de
+inserção direta: `BuildEvents` reinicia a tabela com um único terminador `$FF`
+e então insere os eventos ON/OFF de cada objeto direto no `evTbl` em ordem de
+linha, então não existem buffers separados de registros ou ordem (os 40 bytes
+que usavam na Rodada 3 sumiram). Como as entradas têm tamanho variável, a
+inserção precisa de um loop de deslocamento explícito em vez de uma ordenação
+estável:
 
-1. **Gerar** - `AddEvent` anexa um registro de 3 bytes `(linha, reg, val)` por
-   fronteira de objeto e registra seu deslocamento no array `evOrder`.
-2. **Ordenar** - `SortEvents` ordena o array `evOrder` por linha com ordenação
-   por inserção. Ordenar offsets de 1 byte (em vez dos registros de 3 bytes)
-   mantém o custo dentro do orçamento do VBLANK.
-3. **Emitir** - `EmitEvents` percorre a ordem ordenada e escreve a tabela,
-   mesclando no máximo dois registros da mesma linha em uma entrada de duas
-   escritas. Se um terceiro registro patológico compartilhar a linha, sua
-   linha é incrementada em 1 e `BubbleOrder` restaura a ordem. Isso garante
-   que nenhuma scanline precise de mais de duas escritas.
+1. `InsertEvent` varre a tabela comparando as linhas das entradas. Em uma
+   linha igual, mescla:
+   * entrada simples -> `ShiftBy2` desloca a cauda em 2 e escreve o segundo
+     valor (a entrada mesclada vira uma dupla de 5 bytes);
+   * entrada já dupla -> a linha é incrementada em 1 e a varredura continua
+     (isso só pode acontecer transitoriamente durante um único build, então a
+     tabela nunca excede seu limite).
+   Caso contrário `ShiftBy3` desloca a cauda em 3 e escreve uma nova simples de
+   3 bytes.
+2. Depois que todos os eventos são inseridos, `ConvertDeltas` reescreve as
+   linhas in-place como deltas do kernel (primeiro delta = linha+1, próximos
+   deltas = linha - linhaAnterior), deixando o terminador `$FF` no fim da
+   tabela.
+
+Como uma simples de 3 bytes pode virar uma dupla de 5 bytes na mescla, o
+tamanho máximo da tabela não é mais 10 x 5 bytes: com 10 fronteiras de objeto
+e no máximo uma dupla por linha, a tabela precisa de no máximo 31 bytes.
+`EV_TBL_SIZE = 31` é um limite rígido; `tblLen` rastreia o comprimento atual
+e um teste afirma que ele nunca excede o limite sob entrada de fogo agressiva.
 
 A tabela termina com uma entrada terminadora cujo delta (`$FF`) nunca pode
 disparar dentro do kernel de 192 linhas.
 
 ## Alocação de variáveis
 
-122 de 128 bytes de RAM do RIOT são usados:
+48 de 128 bytes de RAM do RIOT são usados (abaixo dos 122 da Rodada 3):
 
-| Endereço | Nome      | Propósito                            |
-| ------- | --------- | ------------------------------------ |
-| `$80`   | `P0Y`     | posição vertical do jogador 0        |
-| `$81`   | `P1Y`     | posição vertical do jogador 1        |
-| `$82`   | `joystate`| valor amostrado de SWCHA             |
-| `$83`   | `ball_x`  | pixel visível mais à esquerda da bola|
-| `$84`   | `ball_y`  | primeira linha de exibição da bola   |
-| `$85`   | `ball_dx` | passo de direção horizontal          |
-| `$86`   | `ball_dy` | passo de direção vertical            |
-| `$87-$8C` | `m0_x/m0_y/m0_active`, `m1_x/m1_y/m1_active` | mísseis |
-| `$8D`   | `fire_prev` | estado de borda dos botões        |
-| `$8E-$90` | `evCnt/evIdx/scanCnt` | estado do kernel       |
-| `$91-$C7` | `evTbl`  | tabela de eventos (11 entradas x 5 bytes) |
-| `$C8-$E5` | `events` | registros de eventos (até 10 x 3 bytes) |
-| `$E6`   | `evCount` | número de registros deste quadro    |
-| `$E7-$F0` | `evOrder` | offsets ordenados dos registros   |
-| `$F1-$F8` | temporários do builder/kernel       |
+| Endereço  | Nome        | Propósito                              |
+| --------- | ----------- | -------------------------------------- |
+| `$80`     | `P0Y`       | posição vertical do jogador 0          |
+| `$81`     | `P1Y`       | posição vertical do jogador 1          |
+| `$82`     | `ball_x`    | pixel visível mais à esquerda da bola  |
+| `$83`     | `ball_y`    | primeira linha de exibição da bola     |
+| `$84`     | `ball_dx`   | passo de direção horizontal            |
+| `$85`     | `ball_dy`   | passo de direção vertical              |
+| `$86-$87` | `m0_x/m0_y` | posição do míssil 0                    |
+| `$88-$89` | `m1_x/m1_y` | posição do míssil 1                    |
+| `$8A`     | `m_active`  | máscara ativa compactada (M0/M1)       |
+| `$8B`     | `fire_prev` | borda de fogo compactada + sync de boot|
+| `$8C-$8D` | `evCnt/scanCnt` | estado do kernel                   |
+| `$8E-$AC` | `evTbl`     | tabela de eventos (tamanho variável, máx. 31B) |
+| `$AD-$AF` | `evRow/tempCount/tblLen` | temporários do builder |
+
+As economias vêm de: entradas de tabela de tamanho variável (31 vs 55 bytes),
+nenhum buffer de registros/ordem (0 vs 40 bytes), nenhum `joystate` (relê o
+`SWCHA`), flags de míssil compactadas (um byte para dois), nenhum `fire_sync`
+separado (bit 7 de `fire_prev`) e nenhum `evIdx` (o kernel varre a tabela
+linearmente).
 
 ## Por que VBLANK para gameplay
 
