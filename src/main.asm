@@ -238,14 +238,20 @@ WaitVBlank:
 ; Single-write event line: 54 cycles (BMI taken, one write, advance by 3).
 ; Non-event line: 3 + 5 + 2 + 5 + 3 (BNE taken) = 18 cycles.
 ;
-; Write timing: on the double path the first register write happens during
-; CPU cycles 30..33 and the second during cycles 44..47 of the scanline.  A
-; write before the beam passes the object's horizontal position applies to
-; the current scanline; otherwise it applies one line later.  With the
-; standard beam model (pixel p is reached at CPU cycle ~(p + 69) / 3) the
-; gates are x >= 30 for the first write and x >= 72 for the second, so P0
-; (x = 16) and P1 (x = 136) behave exactly as in Round 3, and only objects
-; in a 3-pixel band (x in 30..32 / 72..74) gain one scanline of margin.
+; Write timing: on the double path the first register write lands during CPU
+; cycle 30 and the second during cycle 44 of the scanline; the single-write
+; path lands at cycle 33 (measured on the deterministic emulator).  A write
+; before the beam passes the object's horizontal position applies to the
+; current scanline; otherwise it applies one line later.  With the standard
+; beam model (pixel p is reached at CPU cycle ~(p + 69) / 3) the gates are
+; x >= 21 (first write), x >= 30 (single) and x >= 63 (second write).  The
+; second slot is therefore ~42-49 pixels further right than the first, so an
+; object whose X can fall below the second gate must never be written second.
+; P0/P1 have fixed X (16/136) and the missiles have a bounded range, but the
+; BALL's X spans the whole arena: InsertEvent therefore always gives ENABL
+; the first write of a double (Round 8).  The leftmost ball positions still
+; fall below even the first-write gate on the documented model; that residual
+; is hardware-calibrated and reported in the Round 8 change log.
 ; See docs/en/timing.md.
 ;
 ; The kernel body is kept inside a single 256-byte page (ALIGN 256 before
@@ -920,10 +926,13 @@ PositionMissiles:
 ;   player so it is simply not drawn.  InsertEvent inserts every event
 ;   directly into evTbl in row order, merging same-row singles into doubles
 ;   and bumping surplus same-row events to row+1, so no scanline ever needs
-;   more than two writes.  The table holds ABSOLUTE rows while it is built;
-;   ConvertDeltas turns them into the deltas the kernel counts down.  Because
-;   the table is variable-size and never exceeds EV_TBL_SIZE bytes (10 singles
-;   + terminator = 31), no separate record/order scratch buffer is needed.
+;   more than two writes.  When a ball event merges into a double it is
+;   always written FIRST (see InsertEvent: the ball's X spans the whole
+;   arena, so it must never take the late second write).  The table holds
+;   ABSOLUTE rows while it is built; ConvertDeltas turns them into the
+;   deltas the kernel counts down.  Because the table is variable-size and
+;   never exceeds EV_TBL_SIZE bytes (10 singles + terminator = 31), no
+;   separate record/order scratch buffer is needed.
 ;
 ; The builder runs in VBLANK (up to ~56*64 cycles available), so its own
 ; cycle count is not display-critical.
@@ -1021,6 +1030,9 @@ BuildEvents:
 ;     larger: insert a new single entry before it (shift-by-3);
 ;   * the current entry shares the row AND is a single: merge the new event
 ;     into it as its second write (shift-by-2), converting it to a double;
+;     if the new event is the ball (ENABL), it is swapped into the FIRST
+;     write instead, because the ball's X is variable and the second write
+;     (cycle 44) may land after the beam passed ball_x;
 ;   * the current entry shares the row but is already a double: bump the new
 ;     event's row to row+1 and continue the scan (a table entry never holds
 ;     three writes, which would break the 76-cycle kernel budget).
@@ -1080,6 +1092,30 @@ InsertEvent:
     STA evTbl+2,Y           ; 4   val2   (Y+2 = oldY+4)
     PLA                     ; 4   reg
     STA evTbl+1,Y           ; 4   reg2   (Y+1 = oldY+3)
+    CMP #EV_REG_ENABL       ; 2   did the ball event merge as the second write?
+    BNE .noBallSwap         ; 2/3
+    ; Round 8 (ball write-slot fix): the ball's X spans the whole arena, so a
+    ; second-write (cycle 44) can land after the beam passed ball_x and push
+    ; the ball's ON/OFF to the next scanline (a 1-scanline vertical shift).
+    ; Give ENABL the first write (cycle 30, the earliest slot) by swapping it
+    ; into reg1.  reg1 cannot already be ENABL here: ball_y != ball_y + 4 and
+    ; a merge happens only into a single entry, never into an existing double.
+    ; The co-object then takes the second write; players (P0 x=16) are the
+    ; only objects whose fixed X falls below the second-write gate, so those
+    ; rare shared rows shift that player edge instead of the ball.  The
+    ; definitive fix (writes early enough for every X) requires an earlier
+    ; kernel write slot and is documented as a known limitation.
+    LDA evTbl-1,Y           ; 4   existing reg1 (flag in bit 7)
+    AND #$7F                ; 2   clear the single flag -> becomes clean reg2
+    STA evTbl+1,Y           ; 4
+    LDA #EV_REG_ENABL       ; 2   reg1 = ball (flag already clear)
+    STA evTbl-1,Y           ; 4
+    LDA evTbl,Y             ; 4   existing val1 -> becomes val2
+    LDX evTbl+2,Y           ; 4   new val2 (ball value) -> becomes val1
+    STA evTbl+2,Y           ; 4   (STA zp,Y is used instead of STX zp,Y,
+    TXA                     ; 2    which has no emulator coverage)
+    STA evTbl,Y             ; 4
+.noBallSwap:
     LDA evTbl-1,Y           ; 4   reg1   (Y-1 = oldY+1, flag in bit 7)
     AND #$7F                ; 2   clear the single flag -> now a double
     STA evTbl-1,Y           ; 4

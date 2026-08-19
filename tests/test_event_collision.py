@@ -1,4 +1,4 @@
-"""Event-table collision regression suite (Round 7).
+"""Event-table collision regression suite (Round 7 + Round 8).
 
 Round 7 fixed a vertical-stretch bug: when a third event collides with an
 already-double table row, InsertEvent bumps the new event to row+1 but (before
@@ -6,6 +6,12 @@ the fix) stored the ORIGINAL stacked row, producing two entries at the same
 absolute row.  ConvertDeltas then emitted delta 0, the kernel's DEC evCnt
 wrapped 0 -> $FF and that OFF event never fired, leaving the object enabled
 to the bottom of the screen.
+
+Round 8 fixed a 1-scanline vertical shift: a ball event that merged into a
+same-row single used to take the kernel's SECOND write slot (cycle 44), which
+can land after the beam passed ball_x.  InsertEvent now swaps ENABL into the
+FIRST write; TestBallWriteSlotInvariant asserts no double entry ever carries
+ENABL in the second slot (see also TestBallBeamModel in test_events.py).
 
 These tests drive the REAL ROM's BuildEvents directly on the deterministic
 6502 emulator (the same code path the VBLANK uses every frame) and validate
@@ -466,6 +472,64 @@ class TestBoundaryRows(unittest.TestCase):
                     m1y=183, m0act=True, m1act=True)
         self._check("bottom boundary 184", p0=172, p1=172, by=180, m0y=184,
                     m1y=184, m0act=True, m1act=True)
+
+
+class TestBallWriteSlotInvariant(unittest.TestCase):
+    """Round 8: ENABL must always take the FIRST write of a double entry.
+
+    The kernel's second write lands at CPU cycle 44 of the scanline (measured
+    on the deterministic emulator), which is ~42-49 pixels later than the
+    first write.  A ball event written second can therefore land after the
+    beam has already passed ball_x when the ball sits left of the second-write
+    gate, applying one scanline late and shifting the ball vertically.
+
+    Round 8 changed InsertEvent so a ball (ENABL) event that merges into a
+    same-row single is swapped into the FIRST write (reg1).  These tests run
+    the REAL ROM's BuildEvents across every collision and assert that no
+    double entry ever carries ENABL in the second slot, so the ball's rendered
+    height can no longer depend on which other object shares its row.
+    """
+
+    def setUp(self):
+        self.h = EventBuilderHarness()
+
+    def assert_ball_first(self, msg):
+        for row, writes in self.h.decoded_entries():
+            if len(writes) != 2:
+                continue  # singles have no write-slot problem
+            (reg1, _), (reg2, _) = writes
+            self.assertNotEqual(
+                reg2, EV_REG_ENABL,
+                f"{msg}: ENABL is the second write of the double at row {row}; "
+                f"the late write (cycle 44) can miss ball_x and shift the "
+                f"ball one scanline")
+
+    def test_ball_never_second_write_with_players(self):
+        # Force the ball's ON and OFF rows onto P0's and P1's ON/OFF rows.
+        for by in (50, 58, 62, 88, 92, 96, 100, 104):
+            self.h.build_events(p0=88, p1=50, by=by, m0y=96, m1y=100,
+                                m0act=False, m1act=False)
+            self.h.assert_valid_table(self.h.decoded_rows(), f"by={by}")
+            self.assert_ball_first(f"by={by}")
+
+    def test_ball_never_second_write_with_missiles(self):
+        for by in (92, 96, 100, 104):
+            self.h.build_events(p0=88, p1=50, by=by, m0y=96, m1y=100,
+                                m0act=True, m1act=True)
+            self.h.assert_valid_table(self.h.decoded_rows(), f"by={by}")
+            self.assert_ball_first(f"by={by}")
+
+    def test_ball_never_second_write_full_sweep(self):
+        # Sweep the ball over the whole arena with every object active; a row
+        # the ball shares must never put ENABL in the second slot.
+        for by in range(0, 182, 3):
+            self.h.build_events(p0=88, p1=50, by=by, m0y=96, m1y=100,
+                                m0act=True, m1act=True)
+            self.h.assert_valid_table(self.h.decoded_rows(), f"by={by}")
+            self.assert_ball_first(f"by={by}")
+            entry_rows = [r for r, _ in self.h.decoded_entries()]
+            self.assertEqual(len(entry_rows), len(set(entry_rows)),
+                             f"duplicate entry rows for by={by}")
 
 
 if __name__ == "__main__":

@@ -152,20 +152,29 @@ branches: the `BEQ` scan-line end test, the `BNE` event countdown, and the
 
 ### Graphics register write times
 
-In a two-write event line the first register write executes during CPU cycles
-30..33 and the second during cycles 44..47; in a single-write line the write
-executes during cycles 30..33.
+Measured on the deterministic emulator, the register writes land at these CPU
+cycles within an event scanline:
+
+* single-write line: the write lands at cycle **33**;
+* two-write line: the first write lands at cycle **30**, the second at cycle
+  **44**.
 
 A TIA write applies to the current scanline only if it completes before the
 beam passes the object's horizontal position; otherwise it applies one
-scanline later. Using the standard beam model (pixel `p` is reached at CPU
-cycle `~(p + 69) / 3`), the gates are therefore `x >= 30` for the first write
-and `x >= 72` for the second. Both players are far outside those bands (P0 at
-x=16, P1 at x=136) and behave exactly as in Round 3; only an object whose
-position fell inside the 3-pixel bands `30..32` / `72..74` would gain one
-scanline of margin, and no object in this round occupies those positions.
-The next entry's `delta` is read by cycle 65 on the worst path, comfortably
-before the `WSYNC` that starts the next line.
+scanline later. Using the documented beam model (pixel `p` is reached at CPU
+cycle `~(p + 69) / 3`), the gates are therefore `x >= 21` for the first write,
+`x >= 30` for a single write and `x >= 63` for the second write. The model is
+conservative: Round 3's P0 (x=16) renders correctly with cycle-33 single
+writes, below the model's `x >= 30` gate, so the real gates are probably
+smaller than these.
+
+The write cycle sets a *scheduling* constraint, not just a margin: an object
+whose X can fall below the second gate must never occupy the second slot.
+P0/P1 have fixed X (16/136) and each missile's X range is bounded, but the
+BALL spans the whole arena, so Round 8 gives ENABL the first write whenever
+it merges into a double (see `docs/en/architecture.md`). The next entry's
+`delta` is read by cycle 65 on the worst path, comfortably before the `WSYNC`
+that starts the next line.
 
 ## VBLANK and OVERSCAN budgets
 
@@ -241,6 +250,35 @@ extra zero-page `LDA evRow`), executed in VBLANK: worst-case VBLANK work
 grew 4455 -> 4485 cycles, margin ~409 -> ~379, still far inside the T=77
 expiry (~4864). The kernel itself is untouched, so the 65/76 worst path and
 the 262-scanline frame are unchanged.
+
+### Round 8: the ball write-slot fix (1-scanline vertical shift)
+
+A double entry fires two writes on one scanline, but the first lands at cycle
+30 and the second at cycle 44 (measured on the deterministic emulator). With
+the beam model above that is a ~42-49 pixel gap, so an object written second
+can miss its own gate when it is left of the second-write gate (`x < 63` on
+the model). Before Round 8 a same-row merge kept generation order, so the
+BALL - generated between the players and the missiles - usually became the
+*second* write of a shared row. For every `ball_x < 63` the ball's ON/OFF
+fired one scanline late and the whole ball shifted down one line (height
+unchanged) whenever it shared a row with another active object. The reported
+symptom was a small vertical displacement at certain scanlines.
+
+A model sweep of all 16,956 (ball_x, scenario) combinations confirmed the
+root cause: the ball took the second write on its shared rows, and the second
+write's gate (63) is far beyond the ball's reachable positions. A pure
+X-deadline ordering (earlier deadline first) was evaluated but only reduced
+ball failures from 4957 to 4429: P0 (x=16) is always left of the ball for
+`ball_x > 16`, so the ball would still be written second on shared P0 rows.
+The fix adopted is **ball-first**: `InsertEvent` swaps ENABL into the first
+write whenever a ball event merges into a single, giving the ball the
+earliest write (cycle 30) in every double and a single write (cycle 33) when
+alone. Ball failures drop to 2890; the residual failures are the ball-alone
+`x < 30` band (inherent to the cycle-33 single write) and the co-object
+taking the second slot. Cycle cost of the swap is +1 worst case on the merge
+path (VBLANK): measured worst-case VBLANK work 4485 -> 4486 cycles, margin
+~379 -> ~378, still comfortably inside the T=77 expiry (~4864). The kernel
+is untouched (65/76, slack 11) and the frame stays exactly 262 scanlines.
 
 ## Measured frame length
 

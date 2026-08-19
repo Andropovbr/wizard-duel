@@ -100,6 +100,31 @@ crossing the missile rows. `.insertSingle` now discards the original stacked
 row and writes the effective (possibly bumped) `evRow` instead, keeping the
 table strictly sorted with no delta-0 entries in any valid state.
 
+### Ball write-slot ordering (Round 8)
+
+A double entry fires two writes on the same scanline, but not at the same
+time: the kernel writes the first register at CPU cycle 30 and the second at
+cycle 44 (measured on the deterministic emulator). A TIA write only applies
+to the current scanline if it completes before the beam passes the object's
+horizontal position. The first and second writes are ~42-49 pixels apart on
+the beam, so an object in the second slot with a small X can miss its own
+gate and appear one scanline late.
+
+Before Round 8, a same-row merge kept generation order: the existing event
+became the first write and the new event the second. Because the ball is
+generated between the players and the missiles, a ball event merging into a
+player or missile single was written **second**, so whenever the ball was
+left of the second-write gate its ON/OFF fired one scanline late and the
+whole ball shifted vertically. The fix makes `InsertEvent` swap the ball
+(ENABL) into the **first** write whenever a ball event merges into a single:
+the ball's X spans the whole arena (0..156), so it must never take the late
+second slot. The co-object then takes the second write; its only fixed-X
+member is P0 (x=16), which is left of even the first-write gate on the
+documented model, so those rare shared rows shift a paddle edge instead of
+the ball. The swap is ~40 bytes of VBLANK-time code (plus 256 bytes of
+page-alignment padding because the event code now crosses the `$F500`
+boundary before the fine-adjust table); the kernel is untouched.
+
 ## Code layout
 
 `src/main.asm` contains the complete program in a single `$F000-$FFFF` ROM

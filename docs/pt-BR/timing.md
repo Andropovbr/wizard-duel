@@ -158,19 +158,28 @@ linhas, o `BNE` da contagem de eventos e o `BMI` de despacho simples/dupla.
 
 ### Tempos de escrita dos registradores gráficos
 
-Em uma linha de duas escritas, a primeira escrita de registrador executa
-durante os ciclos de CPU 30..33 e a segunda durante 44..47; em uma linha de
-escrita única, a escrita executa durante 30..33.
+Medidos no emulador determinístico, as escritas de registrador caem nestes
+ciclos de CPU dentro de um scanline de evento:
+
+* linha de escrita única: a escrita cai no ciclo **33**;
+* linha de duas escritas: a primeira cai no ciclo **30**, a segunda no ciclo
+  **44**.
 
 Uma escrita no TIA se aplica ao scanline atual apenas se terminar antes de o
 feixe passar pela posição horizontal do objeto; caso contrário, aplica-se um
-scanline depois. Usando o modelo padrão de feixe (o pixel `p` é atingido no
-ciclo de CPU `~(p + 69) / 3`), as portas são portanto `x >= 30` para a
-primeira escrita e `x >= 72` para a segunda. Os dois jogadores estão bem fora
-dessas faixas (P0 em x=16, P1 em x=136) e se comportam exatamente como na
-Rodada 3; apenas um objeto cuja posição caísse nas faixas de 3 pixels
-`30..32` / `72..74` ganharia um scanline de margem, e nenhum objeto desta
-rodada ocupa essas posições. O `delta` da próxima entrada é lido até o ciclo
+scanline depois. Usando o modelo de feixe documentado (o pixel `p` é atingido
+no ciclo de CPU `~(p + 69) / 3`), as portas são portanto `x >= 21` para a
+primeira escrita, `x >= 30` para uma escrita única e `x >= 63` para a
+segunda. O modelo é conservador: o P0 da Rodada 3 (x=16) renderiza
+corretamente com escritas únicas no ciclo 33, abaixo da porta `x >= 30` do
+modelo, então as portas reais são provavelmente menores.
+
+O ciclo de escrita impõe uma restrição de *escalonamento*, não apenas de
+margem: um objeto cujo X pode cair abaixo do limite da segunda escrita nunca
+deve ocupar o segundo slot. P0/P1 têm X fixo (16/136) e a faixa de X de cada
+míssil é limitada, mas a BOLA cobre toda a arena, então a Rodada 8 dá a ENABL
+a primeira escrita sempre que ela se funde a uma entrada dupla (veja
+`docs/en/architecture.md`). O `delta` da próxima entrada é lido até o ciclo
 65 no pior caminho, confortavelmente antes do `WSYNC` que inicia a próxima
 linha.
 
@@ -253,6 +262,38 @@ zero-page), executado no VBLANK: o trabalho de pior caso do VBLANK cresceu de
 4455 para 4485 ciclos, margem ~409 -> ~379, ainda muito dentro da expiração
 T=77 (~4864). O kernel em si não foi alterado, então o pior caminho de 65/76
 e o quadro de 262 scanlines continuam inalterados.
+
+### Rodada 8: correção do slot de escrita da bola (deslocamento vertical de 1 scanline)
+
+Uma entrada dupla dispara duas escritas em um scanline, mas a primeira cai no
+ciclo 30 e a segunda no ciclo 44 (medidos no emulador determinístico). Com o
+modelo de feixe acima isso é uma lacuna de ~42-49 pixels, então um objeto
+escrito em segundo pode perder seu próprio limite quando está à esquerda do
+limite da segunda escrita (`x < 63` no modelo). Antes da Rodada 8, um merge de
+mesma linha mantinha a ordem de geração, então a BOLA — gerada entre os
+jogadores e os mísseis — normalmente virava a *segunda* escrita de uma linha
+compartilhada. Para todo `ball_x < 63` o ON/OFF da bola disparava um scanline
+atrasado e toda a bola se deslocava uma linha para baixo (altura inalterada)
+sempre que compartilhava uma linha com outro objeto ativo. O sintoma relatado
+era um pequeno deslocamento vertical em certos scanlines.
+
+Uma varredura de modelo de todas as 16.956 combinações (ball_x, cenário)
+confirmou a causa raiz: a bola ocupava a segunda escrita em suas linhas
+compartilhadas, e o limite da segunda escrita (63) está muito além das
+posições alcançáveis pela bola. Uma ordenação pura por deadline de X foi
+avaliada, mas só reduziu as falhas da bola de 4957 para 4429: P0 (x=16) está
+sempre à esquerda da bola para `ball_x > 16`, então a bola ainda seria escrita
+em segundo nas linhas compartilhadas com P0. A correção adotada é
+**bola primeiro**: `InsertEvent` troca ENABL para a primeira escrita sempre
+que um evento de bola se funde a uma única entrada, dando à bola a escrita
+mais cedo (ciclo 30) em toda dupla e uma escrita única (ciclo 33) quando
+sozinha. As falhas da bola caem para 2890; as falhas residuais são a faixa
+`x < 30` da bola sozinha (inerente à escrita única no ciclo 33) e o
+co-objeto ocupando o segundo slot. O custo da troca é +1 no pior caso do
+caminho de merge (VBLANK): trabalho de pior caso do VBLANK medido 4485 -> 4486
+ciclos, margem ~379 -> ~378, ainda confortavelmente dentro da expiração T=77
+(~4864). O kernel não foi alterado (65/76, folga 11) e o quadro permanece em
+exatamente 262 scanlines.
 
 ## Comprimento medido do quadro
 

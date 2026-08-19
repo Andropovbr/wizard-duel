@@ -102,6 +102,33 @@ os dois mísseis voando e a bola cruzando as linhas dos mísseis.
 efetivo (possivelmente deslocado), mantendo a tabela estritamente ordenada
 sem entradas de delta 0 em nenhum estado válido.
 
+### Ordem de slot de escrita da bola (Rodada 8)
+
+Uma entrada dupla dispara duas escritas no mesmo scanline, mas não ao mesmo
+tempo: o kernel grava o primeiro registrador no ciclo 30 da CPU e o segundo
+no ciclo 44 (medidos no emulador determinístico). Uma escrita no TIA só se
+aplica ao scanline atual se terminar antes de o feixe passar pela posição
+horizontal do objeto. A primeira e a segunda escritas ficam ~42-49 pixels
+afastadas no feixe, então um objeto no segundo slot com um X pequeno pode
+perder o próprio limite e aparecer um scanline atrasado.
+
+Antes da Rodada 8, um merge de mesma linha mantinha a ordem de geração: o
+evento existente virava a primeira escrita e o novo evento a segunda. Como a
+bola é gerada entre os jogadores e os mísseis, um evento da bola se fundindo
+a uma única entrada de jogador ou míssil era escrito em **segundo**, então
+sempre que a bola ficava à esquerda do limite da segunda escrita seu ON/OFF
+disparava um scanline atrasado e toda a bola se deslocava verticalmente. A
+correção faz o `InsertEvent` trocar a bola (ENABL) para a **primeira** escrita
+sempre que um evento de bola se funde a uma única entrada: o X da bola cobre
+toda a arena (0..156), então ela nunca deve ocupar o segundo slot tardio. O
+co-objeto então toma a segunda escrita; seu único membro de X fixo é P0
+(x=16), que fica à esquerda até da primeira porta de escrita no modelo
+documentado, então essas raras linhas compartilhadas deslocam a borda de uma
+raquete em vez da bola. A troca tem ~40 bytes de código em VBLANK (mais 256
+bytes de preenchimento de alinhamento de página porque o código de eventos
+agora cruza o limite `$F500` antes da tabela de ajuste fino); o kernel não é
+alterado.
+
 ## Layout do código
 
 `src/main.asm` contém o programa completo em um único banco de ROM
