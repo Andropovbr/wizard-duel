@@ -13,25 +13,36 @@ models WSYNC stalls and the RIOT timer.
 | VSYNC     | 3         | three explicit `STA WSYNC`     |
 | VBLANK    | 57        | `TIM64T = 69` countdown        |
 | KERNEL    | 192       | explicit `STA WSYNC` loop      |
-| OVERSCAN  | 10        | `TIM64T = 11` countdown        |
+| OVERSCAN  | 10        | fixed `WSYNC` countdown loop    |
 | **Total** | **262**   |                                |
 
 VBLANK grew from 37 (Round 2) to 57 lines and OVERSCAN shrank from 30 to 10
 lines to give `BuildEvents` room to rebuild the event table every frame.
 
-### Why the timer values are 69 and 11
+### Why the VBLANK timer is 69 and the overscan is a WSYNC loop
 
 The RIOT timer ticks once every 64 cycles. Round 2 used `43`/`37` for a 37/30
-line split; the Round 3 values were derived the same way (the timer expires a
-few cycles earlier than the naive `value * 64` suggests, and the `STA WSYNC`
-after each wait syncs to the correct line) and then tuned empirically so the
+line split; the Round 3/4 values were derived the same way (the timer expires
+a few cycles earlier than the naive `value * 64` suggests, and the `STA WSYNC`
+after the wait syncs to the correct line) and then tuned empirically so the
 emulator reports exactly 262 scanlines per frame:
 
 * `VBLANK_TIMER_VALUE = 69` expires on the penultimate VBLANK line; the
   `STA WSYNC` that follows syncs to the last VBLANK line, where `HMOVE` is
   written immediately after the `WSYNC` (required so the motion registers act
   during horizontal blanking of the last VBLANK line);
-* `OVERSCAN_TIMER_VALUE = 11` expires on the final frame line.
+* the OVERSCAN does NOT use a timer. A `TIM64T` wait is only deterministic
+  when the work executed before arming it is fixed; Round 4's variable-cost
+  collision pass made the `INTIM < 64` exit land on different 76-cycle
+  boundaries and the frame occasionally slipped to 263 scanlines. Instead the
+  overscan writes exactly `OVERSCAN_LOOP_COUNT = 8` `WSYNC`s. From the
+  kernel's last line, a fixed epilogue (30 cycles) + the `ProcessCollisions`
+  JSR and branchless body (96 cycles incl. RTS) + `LDX` (2) put the first
+  `WSYNC` at cycle 131 of the region, which aligns to scanline 2; the loop
+  then counts exactly 10 lines and the `JMP` + VSYNC preamble that follow
+  align the next frame's first VSYNC `WSYNC` to 760 cycles after the kernel's
+  last line. Because every component is fixed cost, the region is exactly 10
+  scanlines regardless of how many hits are detected.
 
 ## The visible kernel
 
@@ -155,13 +166,17 @@ before the `WSYNC` that starts the next line.
 
 The gameplay (joystick decode + movement + missile update + positioning) and
 the event-table build run in VBLANK between the VSYNC release and the timer
-wait. Its worst case (both missiles active, pathological row alignment) is
-~4.1k cycles of CPU work plus the `PosObject` WSYNC line syncs, comfortably
-inside the `69 * 64 = 4416`-cycle VBLANK timer window (measured with the
-deterministic emulator: worst case ~4135 cycles, ~280 cycles of margin).
+wait. The collision pass is deliberately NOT here: the heaviest VBLANK path
+(both missiles active, both fire edges) is already within a few cycles of the
+VBLANK timer window's alignment boundary, and adding a variable-cost pass
+there made one frame per stress run slip to 263 scanlines. With collision
+handled in the overscan, the VBLANK work ends with enough margin that the
+timer wait always holds the region at exactly 57 lines.
 
-The OVERSCAN work (blank the display, clear every object register, arm the
-timer, wait, jump) fits inside its 10-line window.
+The OVERSCAN work is `ProcessCollisions` (fixed 84 cycles, branchless) plus
+exactly `OVERSCAN_LOOP_COUNT` `WSYNC` writes. Both are fixed cost, so the
+10-line region is deterministic by construction: it cannot drift regardless
+of how many hits are detected.
 
 ## Measured frame length
 
@@ -170,6 +185,9 @@ RIOT timer:
 
 * steady-state frame length: **19912 cycles = 262 scanlines exactly**, stable
   across 30+ frames for the no-missile, both-missiles and pathological states;
+  with the Round 4 collision pass the frame is uniform across 600+ max-stress
+  frames (both collision latches asserted every frame, alternating fire
+  presses); previously the same input made ~1% of frames slip to 263 lines;
 * the visible kernel runs exactly 192 iterations (the `scanCnt` countdown).
 
 The very first frame after power-on is a few cycles shorter than steady state

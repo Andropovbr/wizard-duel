@@ -84,19 +84,21 @@ register addresses and build-time constants.
 | `$F000`  | `Reset` (initialization)                       |
 | `$F04F`  | `StartOfFrame` (VSYNC + VBLANK + kernel + OS)  |
 | `$F100`  | `KernelLoop` (event-driven display kernel)     |
-| `$F155`  | `OverscanWait`                                 |
+| `$F150`  | `OverscanWait` (collision pass + WSYNC loop)   |
 | `$F15D`  | `UpdatePlayers` (joystick input + movement)    |
 | `$F196`  | `UpdateBall` (ball movement + bounce)          |
 | `$F1CD`  | `UpdateMissiles` (fire buttons, movement)      |
-| `$F262`  | `PositionPlayers` (RESP0/RESP1 + HMP + HMOVE)  |
-| `$F285`  | `PositionBall` (RESBL + HMBL)                  |
-| `$F297`  | `PositionMissiles` (RESM0/RESM1 + HMM)         |
-| `$F2C6`  | `BuildEvents` (insert events in row order)     |
-| `$F346`  | `InsertEvent` (insert/merge a table entry)     |
-| `$F3BC`  | `ShiftBy2` (extend a single into a double)     |
-| `$F3CA`  | `ShiftBy3` (insert a new single entry)         |
-| `$F3D8`  | `ConvertDeltas` (rows -> kernel deltas)        |
-| `$F409`  | `PosObject` (generic RESPx/HMPx)               |
+| `$F262`  | `ProcessCollisions` (fixed-cost, branchless)   |
+| `$F2A0`  | `newActiveTbl` (m_active update table)         |
+| `$F2B0`  | `PositionPlayers` (RESP0/RESP1 + HMP + HMOVE)  |
+| `$F2D3`  | `PositionBall` (RESBL + HMBL)                  |
+| `$F2E5`  | `PositionMissiles` (RESM0/RESM1 + HMM)         |
+| `$F314`  | `BuildEvents` (insert events in row order)     |
+| `$F394`  | `InsertEvent` (insert/merge a table entry)     |
+| `$F40A`  | `ShiftBy2` (extend a single into a double)     |
+| `$F418`  | `ShiftBy3` (insert a new single entry)         |
+| `$F426`  | `ConvertDeltas` (rows -> kernel deltas)        |
+| `$F457`  | `PosObject` (generic RESPx/HMPx)               |
 | `$F500`  | `fineAdjustBegin` (page-aligned HMP table)     |
 | `$FFFA`  | NMI / RESET / IRQ vectors                      |
 
@@ -119,7 +121,7 @@ StartOfFrame
  │   ├─ PositionMissiles RESM0/RESM1 + HMM0/HMM1 placement
  │   └─ BuildEvents      rebuild the event table for the visible kernel
  ├─ KERNEL 192 scanlines (explicit WSYNC loop; render events only)
- └─ OVERSCAN 10 scanlines (TIM64T = 11; loop back to StartOfFrame)
+ └─ OVERSCAN 10 scanlines (ProcessCollisions + fixed WSYNC loop; back to StartOfFrame)
 ```
 
 Gameplay input, movement and event building happen during VBLANK; the visible

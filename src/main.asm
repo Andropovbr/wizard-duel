@@ -14,6 +14,13 @@
 ;   * each player can fire one missile with the joystick fire button
 ;     (INPT4 for P0, INPT5 for P1); missiles fly horizontally and despawn
 ;     at the arena edges
+;   * Round 4: TIA collision latches detect the cross-fire hits M0 -> P1 and
+;     M1 -> P0.  ProcessCollisions (run at overscan init, after the kernel
+;     that produced the overlaps) reads CXM0P/CXM1P, records the hit in the
+;     one-byte hit_flags bitfield, deactivates the missile that scored it and
+;     writes CXCLR so a hit is never counted twice.  No HP/damage is applied
+;     yet.  The own-player bits (M0 x P0, M1 x P1) are ignored: a missile
+;     never damages its own player.
 ;   * the ball does NOT interact with the players or missiles yet (no
 ;     collision, collection, power-up, scoring or spells)
 ;
@@ -37,7 +44,7 @@
 ;   VSYNC     3 scanlines   (lines 1..3,    explicit WSYNC)
 ;   VBLANK   57 scanlines   (lines 4..60,   TIM64T = VBLANK_TIMER_VALUE)
 ;   KERNEL  192 scanlines   (lines 61..252, explicit WSYNC loop)
-;   OVERSCAN 10 scanlines   (lines 253..262, TIM64T = OVERSCAN_TIMER_VALUE)
+;   OVERSCAN 10 scanlines   (lines 253..262, WSYNC countdown loop)
 ;   TOTAL   262 scanlines
 ;
 ; Gameplay input/update happens during VBLANK; the visible kernel only
@@ -263,6 +270,15 @@ KernelLoop:
     JMP KernelLoop          ; 3
 
     ; ---- Overscan: 10 scanlines ------------------------------------------
+    ; The overscan is a fixed WSYNC countdown, not a TIM64T wait.  A timer
+    ; wait is only deterministic when the work before it is fixed: with the
+    ; variable-cost collision pass the INTIM < 64 exit granularity made the
+    ; overscan region land on different 76-cycle boundaries and the frame
+    ; occasionally slipped to 263 scanlines.  Counting exactly
+    ; OVERSCAN_LOOP_COUNT WSYNCs instead anchors the region to exactly 760
+    ; cycles (10 lines), and the collision pass that runs before the loop is
+    ; branchless with a fixed ~84-cycle cost, so the whole overscan is
+    ; deterministic by construction.
 .kernelEnd:
     LDA #VBLANK_BLANK       ; 2
     STA VBLANK              ; 3   blank output again
@@ -272,11 +288,22 @@ KernelLoop:
     STA ENAM0               ; 3   ball OFF event at row 192 is dropped), and
     STA ENAM1               ; 3   the display must never bleed into overscan
     STA ENABL               ; 3
-    LDA #OVERSCAN_TIMER_VALUE ; 2
-    STA TIM64T              ; 4   overscan countdown (22 * 64 = 1408 cycles)
 OverscanWait:
-    LDA INTIM               ; 3
-    BNE OverscanWait        ; 2/3
+    ; Collision pass: reads the latches, updates hit_flags and m_active
+    ; (fixed ~84 cycles, no branches - see ProcessCollisions below).
+    JSR ProcessCollisions   ; 6 + ~84
+
+    ; Exactly OVERSCAN_LOOP_COUNT WSYNC writes.  From the kernel's last WSYNC
+    ; the epilogue (30) + JSR (6) + collision body (84 + 6 incl. RTS) + LDX
+    ; (2) put the first write at cycle 131, inside scanline 2 of the region;
+    ; the alignment then snaps each iteration to a 76-cycle boundary, giving
+    ; 8 lines (152..684), and the JMP + VSYNC preamble that follow align the
+    ; next frame's first VSYNC WSYNC to 760.
+    LDX #OVERSCAN_LOOP_COUNT ; 2
+.overscanLoop:
+    STA WSYNC               ; 3   one overscan line per iteration
+    DEX                     ; 2
+    BNE .overscanLoop       ; 2/3
 
     JMP StartOfFrame        ; 3   next frame
 
@@ -529,6 +556,125 @@ UpdateMissiles:
 .m1MoveDone:
 
     RTS                     ; 6
+
+; =============================================================================
+; ProcessCollisions
+;
+; Converts the TIA collision latches left by the current frame's visible
+; kernel into gameplay hits.  Runs at overscan init, after the kernel that
+; produced the overlaps: the deactivated missile is already inactive when the
+; NEXT frame's UpdateMissiles checks m_active for a new rising-edge spawn.
+;
+; Collision lifecycle (documented decision, Round 4):
+;
+;     visible kernel renders  -> TIA latches accumulate
+;     same frame's OVERSCAN   -> game reads the latches (no side effects)
+;     game state updated      -> hit_flags set, scoring missile deactivated
+;     same OVERSCAN           -> CXCLR clears every latch
+;
+; The latches are NOT cleared earlier: the whole overscan + VSYNC stretch is
+; blanked (VBLANK bit set) and every object is cleared at overscan init, so
+; no new collisions can be latched after the kernel ends.  Reading here and
+; writing CXCLR immediately after can therefore never lose a hit, and the
+; clear guarantees a hit rendered in frame N is never counted again in frame
+; N+2.  The visible kernel is untouched: the hit is processed at the end of
+; the frame whose render produced the overlap, so the missile that scored
+; stays visible on the collision frame and disappears on the next - standard
+; latch-based behavior.
+;
+; Only the cross-fire hits matter this round:
+;
+;     CXM0P D7 (M0 x P1)  -> HIT_P1, deactivate M0
+;     CXM1P D7 (M1 x P0)  -> HIT_P0, deactivate M1
+;
+; The own-player bits (CXM0P D6 = M0 x P0, CXM1P D6 = M1 x P1) are ignored:
+; a missile never damages its own player, even if the hardware reports the
+; latch.  Reading a latch has no side effects, and CXCLR is written only at
+; the end, so simultaneous hits (M0 -> P1 AND M1 -> P0 in the same frame)
+; are both recorded and both missiles are deactivated independently.
+;
+; Placement note: ProcessCollisions deliberately runs at overscan init rather
+; than in VBLANK.  The heaviest VBLANK path is already within a few cycles of
+; the VBLANK timer window's alignment boundary, so adding the collision pass
+; there made one frame per stress run slip to 263 scanlines.  An overscan
+; TIM64T wait was also tried, but the emulator's INTIM < 64 exit granularity
+; makes a timer wait nondeterministic whenever the pre-timer work varies, so
+; the collision pass had to become BRANCHLESS (fixed ~84-cycle cost) and the
+; overscan had to become a fixed WSYNC countdown (see the overscan section).
+;
+; This routine is branchless by construction: the latches are turned into
+; 0/1 flags with the carry (ASL + ADC #0), hit_flags is the packed sum
+; 2*hit0 + hit1, and the m_active update is a single lookup in newActiveTbl
+; indexed by m_active + 4*hit0 + 8*hit1 (the high index bits select whether
+; M0 and/or M1 cleared).  With no branches and a page-aligned table the cost
+; is fixed on every path.
+;
+; Cycle budget (fixed path, no branches):
+;   hit0/hit1 extraction       22
+;   hit_flags = 2*hit0 + hit1  11
+;   m_active table lookup      42
+;   CXCLR + RTS                 9
+;   Total                      84
+;
+; tempCount is a BuildEvents scratch (written before every use in VBLANK);
+; reusing it here is safe because the collision pass runs after BuildEvents
+; and nothing reads it between the two.
+; =============================================================================
+ProcessCollisions:
+    ; ---- extract hit0 (CXM0P D7) and hit1 (CXM1P D7) as 0/1 flags ----
+    LDA CXM0P               ; 3   read the M0/players collision latch
+    ASL                     ; 2   carry = M0 x P1 (D7)
+    LDA #0                  ; 2
+    ADC #0                  ; 2   A = hit0 (0/1)
+    TAY                     ; 2   Y = hit0
+    LDA CXM1P               ; 3   read the M1/players collision latch
+    ASL                     ; 2   carry = M1 x P0 (D7)
+    LDA #0                  ; 2
+    ADC #0                  ; 2   A = hit1 (0/1)
+    TAX                     ; 2   X = hit1
+
+    ; ---- hit_flags = 2*hit0 + hit1 (0, HIT_P1, HIT_P0 or both) ----
+    TYA                     ; 2
+    ASL                     ; 2   A = 2*hit0
+    CPX #1                  ; 2   carry = hit1
+    ADC #0                  ; 2   A = 2*hit0 + hit1
+    STA hit_flags           ; 3
+
+    ; ---- m_active = newActiveTbl[m_active + 4*hit0 + 8*hit1] ----
+    TYA                     ; 2   A = hit0
+    ASL                     ; 2
+    ASL                     ; 2   A = 4*hit0
+    STA tempCount           ; 3   scratch (see note above)
+    TXA                     ; 2   A = hit1
+    ASL                     ; 2
+    ASL                     ; 2
+    ASL                     ; 2   A = 8*hit1
+    CLC                     ; 2
+    ADC tempCount           ; 3   A = 4*hit0 + 8*hit1
+    STA tempCount           ; 3
+    LDA m_active            ; 3   A = current active mask (0..3)
+    CLC                     ; 2
+    ADC tempCount           ; 3   A = table index
+    TAY                     ; 2   Y = index
+    LDA newActiveTbl,Y      ; 4   clear the bit of every scoring missile
+    STA m_active            ; 3   M0 disappears at the next render
+
+    STA CXCLR               ; 3   clear every collision latch (strobe; the
+                            ;     value written is ignored by the TIA)
+    RTS                     ; 6
+
+; newActiveTbl: index = m_active + 4*hit0 + 8*hit1.
+;   m_active bits: bit0 = M0 flying, bit1 = M1 flying.
+;   hit0 (index bit 2) clears bit0 (M0 scored), hit1 (index bit 3) clears
+;   bit1 (M1 scored).  The table is page-aligned (16-byte boundary) so the
+;   LDA newActiveTbl,Y lookup can never cross a 256-byte page and the routine
+;   stays fixed-cost on the real 6502.
+    ALIGN 16
+newActiveTbl:
+    DC.B 0, 1, 2, 3         ; no hits: keep m_active
+    DC.B 0, 0, 2, 2         ; hit0: clear the M0 bit
+    DC.B 0, 1, 0, 1         ; hit1: clear the M1 bit
+    DC.B 0, 0, 0, 0         ; both hits: clear both
 
 ; =============================================================================
 ; PositionPlayers
@@ -981,6 +1127,9 @@ fineAdjustTable EQU fineAdjustBegin - %11110001
 ; both missiles into one byte and fire_prev carries the boot-sync flag in its
 ; bit 7.  Builder temps are three shared bytes; InsertEvent holds its payload
 ; on the CPU stack while the table is scanned/shifted.
+;
+; Round 4 adds one byte: hit_flags (HIT_P0/HIT_P1), the observable result of
+; the missile-on-player collision detection -> 49 bytes total.
 ; =============================================================================
     SEG.U VARS
     ORG $80
@@ -998,6 +1147,7 @@ m0_y        DS 1            ; missile 0 row (fixed while flying)
 m1_x        DS 1            ; missile 1 horizontal position
 m1_y        DS 1            ; missile 1 row (fixed while flying)
 m_active    DS 1            ; M0_BIT = M0 flying, M1_BIT = M1 flying
+hit_flags   DS 1            ; HIT_P0/HIT_P1, set by ProcessCollisions (Round 4)
 
 fire_prev   DS 1            ; packed fire state (FIRE_P0/FIRE_P1 + FIRE_SYNC)
 evCnt       DS 1            ; kernel: scanlines until the next event fires

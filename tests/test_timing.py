@@ -105,7 +105,7 @@ class TestFrameConstants(unittest.TestCase):
                          + self.c.get("OVERSCAN_SCANLINES", 0), 67)
 
     def test_timer_values_single_byte(self):
-        for name in ("VBLANK_TIMER_VALUE", "OVERSCAN_TIMER_VALUE"):
+        for name in ("VBLANK_TIMER_VALUE", "OVERSCAN_LOOP_COUNT"):
             self.assertLess(self.c.get(name, 0), 256)
 
     def test_player_bounds_valid(self):

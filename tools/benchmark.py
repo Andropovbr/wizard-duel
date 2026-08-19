@@ -47,7 +47,7 @@ BASELINE = BENCH_DIR / "baseline.json"
 FIELDNAMES = [
     "rom_used", "rom_available", "ram_used", "ram_available",
     "scanlines", "kernel_worst", "kernel_best", "kernel_budget",
-    "kernel_slack", "vblank_timer", "overscan_timer",
+    "kernel_slack", "vblank_timer", "overscan_loop",
 ]
 
 
@@ -71,7 +71,7 @@ def measure():
         "kernel_budget": SCANLINE_BUDGET,
         "kernel_slack": SCANLINE_BUDGET - worst,
         "vblank_timer": c.get("VBLANK_TIMER_VALUE"),
-        "overscan_timer": c.get("OVERSCAN_TIMER_VALUE"),
+        "overscan_loop": c.get("OVERSCAN_LOOP_COUNT"),
     }
 
 
@@ -90,7 +90,7 @@ Measured from the assembled build artifacts.
 | Kernel best case | {m['kernel_best']} cycles |
 | Kernel slack | {m['kernel_slack']} cycles |
 | VBLANK timer value | {m['vblank_timer']} |
-| OVERSCAN timer value | {m['overscan_timer']} |
+| Overscan WSYNC loop | {m['overscan_loop']} |
 """
     LATEST.write_text(text)
     return text
@@ -120,7 +120,8 @@ def migrate_history(history_path=HISTORY, fieldnames=FIELDNAMES):
             row["kernel_slack"] = ""
         new_rows.append(row)
     with history_path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=fieldnames,
+                                lineterminator="\n")
         writer.writeheader()
         writer.writerows(new_rows)
     return True
@@ -129,8 +130,16 @@ def migrate_history(history_path=HISTORY, fieldnames=FIELDNAMES):
 def append_history(m):
     BENCH_DIR.mkdir(parents=True, exist_ok=True)
     migrate_history(HISTORY, FIELDNAMES)
+    # csv never writes a trailing newline after the last row, so a migrated
+    # file may not end with one; without this an append would merge onto the
+    # final row instead of starting a fresh line.
+    if HISTORY.exists() and HISTORY.stat().st_size:
+        data = HISTORY.read_bytes()
+        if not data.endswith(b"\n"):
+            HISTORY.write_bytes(data + b"\n")
     with HISTORY.open("a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
+        writer = csv.DictWriter(f, fieldnames=FIELDNAMES,
+                                lineterminator="\n")
         if HISTORY.stat().st_size == 0:
             writer.writeheader()
         writer.writerow({k: m[k] for k in FIELDNAMES})

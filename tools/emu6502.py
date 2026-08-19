@@ -12,6 +12,12 @@ enough to let the frame loop advance and to validate game state and timing:
   * SWCHA ($0280) returns $FF (nothing pressed).
   * INPT4/INPT5 reads are exposed via `cpu.inpt[4]` / `cpu.inpt[5]` (bit 7
     clear = button pressed); tests set them to simulate the fire buttons.
+  * TIA collision latches are modeled at the REGISTER level: `cpu.cxm0p`
+    / `cpu.cxm1p` hold the CXM0P/CXM1P read values, they persist until a
+    CXCLR write clears them, and reads have no side effects - exactly the
+    real latch contract.  Tests inject latch bits to represent an overlap
+    rendered by the visible kernel (the emulator does not simulate pixel
+    geometry; see docs/en/timing.md for the Stella-based pixel validation).
   * Game RAM is RIOT $80-$FF plus a separate $0100-$01FF stack page.
 
 This is a functional model, not a cycle-perfect simulator: it validates
@@ -46,6 +52,8 @@ class Cpu:
         self.stack = bytearray(256)             # stack page $0100-$01FF
         self.tia = [0] * 64                     # TIA write registers $00-$3F
         self.inpt = [0xFF] * 6                  # INPT0-5 reads (buttons released)
+        self.cxm0p = 0                          # CXM0P read latch (D7 M0-P1, D6 M0-P0)
+        self.cxm1p = 0                          # CXM1P read latch (D7 M1-P0, D6 M1-P1)
         self.riot = [0] * 32                    # $0280-$029F
         self.a = 0
         self.x = 0
@@ -69,11 +77,20 @@ class Cpu:
         if addr < 0x40:
             if 0x38 <= addr <= 0x3D:    # INPT0-5 reads
                 return self.inpt[addr - 0x38]
+            if addr == 0x00:            # CXM0P read (M0 vs P0/P1 latches)
+                return self.cxm0p
+            if addr == 0x01:            # CXM1P read (M1 vs P0/P1 latches)
+                return self.cxm1p
             return self.tia[addr]
         if addr < 0x80:
-            if 0x78 <= addr <= 0x7D:    # mirrored INPT0-5 reads
-                return self.inpt[addr - 0x78]
-            return self.tia[addr & 0x3F]
+            m = addr & 0x3F
+            if 0x38 <= m <= 0x3D:       # mirrored INPT0-5 reads
+                return self.inpt[m - 0x38]
+            if m == 0x00:               # mirrored CXM0P read
+                return self.cxm0p
+            if m == 0x01:               # mirrored CXM1P read
+                return self.cxm1p
+            return self.tia[m]
         if 0x280 <= addr <= 0x29F:
             if addr == 0x284:                   # INTIM
                 return self.timer // 64
@@ -98,11 +115,18 @@ class Cpu:
             if addr == 0x02:                    # WSYNC: hold to next scanline
                 rem = self.cycles % 76
                 self.cycles += 76 - rem if rem else 76
+            elif addr == 0x2C:                  # CXCLR: clear collision latches
+                self.cxm0p = 0
+                self.cxm1p = 0
             return
         if addr < 0x80:
-            if 0x38 <= (addr & 0x3F) <= 0x3D:
+            m = addr & 0x3F
+            if 0x38 <= m <= 0x3D:
                 return                          # INPT reads are read-only
-            self.tia[addr & 0x3F] = value
+            self.tia[m] = value
+            if m == 0x2C:                       # CXCLR (mirrored): clear latches
+                self.cxm0p = 0
+                self.cxm1p = 0
             return
         if 0x280 <= addr <= 0x29F:
             if addr == 0x296:                   # TIM64T: 64 cycles/tick
