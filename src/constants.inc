@@ -81,13 +81,22 @@ TIM64T  = $0296  ; write timer value, countdown clock = 64 cycles
 ;   VSYNC      3 lines  (3 explicit WSYNC writes)
 ;   VBLANK    57 lines  (TIM64T = 69, expires on the final VBLANK line)
 ;   KERNEL   192 lines  (explicit WSYNC loop)
-;   OVERSCAN  10 lines  (TIM64T = 11, expires on the final line)
+;   OVERSCAN  10 lines  (WSYNC countdown loop, see below)
 ;   TOTAL    262 lines
 ;
 ; VBLANK is larger than in Round 2 because the event table for the visible
 ; kernel (players, ball and up to two missiles) is rebuilt every frame during
 ; VBLANK by BuildEvents.  OVERSCAN shrinks accordingly to keep the frame at
 ; 262 lines.
+;
+; Round 4: the overscan no longer uses a TIM64T wait.  The timer was only
+; deterministic because the pre-timer work was fixed; with a variable-cost
+; collision pass the INTIM < 64 exit granularity made the overscan region land
+; on different 76-cycle boundaries, so the frame occasionally slipped to 263
+; scanlines.  The overscan is now a fixed WSYNC countdown: exactly
+; OVERSCAN_LOOP_COUNT WSYNC writes occupy the 10 overscan lines and the
+; fixed-cost branchless ProcessCollisions runs before the loop, so the region
+; is exactly 760 cycles regardless of how many hits are detected.
 ; ---------------------------------------------------------------------------
 FRAME_SCANLINES      = 262
 VSYNC_SCANLINES      = 3
@@ -96,7 +105,7 @@ KERNEL_SCANLINES     = 192
 OVERSCAN_SCANLINES   = 10
 
 VBLANK_TIMER_VALUE   = 69
-OVERSCAN_TIMER_VALUE = 11
+OVERSCAN_LOOP_COUNT  = 8
 
 ; ---------------------------------------------------------------------------
 ; Player constants
@@ -300,6 +309,36 @@ INPT5 = $3D              ; P1 fire button (bit 7, active low)
 FIRE_P0 = %00000001
 FIRE_P1 = %00000010
 FIRE_SYNC = %10000000
+
+; ---------------------------------------------------------------------------
+; TIA collision registers (Round 4)
+; ---------------------------------------------------------------------------
+; The TIA latches a bit whenever two objects render an overlapping pixel
+; (same scanline, overlapping horizontal extent).  Once set, a latch persists
+; until CXCLR is written; reading a latch has NO side effects.  The register
+; READ addresses share bytes with write registers ($00 is also VSYNC, $01
+; also VBLANK): reads and writes on the same byte access different internal
+; registers, so "LDA CXM0P" and "STA VSYNC" never interfere.
+;
+;   CXM0P  ($00, read): D7 = M0 x P1,  D6 = M0 x P0
+;   CXM1P  ($01, read): D7 = M1 x P0,  D6 = M1 x P1
+;   CXCLR  ($2C, write): clear every collision latch (strobe, value ignored)
+;
+; Only the cross-fire hits are gameplay this round.  The own-player bits
+; (M0 x P0, M1 x P1) are deliberately ignored by the collision logic so a
+; missile can never damage its own player.
+CXM0P      = $00
+CXM1P      = $01
+M0_HIT_P1  = %10000000   ; CXM0P D7: M0 overlapped P1 (the M0 -> P1 hit)
+M0_HIT_P0  = %01000000   ; CXM0P D6: M0 overlapped P0 (own player, ignored)
+M1_HIT_P0  = %10000000   ; CXM1P D7: M1 overlapped P0 (the M1 -> P0 hit)
+M1_HIT_P1  = %01000000   ; CXM1P D6: M1 overlapped P1 (own player, ignored)
+
+; hit_flags bitfield (Round 4): a compact, testable record of which player
+; was hit by the missile-on-player collisions just processed.  One bit per
+; player; no HP/damage is applied yet.
+HIT_P0     = %00000001   ; player 0 was hit by M1
+HIT_P1     = %00000010   ; player 1 was hit by M0
 
 ; VBLANK values. Bit 1 blanks the display; bit 6 ($40) only controls the
 ; INPT latches used for paddles, which are not used yet.

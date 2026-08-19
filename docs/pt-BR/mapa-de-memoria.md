@@ -12,19 +12,21 @@ I/O/timer do RIOT (`$0280-$02FF`).
 | `$F04F`  | `StartOfFrame` (loop de um quadro)         |
 | `$F079`  | `WaitVBlank` (TIM64T + lógica do jogo)     |
 | `$F100`  | `KernelLoop` (kernel de 192 linhas por eventos) |
-| `$F155`  | `OverscanWait`                             |
+| `$F150`  | `OverscanWait` (colisão + loop de WSYNC)   |
 | `$F15D`  | `UpdatePlayers` (input vertical do joystick) |
 | `$F196`  | `UpdateBall` (movimento + quique)          |
 | `$F1CD`  | `UpdateMissiles` (disparo, movimento, remoção) |
-| `$F262`  | `PositionPlayers` (RESP0/1 + HMP0/1)       |
-| `$F285`  | `PositionBall` (RESBL + HMBL)              |
-| `$F297`  | `PositionMissiles` (RESM0/1 + HMM0/1)      |
-| `$F2C6`  | `BuildEvents` (insere eventos em ordem de linha) |
-| `$F346`  | `InsertEvent` (insere/mescla uma entrada)  |
-| `$F3BC`  | `ShiftBy2` (estende uma simples em dupla)  |
-| `$F3CA`  | `ShiftBy3` (insere uma nova entrada simples) |
-| `$F3D8`  | `ConvertDeltas` (linhas -> deltas do kernel) |
-| `$F409`  | `PosObject` (RESPx/HMPx genérico)          |
+| `$F262`  | `ProcessCollisions` (custo fixo, sem branches) |
+| `$F2A0`  | `newActiveTbl` (tabela de atualização do m_active) |
+| `$F2B0`  | `PositionPlayers` (RESP0/1 + HMP0/1)       |
+| `$F2D3`  | `PositionBall` (RESBL + HMBL)              |
+| `$F2E5`  | `PositionMissiles` (RESM0/1 + HMM0/1)      |
+| `$F314`  | `BuildEvents` (insere eventos em ordem de linha) |
+| `$F394`  | `InsertEvent` (insere/mescla uma entrada)  |
+| `$F40A`  | `ShiftBy2` (estende uma simples em dupla)  |
+| `$F418`  | `ShiftBy3` (insere uma nova entrada simples) |
+| `$F426`  | `ConvertDeltas` (linhas -> deltas do kernel) |
+| `$F457`  | `PosObject` (RESPx/HMPx genérico)          |
 | `$F500`  | `fineAdjustBegin` (tabela HMP, alinhada a página) |
 | `$FFFA`  | vetor NMI (`Reset`)                        |
 | `$FFFC`  | vetor RESET (`Reset`)                      |

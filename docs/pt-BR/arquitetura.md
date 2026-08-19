@@ -85,19 +85,21 @@ endereços de registradores de hardware e constantes de build.
 | `$F000`  | `Reset` (inicialização)                        |
 | `$F04F`  | `StartOfFrame` (VSYNC + VBLANK + kernel + OS)  |
 | `$F100`  | `KernelLoop` (kernel de exibição por eventos)  |
-| `$F155`  | `OverscanWait`                                 |
+| `$F150`  | `OverscanWait` (colisão + loop de WSYNC)       |
 | `$F15D`  | `UpdatePlayers` (entrada do joystick + movimento) |
 | `$F196`  | `UpdateBall` (movimento + quique da bola)      |
 | `$F1CD`  | `UpdateMissiles` (botões de fogo, movimento)   |
-| `$F262`  | `PositionPlayers` (RESP0/RESP1 + HMP + HMOVE)  |
-| `$F285`  | `PositionBall` (RESBL + HMBL)                  |
-| `$F297`  | `PositionMissiles` (RESM0/RESM1 + HMM)         |
-| `$F2C6`  | `BuildEvents` (insere eventos em ordem de linha) |
-| `$F346`  | `InsertEvent` (insere/mescla uma entrada)      |
-| `$F3BC`  | `ShiftBy2` (estende uma simples em dupla)      |
-| `$F3CA`  | `ShiftBy3` (insere uma nova entrada simples)   |
-| `$F3D8`  | `ConvertDeltas` (linhas -> deltas do kernel)   |
-| `$F409`  | `PosObject` (RESPx/HMPx genérico)              |
+| `$F262`  | `ProcessCollisions` (custo fixo, sem branches) |
+| `$F2A0`  | `newActiveTbl` (tabela de atualização do m_active) |
+| `$F2B0`  | `PositionPlayers` (RESP0/RESP1 + HMP + HMOVE)  |
+| `$F2D3`  | `PositionBall` (RESBL + HMBL)                  |
+| `$F2E5`  | `PositionMissiles` (RESM0/RESM1 + HMM)         |
+| `$F314`  | `BuildEvents` (insere eventos em ordem de linha) |
+| `$F394`  | `InsertEvent` (insere/mescla uma entrada)      |
+| `$F40A`  | `ShiftBy2` (estende uma simples em dupla)      |
+| `$F418`  | `ShiftBy3` (insere uma nova entrada simples)   |
+| `$F426`  | `ConvertDeltas` (linhas -> deltas do kernel)   |
+| `$F457`  | `PosObject` (RESPx/HMPx genérico)              |
 | `$F500`  | `fineAdjustBegin` (tabela HMP alinhada a página) |
 | `$FFFA`  | Vetores NMI / RESET / IRQ                      |
 
@@ -120,7 +122,7 @@ StartOfFrame
  │   ├─ PositionMissiles posicionamento RESM0/RESM1 + HMM0/HMM1
  │   └─ BuildEvents      reconstrói a tabela de eventos do kernel visível
  ├─ KERNEL 192 scanlines (loop explícito de WSYNC; apenas renderiza)
- └─ OVERSCAN 10 scanlines (TIM64T = 11; volta ao StartOfFrame)
+ └─ OVERSCAN 10 scanlines (ProcessCollisions + loop fixo de WSYNC; volta ao StartOfFrame)
 ```
 
 Entrada, movimento e build de eventos acontecem durante o VBLANK; o kernel

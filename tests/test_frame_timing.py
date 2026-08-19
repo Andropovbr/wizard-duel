@@ -43,14 +43,22 @@ class TestFrameStability(unittest.TestCase):
         return self.sym[name] - 0x80
 
     def run_frame(self):
-        """Run exactly one frame (returns cycles consumed)."""
+        """Run exactly one frame (returns cycles consumed).
+
+        If the CPU is already at StartOfFrame (the state left by a previous
+        call), the frame currently being entered is the one measured, so a
+        call always returns exactly one frame's worth of cycles.
+        """
         start = self.cpu.cycles
+        at_sof = self.cpu.pc == self.sof
         count = 0
         while count < 2:
             self.cpu.step()
             if self.cpu.pc == self.sof:
                 count += 1
-        return self.cpu.cycles - start
+                if (at_sof and count == 1) or count == 2:
+                    return self.cpu.cycles - start
+        raise AssertionError("frame did not terminate")
 
     def test_loop_is_stable_over_many_frames(self):
         # Boot (latches read pressed), then released; nothing must fire.
@@ -96,6 +104,31 @@ class TestFrameStability(unittest.TestCase):
                          "M0 must despawn after flying off-screen")
         # m0_x itself may wrap after despawn, but the active flag is the
         # source of truth the builder checks.
+
+    def test_frame_never_slips_to_263_under_max_collision_stress(self):
+        # Regression: before Round 4's fixed overscan (WSYNC countdown +
+        # branchless ProcessCollisions), the heaviest VBLANK path slipped ~1%
+        # of frames to 263 scanlines.  This reproduces that exact worst case
+        # (both collision latches asserted every frame + alternating fire
+        # presses, so both missiles re-spawn after every hit) and asserts
+        # every frame is exactly 19912 cycles = 262 scanlines.
+        self.cpu.inpt[4] = 0xFF      # boot sync frames first
+        self.cpu.inpt[5] = 0xFF
+        self.run_frame()
+        for _ in range(3):
+            self.cpu.cxm0p = 0xC0
+            self.cpu.cxm1p = 0xC0
+            self.run_frame()
+        for i in range(80):
+            press = (i % 2 == 0)
+            self.cpu.inpt[4] = 0x00 if press else 0xFF
+            self.cpu.inpt[5] = 0x00 if press else 0xFF
+            self.cpu.cxm0p = 0xC0    # M0 x P1 AND M0 x P0 latched
+            self.cpu.cxm1p = 0xC0    # M1 x P0 AND M1 x P1 latched
+            cycles = self.run_frame()
+            self.assertEqual(cycles, 19912,
+                             f"frame {i} ran {cycles} cycles "
+                             f"({cycles / 76:.0f} scanlines), expected 262")
 
 
 if __name__ == "__main__":

@@ -12,19 +12,21 @@ registers (`$0280-$02FF`).
 | `$F04F`  | `StartOfFrame` (one-frame loop)           |
 | `$F079`  | `WaitVBlank` (TIM64T + game logic)        |
 | `$F100`  | `KernelLoop` (event-driven 192-line kernel) |
-| `$F155`  | `OverscanWait`                            |
+| `$F150`  | `OverscanWait` (collision pass + WSYNC loop) |
 | `$F15D`  | `UpdatePlayers` (vertical joystick input) |
 | `$F196`  | `UpdateBall` (move + bounce)              |
 | `$F1CD`  | `UpdateMissiles` (fire, move, despawn)    |
-| `$F262`  | `PositionPlayers` (RESP0/1 + HMP0/1)      |
-| `$F285`  | `PositionBall` (RESBL + HMBL)             |
-| `$F297`  | `PositionMissiles` (RESM0/1 + HMM0/1)     |
-| `$F2C6`  | `BuildEvents` (insert events in row order) |
-| `$F346`  | `InsertEvent` (insert + merge table entry) |
-| `$F3BC`  | `ShiftBy2` (extend a single into a double) |
-| `$F3CA`  | `ShiftBy3` (insert a new single entry)    |
-| `$F3D8`  | `ConvertDeltas` (rows -> kernel deltas)   |
-| `$F409`  | `PosObject` (generic RESPx + HMPx)        |
+| `$F262`  | `ProcessCollisions` (fixed-cost, branchless) |
+| `$F2A0`  | `newActiveTbl` (m_active update table)    |
+| `$F2B0`  | `PositionPlayers` (RESP0/1 + HMP0/1)      |
+| `$F2D3`  | `PositionBall` (RESBL + HMBL)             |
+| `$F2E5`  | `PositionMissiles` (RESM0/1 + HMM0/1)     |
+| `$F314`  | `BuildEvents` (insert events in row order) |
+| `$F394`  | `InsertEvent` (insert + merge table entry) |
+| `$F40A`  | `ShiftBy2` (extend a single into a double) |
+| `$F418`  | `ShiftBy3` (insert a new single entry)    |
+| `$F426`  | `ConvertDeltas` (rows -> kernel deltas)   |
+| `$F457`  | `PosObject` (generic RESPx + HMPx)        |
 | `$F500`  | `fineAdjustBegin` (HMP table, page-aligned) |
 | `$FFFA`  | NMI vector (`Reset`)                      |
 | `$FFFC`  | RESET vector (`Reset`)                    |

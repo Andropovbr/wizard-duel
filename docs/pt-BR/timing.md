@@ -14,19 +14,19 @@ RIOT.
 | VSYNC     | 3         | três `STA WSYNC` explícitos    |
 | VBLANK    | 57        | contagem `TIM64T = 69`         |
 | KERNEL    | 192       | loop explícito de `STA WSYNC`  |
-| OVERSCAN  | 10        | contagem `TIM64T = 11`         |
+| OVERSCAN  | 10        | loop fixo de `WSYNC`            |
 | **Total** | **262**   |                                |
 
 O VBLANK cresceu de 37 (Rodada 2) para 57 linhas e o OVERSCAN encolheu de 30
 para 10 linhas para dar espaço ao `BuildEvents` reconstruir a tabela de
 eventos a cada quadro.
 
-### Por que os valores do timer são 69 e 11
+### Por que o timer do VBLANK é 69 e o overscan é um loop de WSYNC
 
 O timer do RIOT conta a cada 64 ciclos. A Rodada 2 usou `43`/`37` para uma
-divisão de 37/30 linhas; os valores da Rodada 3 foram derivados do mesmo modo
-(o timer expira alguns ciclos antes do valor ingênuo `valor * 64`, e o
-`STA WSYNC` após cada espera sincroniza na linha correta) e depois ajustados
+divisão de 37/30 linhas; os valores da Rodada 3/4 foram derivados do mesmo
+modo (o timer expira alguns ciclos antes do valor ingênuo `valor * 64`, e o
+`STA WSYNC` após a espera sincroniza na linha correta) e depois ajustados
 empiricamente para que o emulador reporte exatamente 262 scanlines por
 quadro:
 
@@ -34,7 +34,19 @@ quadro:
   `STA WSYNC` seguinte sincroniza na última linha do VBLANK, onde `HMOVE` é
   escrito imediatamente após o `WSYNC` (exigido para que os registradores de
   movimento atuem durante o blanking horizontal da última linha do VBLANK);
-* `OVERSCAN_TIMER_VALUE = 11` expira na última linha do quadro.
+* o OVERSCAN NÃO usa timer. Uma espera `TIM64T` só é determinística quando o
+  trabalho executado antes de armar o timer é fixo; na Rodada 4 a passagem de
+  colisão de custo variável fez a saída de `INTIM < 64` cair em fronteiras de
+  76 ciclos diferentes e o quadro ocasionalmente escorregou para 263
+  scanlines. Em vez disso, o overscan escreve exatamente `OVERSCAN_LOOP_COUNT
+  = 8` `WSYNC`s. A partir da última linha do kernel, um epílogo fixo (30
+  ciclos) + o JSR e o corpo sem branches do `ProcessCollisions` (96 ciclos
+  incluindo RTS) + `LDX` (2) colocam o primeiro `WSYNC` no ciclo 131 da
+  região, que alinha no scanline 2; o loop conta então exatamente 10 linhas e
+  o `JMP` + preâmbulo de VSYNC seguintes alinham o primeiro `WSYNC` de VSYNC
+  do próximo quadro em 760 ciclos após a última linha do kernel. Como cada
+  componente tem custo fixo, a região tem exatamente 10 scanlines
+  independentemente de quantos acertos forem detectados.
 
 ## O kernel visível
 
@@ -161,14 +173,18 @@ linha.
 
 O gameplay (decodificação do joystick + movimento + atualização dos mísseis +
 posicionamento) e o build da tabela de eventos rodam no VBLANK entre a
-liberação do VSYNC e a espera do timer. O pior caso (dois mísseis ativos,
-alinhamento patológico de linhas) é ~4,1k ciclos de trabalho de CPU mais os
-syncs de linha dos `PosObject`, confortavelmente dentro da janela do timer
-`69 * 64 = 4416` ciclos (medido com o emulador determinístico: pior caso
-~4135 ciclos, ~280 ciclos de folga).
+liberação do VSYNC e a espera do timer. A passagem de colisão deliberadamente
+NÃO fica aqui: o caminho mais pesado de VBLANK (dois mísseis ativos, duas
+bordas de disparo) já está a poucos ciclos da fronteira de alinhamento da
+janela do timer, e adicionar uma passagem de custo variável ali fez um quadro
+por rodada de estresse escorregar para 263 scanlines. Com a colisão tratada
+no overscan, o trabalho do VBLANK termina com folga suficiente para que a
+espera do timer sempre segure a região em exatamente 57 linhas.
 
-O trabalho do OVERSCAN (blank da tela, limpar todos os registradores de
-objeto, armar o timer, esperar, saltar) cabe na janela de 10 linhas.
+O trabalho do OVERSCAN é `ProcessCollisions` (84 ciclos fixos, sem branches)
+mais exatamente `OVERSCAN_LOOP_COUNT` escritas de `WSYNC`. Ambos têm custo
+fixo, então a região de 10 linhas é determinística por construção: não pode
+derivar independentemente de quantos acertos forem detectados.
 
 ## Comprimento medido do quadro
 
@@ -177,7 +193,11 @@ o timer do RIOT:
 
 * comprimento de quadro em estado estável: **19912 ciclos = exatamente 262
   scanlines**, estável em 30+ quadros para os estados sem mísseis, com dois
-  mísseis e patológico;
+  mísseis e patológico; com a passagem de colisão da Rodada 4 o quadro é
+  uniforme em 600+ quadros de estresse máximo (ambos os latches de colisão
+  assertados todo quadro, pressionamentos de disparo alternados);
+  anteriormente a mesma entrada fazia ~1% dos quadros escorregar para 263
+  linhas;
 * o kernel visível roda exatamente 192 iterações (a contagem `scanCnt`).
 
 O primeiro quadro após ligar é alguns ciclos mais curto que o estado estável

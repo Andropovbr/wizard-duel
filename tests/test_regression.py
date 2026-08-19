@@ -34,7 +34,7 @@ BASE = {
     "kernel_budget": 76,
     "kernel_slack": 11,
     "vblank_timer": 69,
-    "overscan_timer": 11,
+    "overscan_loop": 8,
 }
 
 
