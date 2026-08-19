@@ -77,6 +77,29 @@ its 185 lines with a RAM countdown (`scanCnt`) rather than the X register,
 because the event code uses `TAX` as the register index and would clobber an
 X line counter on every event line.
 
+### Same-row collisions (Round 7)
+
+Up to ten events can land on the same scanline row (two players + ball +
+two missiles, ON and OFF each). `InsertEvent` keeps the table sorted by row
+and allows at most two writes per entry:
+
+* two events on the same row merge into a double entry (both writes fire on
+  that line);
+* a third event on a row that already holds a double is **bumped to row+1**
+  and the scan continues - so no scanline ever needs more than two writes,
+  which protects the 76-cycle kernel budget.
+
+Round 7 fixed a bug in the bump path: `.insertSingle` stored the event's
+original stacked row even after the row was bumped. A third event colliding
+with a double then produced two table entries at the same absolute row,
+`ConvertDeltas` emitted **delta 0**, and the kernel's `DEC evCnt` wrapped
+`0 -> $FF`, so that OFF event never fired and the object stayed enabled to
+the bottom edge of the screen (a vertical stretch). The realistic trigger
+was both players alive at the same row, both missiles flying and the ball
+crossing the missile rows. `.insertSingle` now discards the original stacked
+row and writes the effective (possibly bumped) `evRow` instead, keeping the
+table strictly sorted with no delta-0 entries in any valid state.
+
 ## Code layout
 
 `src/main.asm` contains the complete program in a single `$F000-$FFFF` ROM

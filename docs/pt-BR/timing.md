@@ -230,6 +230,30 @@ fica confinada a uma janela que nunca escapa da primeira fronteira, a região
 tem exatamente 10 scanlines independentemente de quantos acertos forem
 detectados ou de os jogadores estarem mortos.
 
+### Rodada 7: o deslocamento de mesma linha e o estiramento por delta 0
+
+`InsertEvent` nunca deixa uma scanline precisar de mais de duas escritas: um
+terceiro evento em uma linha que já contém uma dupla é deslocado para a
+linha+1. A Rodada 7 corrigiu um bug latente nesse caminho. `.insertSingle`
+gravava a *linha original empilhada* do evento mesmo quando o deslocamento já
+tinha avançado `evRow`, então um terceiro evento colidindo com uma dupla
+produzia **duas entradas de tabela na mesma linha absoluta**.
+`ConvertDeltas` emitia então delta 0, o `DEC evCnt` do kernel virava
+`0 -> $FF`, e esse evento OFF nunca disparava: o objeto ficava habilitado da
+sua linha ON até a borda inferior — um estiramento vertical que só aparecia
+quando objetos suficientes coincidiam numa mesma linha (os dois jogadores
+vivos na mesma linha, os dois mísseis voando e a bola cruzando as linhas dos
+mísseis).
+
+A correção faz o `.insertSingle` gravar o `evRow` efetivo (possivelmente
+deslocado) e descartar a linha original empilhada, de modo que as linhas das
+entradas ficam estritamente crescentes e nenhuma entrada de delta 0 pode
+existir. O custo é +1 ciclo por `insertSingle` (um `LDA evRow` extra,
+zero-page), executado no VBLANK: o trabalho de pior caso do VBLANK cresceu de
+4455 para 4485 ciclos, margem ~409 -> ~379, ainda muito dentro da expiração
+T=77 (~4864). O kernel em si não foi alterado, então o pior caminho de 65/76
+e o quadro de 262 scanlines continuam inalterados.
+
 ## Comprimento medido do quadro
 
 Verificado com um emulador 6502 determinístico que modela paradas de WSYNC e

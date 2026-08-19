@@ -11,6 +11,6 @@ Measured from the assembled build artifacts.
 | Kernel best case | 18 cycles |
 | Kernel slack | 11 cycles |
 | VBLANK timer value | 77 |
-| VBLANK worst work | 4455 cycles |
-| VBLANK margin | 409 cycles |
+| VBLANK worst work | 4485 cycles |
+| VBLANK margin | 379 cycles |
 | Overscan WSYNC loop | 7 |

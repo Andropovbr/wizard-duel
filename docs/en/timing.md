@@ -221,6 +221,27 @@ to a window that never escapes the first boundary, the region is exactly 10
 scanlines regardless of how many hits are detected or whether players are
 dead.
 
+### Round 7: the same-row bump and the delta-0 stretch
+
+`InsertEvent` never lets a scanline need more than two writes: a third event
+on a row that already holds a double is bumped to row+1. Round 7 fixed a
+latent bug in that path. `.insertSingle` stored the event's *original
+stacked row* even when the bump had already advanced `evRow`, so a third
+event colliding with a double produced **two table entries at the same
+absolute row**. `ConvertDeltas` then emitted delta 0, the kernel's `DEC
+evCnt` wrapped `0 -> $FF`, and that OFF event never fired: the object stayed
+enabled from its ON row to the bottom edge — a vertical stretch that only
+appeared when enough objects coincided on one row (both players alive at the
+same row, both missiles flying, ball crossing the missile rows).
+
+The fix makes `.insertSingle` write the effective (possibly bumped) `evRow`
+and discard the original stacked row, so entry rows stay strictly increasing
+and no delta-0 entry can exist. Cycle cost is +1 per `insertSingle` (an
+extra zero-page `LDA evRow`), executed in VBLANK: worst-case VBLANK work
+grew 4455 -> 4485 cycles, margin ~409 -> ~379, still far inside the T=77
+expiry (~4864). The kernel itself is untouched, so the 65/76 worst path and
+the 262-scanline frame are unchanged.
+
 ## Measured frame length
 
 Verified with a deterministic 6502 emulator that models WSYNC stalls and the

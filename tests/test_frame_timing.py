@@ -42,17 +42,23 @@ class TestFrameStability(unittest.TestCase):
     def _ram(self, name):
         return self.sym[name] - 0x80
 
-    def run_frame(self):
+    def run_frame(self, inject_at=None, inject_fn=None):
         """Run exactly one frame (returns cycles consumed).
 
         If the CPU is already at StartOfFrame (the state left by a previous
         call), the frame currently being entered is the one measured, so a
         call always returns exactly one frame's worth of cycles.
+
+        If `inject_at` is a PC address, `inject_fn` is invoked every time the
+        CPU reaches it during the frame (used to force game state right before
+        BuildEvents consumes it).
         """
         start = self.cpu.cycles
         at_sof = self.cpu.pc == self.sof
         count = 0
         while count < 2:
+            if inject_at is not None and self.cpu.pc == inject_at:
+                inject_fn()          # inject before BuildEvents executes
             self.cpu.step()
             if self.cpu.pc == self.sof:
                 count += 1
@@ -139,6 +145,66 @@ class TestFrameStability(unittest.TestCase):
             self.assertEqual(cycles, 19912,
                              f"frame {i} ran {cycles} cycles "
                              f"({cycles / 76:.0f} scanlines), expected 262")
+
+    def test_no_stretched_objects_when_missiles_cross_ball(self):
+        # Round 7 regression: a third event colliding with a double table row
+        # must be bumped to row+1.  Before the fix .insertSingle stored the
+        # ORIGINAL stacked row, producing two entries at the same absolute row
+        # -> delta 0 -> the kernel's DEC evCnt wrapped 0 -> $FF -> the OFF
+        # event never fired and the object stayed enabled to the bottom edge
+        # (vertical stretch).  The realistic trigger is both players alive at
+        # the same row, both missiles flying, and the ball crossing the
+        # missile rows (ball OFF + player OFF + missile OFF on one row, and
+        # player ON + missile ON + missile ON on another).  Positions are
+        # injected exactly when pc reaches BuildEvents (after VBLANK movement)
+        # so the 3-way rows genuinely coincide, then the full frame - kernel
+        # included - must run 262 scanlines and produce a delta-0-free table.
+        EV_SINGLE_FLAG = 0x80
+        EV_TERMINATOR_DELTA = 0xFF
+        evTbl = self._ram("evTbl")
+        tblLen = self._ram("tblLen")
+        be = self.sym["BuildEvents"]
+        p0_hp = self._ram("p0_hp")
+        p1_hp = self._ram("p1_hp")
+        self.cpu.inpt[4] = 0xFF      # boot sync frame first
+        self.cpu.inpt[5] = 0xFF
+        self.run_frame()
+        for i in range(60):
+            self.cpu.ram[p0_hp] = 3   # keep both players alive all the way
+            self.cpu.ram[p1_hp] = 3
+            cycles = self.run_frame(inject_at=be, inject_fn=self._align_players)
+            self.assertEqual(cycles, 19912,
+                             f"frame {i} ran {cycles} cycles "
+                             f"({cycles / 76:.0f} scanlines), expected 262")
+            # The kernel for frame i just rendered this table: it must contain
+            # no delta-0 entry (two entries on the same absolute row).
+            tlen = self.cpu.ram[tblLen]
+            raw = bytes(self.cpu.ram[evTbl:evTbl + tlen])
+            prev = -1
+            j = 0
+            rows_seen = []
+            while j < len(raw) and raw[j] != EV_TERMINATOR_DELTA:
+                d = raw[j]
+                row = prev + d
+                rows_seen.append(row)
+                if raw[j + 1] & EV_SINGLE_FLAG:
+                    j += 3
+                else:
+                    j += 5
+                prev = row
+            self.assertEqual(len(rows_seen), len(set(rows_seen)),
+                             f"frame {i}: duplicate absolute row in evTbl "
+                             f"(delta 0 -> stretched object): {rows_seen}")
+
+    def _align_players(self):
+        """Force the 3-way same-row collision state at BuildEvents time."""
+        ram = self.cpu.ram
+        ram[self._ram("P0Y")] = 88
+        ram[self._ram("P1Y")] = 88
+        ram[self._ram("ball_y")] = 96
+        ram[self._ram("m0_y")] = 88
+        ram[self._ram("m1_y")] = 88
+        ram[self._ram("m_active")] = 0x03   # both missiles flying
 
     def test_frame_stays_262_while_players_dead(self):
         # Round 5: the hit-effects pass (HP damage + fire lock) is branchy.

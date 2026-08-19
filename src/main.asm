@@ -1096,7 +1096,8 @@ InsertEvent:
     PLA                     ; 4   reg
     ORA #EV_SINGLE_FLAG     ; 2
     STA evTbl+1,Y           ; 4
-    PLA                     ; 4   row
+    PLA                     ; 4   discard the original stacked row
+    LDA evRow               ; 3   use the effective row (may have been bumped)
     STA evTbl,Y             ; 4
     LDA tblLen              ; 3
     CLC                     ; 2

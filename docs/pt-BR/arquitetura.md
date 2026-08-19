@@ -78,6 +78,30 @@ kernel conta suas 185 linhas com uma contagem regressiva em RAM (`scanCnt`)
 em vez do registrador X, porque o código de evento usa `TAX` como índice de
 registrador e corromperia um contador de linhas em X a cada linha de evento.
 
+### Colisões na mesma linha (Rodada 7)
+
+Até dez eventos podem cair na mesma linha de scanline (dois jogadores + bola
++ dois mísseis, ON e OFF de cada um). `InsertEvent` mantém a tabela ordenada
+por linha e permite no máximo duas escritas por entrada:
+
+* dois eventos na mesma linha se fundem em uma entrada dupla (as duas
+  escritas disparam nessa linha);
+* um terceiro evento em uma linha que já tem uma dupla é **deslocado para a
+  linha+1** e a varredura continua - portanto nenhuma scanline precisa de mais
+  de duas escritas, o que protege o orçamento de 76 ciclos do kernel.
+
+A Rodada 7 corrigiu um bug no caminho de deslocamento: `.insertSingle`
+gravava a linha original empilhada do evento mesmo depois do deslocamento. Um
+terceiro evento colidindo com uma dupla então produzia **duas entradas na
+mesma linha absoluta**, `ConvertDeltas` emitia **delta 0** e o `DEC evCnt` do
+kernel virava `0 -> $FF`, de modo que esse evento OFF nunca disparava e o
+objeto ficava habilitado até a borda inferior da tela (um estiramento
+vertical). O gatilho realista era os dois jogadores vivos na mesma linha,
+os dois mísseis voando e a bola cruzando as linhas dos mísseis.
+`.insertSingle` agora descarta a linha original empilhada e grava o `evRow`
+efetivo (possivelmente deslocado), mantendo a tabela estritamente ordenada
+sem entradas de delta 0 em nenhum estado válido.
+
 ## Layout do código
 
 `src/main.asm` contém o programa completo em um único banco de ROM
