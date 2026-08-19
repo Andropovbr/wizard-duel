@@ -39,14 +39,17 @@ quadro:
   colisão de custo variável fez a saída de `INTIM < 64` cair em fronteiras de
   76 ciclos diferentes e o quadro ocasionalmente escorregou para 263
   scanlines. Em vez disso, o overscan escreve exatamente `OVERSCAN_LOOP_COUNT
-  = 8` `WSYNC`s. A partir da última linha do kernel, um epílogo fixo (30
-  ciclos) + o JSR e o corpo sem branches do `ProcessCollisions` (96 ciclos
-  incluindo RTS) + `LDX` (2) colocam o primeiro `WSYNC` no ciclo 131 da
-  região, que alinha no scanline 2; o loop conta então exatamente 10 linhas e
-  o `JMP` + preâmbulo de VSYNC seguintes alinham o primeiro `WSYNC` de VSYNC
-  do próximo quadro em 760 ciclos após a última linha do kernel. Como cada
-  componente tem custo fixo, a região tem exatamente 10 scanlines
-  independentemente de quantos acertos forem detectados.
+  = 7` `WSYNC`s. A partir da última linha do kernel, um epílogo fixo + o JSR e
+  o corpo sem branches do `ProcessCollisions` + o JSR do `ProcessHitEffects`
+  (Rodada 5) colocam o primeiro `WSYNC` entre os ciclos 187 e 207 da região
+  (modelo do emulador; todo caminho cai na mesma fronteira no ciclo 228 =
+  scanline 3). O loop conta então exatamente 10 linhas e o `JMP` + preâmbulo
+  de VSYNC seguintes alinham o primeiro `WSYNC` de VSYNC do próximo quadro em
+  760 ciclos após a última linha do kernel. Como a única passagem de custo
+  variável (`ProcessHitEffects`) fica confinada a uma janela que nunca escapa
+  da primeira fronteira, a região tem exatamente 10 scanlines
+  independentemente de quantos acertos forem detectados ou de os jogadores
+  estarem mortos.
 
 ## O kernel visível
 
@@ -179,12 +182,21 @@ bordas de disparo) já está a poucos ciclos da fronteira de alinhamento da
 janela do timer, e adicionar uma passagem de custo variável ali fez um quadro
 por rodada de estresse escorregar para 263 scanlines. Com a colisão tratada
 no overscan, o trabalho do VBLANK termina com folga suficiente para que a
-espera do timer sempre segure a região em exatamente 57 linhas.
+espera do timer sempre segure a região em exatamente 57 linhas. A Rodada 5
+adiciona um gate com branches ao `BuildEvents` (um jogador morto não contribui
+com eventos), que custa ~10 ciclos apenas no caminho do jogador vivo; a saída
+do poll de VBLANK medida no pior caso ainda deixa ~45 ciclos de folga.
 
 O trabalho do OVERSCAN é `ProcessCollisions` (84 ciclos fixos, sem branches)
-mais exatamente `OVERSCAN_LOOP_COUNT` escritas de `WSYNC`. Ambos têm custo
-fixo, então a região de 10 linhas é determinística por construção: não pode
-derivar independentemente de quantos acertos forem detectados.
+mais `ProcessHitEffects` (Rodada 5: dano de HP + trava de disparo de jogador
+morto; com branches, mas limitado a uma janela de 60..80 ciclos) mais
+exatamente `OVERSCAN_LOOP_COUNT` escritas de `WSYNC`. Todo caminho de
+`ProcessHitEffects` coloca o primeiro `WSYNC` na mesma fronteira de 76 ciclos
+(ciclo 228 após a última linha do kernel), então a região de 10 linhas é
+determinística por construção: não pode derivar independentemente de quantos
+acertos forem detectados ou de os jogadores estarem mortos.
+`ProcessHitEffects` é alinhado a página (`ALIGN 256`) para que seus quatro
+branches nunca ganhem um ciclo extra de page crossing no silício real.
 
 ## Comprimento medido do quadro
 
@@ -197,7 +209,9 @@ o timer do RIOT:
   uniforme em 600+ quadros de estresse máximo (ambos os latches de colisão
   assertados todo quadro, pressionamentos de disparo alternados);
   anteriormente a mesma entrada fazia ~1% dos quadros escorregar para 263
-  linhas;
+  linhas. A Rodada 5 adiciona os caminhos de HP/morte: o quadro permanece em
+  19912 ciclos sob a mesma entrada de estresse máximo (jogadores mantidos
+  vivos) e com ambos os jogadores mortos;
 * o kernel visível roda exatamente 192 iterações (a contagem `scanCnt`).
 
 O primeiro quadro após ligar é alguns ciclos mais curto que o estado estável
@@ -214,9 +228,12 @@ resolução de colisões). Um teste de tempo de execução do quadro
 (`tests/test_frame_timing.py`) dirige o emulador determinístico por muitos
 quadros e afirma a estabilidade do quadro (262 scanlines), que o comprimento
 da tabela nunca excede `EV_TBL_SIZE` sob entrada de fogo agressiva e que os
-mísseis de fato aparecem e desaparecem pelo pipeline de eventos. O contador de
-ciclos do emulador é aproximado (os totais de quadro único variam alguns
-ciclos), então o teste de tempo de execução afirma a contagem de scanlines e o
+mísseis de fato aparecem e desaparecem pelo pipeline de eventos. A Rodada 5
+adiciona `tests/test_hp.py`, que dirige o assembly real de
+`ProcessHitEffects` e afirma as semânticas de dano/morte, e mantém a regressão
+de estresse máximo viva repondo o HP todo quadro. O contador de ciclos do
+emulador é aproximado (os totais de quadro único variam alguns ciclos), então
+o teste de tempo de execução afirma a contagem de scanlines e o
 comportamento, não totais de ciclos exatos.
 
 ## Por que isso importa

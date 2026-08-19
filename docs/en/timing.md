@@ -35,14 +35,17 @@ emulator reports exactly 262 scanlines per frame:
   when the work executed before arming it is fixed; Round 4's variable-cost
   collision pass made the `INTIM < 64` exit land on different 76-cycle
   boundaries and the frame occasionally slipped to 263 scanlines. Instead the
-  overscan writes exactly `OVERSCAN_LOOP_COUNT = 8` `WSYNC`s. From the
-  kernel's last line, a fixed epilogue (30 cycles) + the `ProcessCollisions`
-  JSR and branchless body (96 cycles incl. RTS) + `LDX` (2) put the first
-  `WSYNC` at cycle 131 of the region, which aligns to scanline 2; the loop
-  then counts exactly 10 lines and the `JMP` + VSYNC preamble that follow
-  align the next frame's first VSYNC `WSYNC` to 760 cycles after the kernel's
-  last line. Because every component is fixed cost, the region is exactly 10
-  scanlines regardless of how many hits are detected.
+  overscan writes exactly `OVERSCAN_LOOP_COUNT = 7` `WSYNC`s. From the
+  kernel's last line a fixed epilogue + the `ProcessCollisions` JSR and
+  branchless body + the `ProcessHitEffects` JSR (Round 5) put the first
+  `WSYNC` between cycles 187 and 207 of the region (emulator model; every
+  path lands on the same boundary at cycle 228 = scanline 3). The loop then
+  counts exactly 10 lines and the `JMP` + VSYNC preamble that follow align
+  the next frame's first VSYNC `WSYNC` to 760 cycles after the kernel's last
+  line. Because the only variable-cost pass (`ProcessHitEffects`) is confined
+  to a window that never escapes the first boundary, the region is exactly 10
+  scanlines regardless of how many hits are detected or whether players are
+  dead.
 
 ## The visible kernel
 
@@ -171,12 +174,20 @@ wait. The collision pass is deliberately NOT here: the heaviest VBLANK path
 VBLANK timer window's alignment boundary, and adding a variable-cost pass
 there made one frame per stress run slip to 263 scanlines. With collision
 handled in the overscan, the VBLANK work ends with enough margin that the
-timer wait always holds the region at exactly 57 lines.
+timer wait always holds the region at exactly 57 lines. Round 5 adds a small
+branchy gate to `BuildEvents` (a dead player contributes no events), which
+costs ~10 cycles only on the alive path; the measured worst-case VBLANK poll
+exit still leaves ~45 cycles of margin.
 
 The OVERSCAN work is `ProcessCollisions` (fixed 84 cycles, branchless) plus
-exactly `OVERSCAN_LOOP_COUNT` `WSYNC` writes. Both are fixed cost, so the
+`ProcessHitEffects` (Round 5: HP damage + dead-player fire lock; branchy but
+bounded to a 60..80-cycle window) plus exactly `OVERSCAN_LOOP_COUNT` `WSYNC`
+writes. Every path through `ProcessHitEffects` lands the first `WSYNC` on the
+same 76-cycle boundary (cycle 228 after the kernel's last line), so the
 10-line region is deterministic by construction: it cannot drift regardless
-of how many hits are detected.
+of how many hits are detected or whether players are dead. `ProcessHitEffects`
+is page-aligned (`ALIGN 256`) so its four branches can never gain a
+page-crossing cycle on real silicon.
 
 ## Measured frame length
 
@@ -187,7 +198,9 @@ RIOT timer:
   across 30+ frames for the no-missile, both-missiles and pathological states;
   with the Round 4 collision pass the frame is uniform across 600+ max-stress
   frames (both collision latches asserted every frame, alternating fire
-  presses); previously the same input made ~1% of frames slip to 263 lines;
+  presses); previously the same input made ~1% of frames slip to 263 lines.
+  Round 5 adds the HP/death paths: the frame stays at 19912 cycles under the
+  same max-stress input (players kept alive) and with both players dead;
 * the visible kernel runs exactly 192 iterations (the `scanCnt` countdown).
 
 The very first frame after power-on is a few cycles shorter than steady state
@@ -202,10 +215,12 @@ builder with a Python model (deltas, merges, collision resolution). A runtime
 frame-timing test (`tests/test_frame_timing.py`) drives the deterministic
 emulator across many frames and asserts frame stability (262 scanlines), that
 the table length never exceeds `EV_TBL_SIZE` under aggressive fire input, and
-that missiles actually spawn and despawn through the event pipeline. The
-emulator's cycle counter is approximate (single-frame totals vary by a few
-cycles), so the runtime test asserts scanline count and behavior, not exact
-cycle totals.
+that missiles actually spawn and despawn through the event pipeline. Round 5
+adds `tests/test_hp.py`, which drives the real `ProcessHitEffects` assembly
+and asserts HP damage/death semantics, and keeps the max-stress regression
+alive by topping up HP every frame. The emulator's cycle counter is
+approximate (single-frame totals vary by a few cycles), so the runtime test
+asserts scanline count and behavior, not exact cycle totals.
 
 ## Why this matters
 

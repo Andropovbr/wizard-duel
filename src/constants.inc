@@ -93,10 +93,16 @@ TIM64T  = $0296  ; write timer value, countdown clock = 64 cycles
 ; deterministic because the pre-timer work was fixed; with a variable-cost
 ; collision pass the INTIM < 64 exit granularity made the overscan region land
 ; on different 76-cycle boundaries, so the frame occasionally slipped to 263
-; scanlines.  The overscan is now a fixed WSYNC countdown: exactly
-; OVERSCAN_LOOP_COUNT WSYNC writes occupy the 10 overscan lines and the
-; fixed-cost branchless ProcessCollisions runs before the loop, so the region
-; is exactly 760 cycles regardless of how many hits are detected.
+; scanlines.  The overscan is now a fixed WSYNC countdown anchored to exactly
+; 760 cycles (10 lines), and any variable-cost work that runs before the loop
+; must land the first WSYNC on the same 76-cycle boundary on every path.
+;
+; Round 5: OVERSCAN_LOOP_COUNT drops from 8 to 7 so the region can absorb
+; ProcessHitEffects (HP damage + dead-player fire lock) which runs after
+; ProcessCollisions.  The fixed pre-loop work puts the first WSYNC write on
+; cycle K+187..K+207 (K = last kernel WSYNC landing), which lands on K+228;
+; the 7 countdown WSYNCs reach K+684 and the next frame's first VSYNC WSYNC
+; lands on K+760.  See ProcessHitEffects in main.asm for the cost window.
 ; ---------------------------------------------------------------------------
 FRAME_SCANLINES      = 262
 VSYNC_SCANLINES      = 3
@@ -105,7 +111,7 @@ KERNEL_SCANLINES     = 192
 OVERSCAN_SCANLINES   = 10
 
 VBLANK_TIMER_VALUE   = 69
-OVERSCAN_LOOP_COUNT  = 8
+OVERSCAN_LOOP_COUNT  = 7
 
 ; ---------------------------------------------------------------------------
 ; Player constants
@@ -336,9 +342,21 @@ M1_HIT_P1  = %01000000   ; CXM1P D6: M1 overlapped P1 (own player, ignored)
 
 ; hit_flags bitfield (Round 4): a compact, testable record of which player
 ; was hit by the missile-on-player collisions just processed.  One bit per
-; player; no HP/damage is applied yet.
+; player; ProcessCollisions sets it and ProcessHitEffects (Round 5) consumes
+; it as HP damage in the same overscan.
 HIT_P0     = %00000001   ; player 0 was hit by M1
 HIT_P1     = %00000010   ; player 1 was hit by M0
+
+; ---------------------------------------------------------------------------
+; Player HP (Round 5)
+; ---------------------------------------------------------------------------
+; Each player starts a round with PLAYER_START_HP hit points.  A valid
+; cross-fire hit removes one HP (see ProcessHitEffects in main.asm); at 0 HP
+; the player is dead and, while still occupying the arena, is no longer
+; rendered and can no longer fire.  The value is deliberately not baked into
+; the gameplay logic: damage and death only compare against zero, so any
+; starting value works.
+PLAYER_START_HP      = 3
 
 ; VBLANK values. Bit 1 blanks the display; bit 6 ($40) only controls the
 ; INPT latches used for paddles, which are not used yet.

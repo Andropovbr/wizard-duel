@@ -35,7 +35,7 @@ CYC = {
     0x18: 2, 0x38: 2, 0x78: 2, 0xD8: 2, 0xEA: 2, 0x48: 3, 0x68: 4, 0xAA: 2,
     0xA8: 2, 0x8A: 2, 0x98: 2, 0x9A: 2, 0xE8: 2, 0xC8: 2, 0xCA: 2, 0x88: 2,
     0x0A: 2, 0x60: 6, 0x4C: 3, 0x20: 6,
-    0xA9: 2, 0xA0: 2, 0xA2: 2, 0x69: 2, 0xE9: 2, 0x29: 2, 0x09: 2, 0xC9: 2,
+    0xA9: 2, 0xA0: 2, 0xA2: 2, 0x69: 2, 0xE9: 2, 0x29: 2, 0x49: 2, 0x05: 2, 0x09: 2, 0xC9: 2,
     0xE0: 2,
     0xA5: 3, 0xAD: 4, 0xB9: 4, 0xB5: 4, 0xA4: 3, 0xAC: 4, 0xA6: 3, 0xAE: 4,
     0xB6: 4,
@@ -248,6 +248,12 @@ class Cpu:
                 self.a, self.c, self.n, self.v, self.z = self._sbc(v)
         elif op == 0x29:                    # AND #imm
             self.a &= self.imm()
+            self.set_nz(self.a)
+        elif op == 0x49:                    # EOR #imm
+            self.a ^= self.imm()
+            self.set_nz(self.a)
+        elif op == 0x05:                    # ORA zp
+            self.a |= self.read(self.zp_addr())
             self.set_nz(self.a)
         elif op == 0x09:                    # ORA #imm
             self.a |= self.imm()

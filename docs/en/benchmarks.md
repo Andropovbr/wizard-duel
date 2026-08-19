@@ -164,6 +164,24 @@ Frame scanlines:   262
 Kernel worst case: 65 / 76 cycles   (two-write event line)
 Kernel slack:      11 cycles   (7 -> 11)
 Kernel best case:  18 cycles   (non-event line)
+
+Round 4 current (collision + fixed overscan):
+ROM used:          1296 bytes  (metric; ALIGN 256 absorbs the growth)
+RAM used:          49 bytes    (48 -> 49, +hit_flags)
+Frame scanlines:   262
+Kernel worst case: 65 / 76 cycles
+Kernel slack:      11 cycles
+Kernel best case:  18 cycles
+Overscan loop:     8 WSYNCs
+
+Round 5 current (HP and player death):
+ROM used:          1296 bytes  (metric; page alignment absorbs the growth)
+RAM used:          51 bytes    (49 -> 51, +p0_hp/p1_hp)
+Frame scanlines:   262
+Kernel worst case: 65 / 76 cycles   (kernel unchanged)
+Kernel slack:      11 cycles
+Kernel best case:  18 cycles
+Overscan loop:     7 WSYNCs   (8 -> 7 to absorb ProcessHitEffects)
 ```
 
 These numbers are measured from the artifacts on every run, not hardcoded

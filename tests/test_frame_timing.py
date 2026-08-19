@@ -112,6 +112,14 @@ class TestFrameStability(unittest.TestCase):
         # (both collision latches asserted every frame + alternating fire
         # presses, so both missiles re-spawn after every hit) and asserts
         # every frame is exactly 19912 cycles = 262 scanlines.
+        #
+        # Round 5 keeps the stress real: without topping HP the players would
+        # die during the 3 boot frames and spend the 80 loop frames dead
+        # (no missiles), silently weakening the worst case.  HP is therefore
+        # re-filled to PLAYER_START_HP every loop frame so both missiles keep
+        # spawning and hitting for the whole test.
+        p0_hp = self._ram("p0_hp")
+        p1_hp = self._ram("p1_hp")
         self.cpu.inpt[4] = 0xFF      # boot sync frames first
         self.cpu.inpt[5] = 0xFF
         self.run_frame()
@@ -125,6 +133,31 @@ class TestFrameStability(unittest.TestCase):
             self.cpu.inpt[5] = 0x00 if press else 0xFF
             self.cpu.cxm0p = 0xC0    # M0 x P1 AND M0 x P0 latched
             self.cpu.cxm1p = 0xC0    # M1 x P0 AND M1 x P1 latched
+            self.cpu.ram[p0_hp] = 3  # keep both players alive
+            self.cpu.ram[p1_hp] = 3
+            cycles = self.run_frame()
+            self.assertEqual(cycles, 19912,
+                             f"frame {i} ran {cycles} cycles "
+                             f"({cycles / 76:.0f} scanlines), expected 262")
+
+    def test_frame_stays_262_while_players_dead(self):
+        # Round 5: the hit-effects pass (HP damage + fire lock) is branchy.
+        # A dead player (no P0/P1 events, fire locked, no more hits taken) is
+        # the OTHER heavy path through ProcessHitEffects, so frame timing must
+        # hold there too: 19912 cycles = 262 scanlines with both players dead.
+        p0_hp = self._ram("p0_hp")
+        p1_hp = self._ram("p1_hp")
+        self.cpu.inpt[4] = 0xFF      # boot sync frame first
+        self.cpu.inpt[5] = 0xFF
+        self.run_frame()
+        self.cpu.ram[p0_hp] = 0      # kill both players up front
+        self.cpu.ram[p1_hp] = 0
+        for i in range(60):
+            press = (i % 2 == 0)
+            self.cpu.inpt[4] = 0x00 if press else 0xFF
+            self.cpu.inpt[5] = 0x00 if press else 0xFF
+            self.cpu.cxm0p = 0xC0    # hits keep landing on the dead players
+            self.cpu.cxm1p = 0xC0
             cycles = self.run_frame()
             self.assertEqual(cycles, 19912,
                              f"frame {i} ran {cycles} cycles "

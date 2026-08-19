@@ -167,6 +167,24 @@ Scanlines do quadro: 262
 Pior caso do kernel: 65 / 76 ciclos   (linha de evento de duas escritas)
 Kernel slack:       11 ciclos   (7 -> 11)
 Melhor caso do kernel: 18 ciclos   (linha sem evento)
+
+Rodada 4 atual (colisão + overscan fixo):
+ROM usada:          1296 bytes  (métrica; ALIGN 256 absorve o crescimento)
+RAM usada:          49 bytes    (48 -> 49, +hit_flags)
+Scanlines do quadro: 262
+Pior caso do kernel: 65 / 76 ciclos
+Kernel slack:       11 ciclos
+Melhor caso do kernel: 18 ciclos
+Loop do overscan:   8 WSYNCs
+
+Rodada 5 atual (HP e morte de jogador):
+ROM usada:          1296 bytes  (métrica; alinhamento de página absorve o crescimento)
+RAM usada:          51 bytes    (49 -> 51, +p0_hp/p1_hp)
+Scanlines do quadro: 262
+Pior caso do kernel: 65 / 76 ciclos   (kernel inalterado)
+Kernel slack:       11 ciclos
+Melhor caso do kernel: 18 ciclos
+Loop do overscan:   7 WSYNCs   (8 -> 7 para absorver o ProcessHitEffects)
 ```
 
 Esses números são medidos a partir dos artefatos a cada execução, não

@@ -16,11 +16,15 @@ Features:
 * each player can fire one missile with the joystick fire button (INPT4 for
   P0, INPT5 for P1); missiles fly horizontally at 2 px/frame and despawn at
   the arena edges
+* cross-fire collisions (M0 -> P1, M1 -> P0) are detected by the TIA latches
+  and consume HP: each player starts with `PLAYER_START_HP = 3` hit points
+  (Round 5)
 
-There is intentionally no magic system, HP, AI, collisions, scoring or HUD
-yet; the gameplay rules are expected to evolve in later rounds without
-requiring architectural changes. The ball and the missiles do not interact
-with the players in this round.
+There is intentionally no magic system, AI, scoring or HUD yet; the gameplay
+rules are expected to evolve in later rounds without requiring architectural
+changes. The ball does not interact with the players or missiles in this
+round. A dead player keeps occupying the arena but is not rendered and
+cannot fire; there is no victory/game-over transition yet.
 
 ## Event-driven kernel
 
@@ -82,23 +86,24 @@ register addresses and build-time constants.
 | Address  | Content                                        |
 | -------- | ---------------------------------------------- |
 | `$F000`  | `Reset` (initialization)                       |
-| `$F04F`  | `StartOfFrame` (VSYNC + VBLANK + kernel + OS)  |
+| `$F055`  | `StartOfFrame` (VSYNC + VBLANK + kernel + OS)  |
 | `$F100`  | `KernelLoop` (event-driven display kernel)     |
-| `$F150`  | `OverscanWait` (collision pass + WSYNC loop)   |
-| `$F15D`  | `UpdatePlayers` (joystick input + movement)    |
-| `$F196`  | `UpdateBall` (ball movement + bounce)          |
-| `$F1CD`  | `UpdateMissiles` (fire buttons, movement)      |
-| `$F262`  | `ProcessCollisions` (fixed-cost, branchless)   |
+| `$F150`  | `OverscanWait` (collision + hit effects + WSYNC loop) |
+| `$F160`  | `UpdatePlayers` (joystick input + movement)    |
+| `$F199`  | `UpdateBall` (ball movement + bounce)          |
+| `$F1D0`  | `UpdateMissiles` (fire buttons, movement)      |
+| `$F265`  | `ProcessCollisions` (fixed-cost, branchless)   |
 | `$F2A0`  | `newActiveTbl` (m_active update table)         |
-| `$F2B0`  | `PositionPlayers` (RESP0/RESP1 + HMP + HMOVE)  |
-| `$F2D3`  | `PositionBall` (RESBL + HMBL)                  |
-| `$F2E5`  | `PositionMissiles` (RESM0/RESM1 + HMM)         |
-| `$F314`  | `BuildEvents` (insert events in row order)     |
-| `$F394`  | `InsertEvent` (insert/merge a table entry)     |
-| `$F40A`  | `ShiftBy2` (extend a single into a double)     |
-| `$F418`  | `ShiftBy3` (insert a new single entry)         |
-| `$F426`  | `ConvertDeltas` (rows -> kernel deltas)        |
-| `$F457`  | `PosObject` (generic RESPx/HMPx)               |
+| `$F300`  | `ProcessHitEffects` (HP damage + fire lock)    |
+| `$F338`  | `PositionPlayers` (RESP0/RESP1 + HMP + HMOVE)  |
+| `$F35B`  | `PositionBall` (RESBL + HMBL)                  |
+| `$F36D`  | `PositionMissiles` (RESM0/RESM1 + HMM)         |
+| `$F39C`  | `BuildEvents` (insert events in row order)     |
+| `$F424`  | `InsertEvent` (insert/merge a table entry)     |
+| `$F49A`  | `ShiftBy2` (extend a single into a double)     |
+| `$F4A8`  | `ShiftBy3` (insert a new single entry)         |
+| `$F4B6`  | `ConvertDeltas` (rows -> kernel deltas)        |
+| `$F4E7`  | `PosObject` (generic RESPx/HMPx)               |
 | `$F500`  | `fineAdjustBegin` (page-aligned HMP table)     |
 | `$FFFA`  | NMI / RESET / IRQ vectors                      |
 
@@ -120,8 +125,8 @@ StartOfFrame
  │   ├─ PositionBall     RESBL + HMBL placement
  │   ├─ PositionMissiles RESM0/RESM1 + HMM0/HMM1 placement
  │   └─ BuildEvents      rebuild the event table for the visible kernel
- ├─ KERNEL 192 scanlines (explicit WSYNC loop; render events only)
- └─ OVERSCAN 10 scanlines (ProcessCollisions + fixed WSYNC loop; back to StartOfFrame)
+├─ KERNEL 192 scanlines (explicit WSYNC loop; render events only)
+  └─ OVERSCAN 10 scanlines (ProcessCollisions + ProcessHitEffects + fixed WSYNC loop; back to StartOfFrame)
 ```
 
 Gameplay input, movement and event building happen during VBLANK; the visible
@@ -186,6 +191,32 @@ the arena edge:
 Missiles render in the ball's color (`COLUPF`) and, like the ball, use the
 `input = x + 8` horizontal compensation (they are TIA Missile objects, not
 Player objects).
+
+## Collision and hit points
+
+Cross-fire collisions are detected by the TIA collision latches and resolved
+in the overscan, keeping the visible kernel purely render-focused:
+
+* **Detection** (`ProcessCollisions`, overscan init): reads CXM0P/CXM1P,
+  records the cross-fire hits M0 -> P1 and M1 -> P0 in the one-byte
+  `hit_flags` bitfield (bit 0 = P0, bit 1 = P1; simultaneous hits both
+  count), clears the scoring missile's bit in `m_active`, and writes `CXCLR`
+  so a hit is never counted twice. Own-player bits (M0 x P0, M1 x P1) are
+  ignored. The pass is branchless and fixed-cost (84 cycles) so the fixed
+  WSYNC-counted overscan stays exact.
+* **Damage** (`ProcessHitEffects`, same overscan, after collisions): removes
+  one HP from the hit player (no underflow below 0; `hit_flags` is read but
+  not cleared here - `ProcessCollisions` overwrites it next frame, so each
+  hit is consumed exactly once) and forces a dead player's FIRE bit in
+  `fire_prev` to "pressed" so `UpdateMissiles` never sees a rising edge
+  (the lock is recomputed every overscan because `UpdateMissiles` rewrites
+  `fire_prev` every VBLANK). The routine is page-aligned and branchy but
+  bounded to a 60..80-cycle window that still lands the first overscan WSYNC
+  on the same boundary on every path.
+* **Death**: a player at 0 HP is not rendered (`BuildEvents` skips its P0/P1
+  events) and cannot fire, but keeps its position and movement; a missile
+  that was already flying survives its owner's death. There is no
+  victory/game-over transition yet - the round simply continues.
 
 ## Rendering
 
@@ -268,23 +299,27 @@ inside the 192-line kernel.
 
 ## Variable allocation
 
-48 of 128 bytes of RIOT RAM are used (down from 122 in Round 3):
+51 of 128 bytes of RIOT RAM are used (48 in Round 3.1, +1 for `hit_flags`
+in Round 4, +2 for `p0_hp`/`p1_hp` in Round 5):
 
 | Address    | Name        | Purpose                              |
 | ---------- | ----------- | ------------------------------------ |
 | `$80`      | `P0Y`       | player 0 vertical position           |
 | `$81`      | `P1Y`       | player 1 vertical position           |
-| `$82`      | `ball_x`    | ball leftmost visible pixel          |
-| `$83`      | `ball_y`    | ball first display row               |
-| `$84`      | `ball_dx`   | horizontal direction step            |
-| `$85`      | `ball_dy`   | vertical direction step              |
-| `$86-$87`  | `m0_x/m0_y` | missile 0 position                   |
-| `$88-$89`  | `m1_x/m1_y` | missile 1 position                   |
-| `$8A`      | `m_active`  | packed missile active mask (M0/M1)   |
-| `$8B`      | `fire_prev` | packed fire edge + boot-sync state   |
-| `$8C-$8D`  | `evCnt/scanCnt` | kernel state                     |
-| `$8E-$AC`  | `evTbl`     | event table (variable size, max 31B) |
-| `$AD-$AF`  | `evRow/tempCount/tblLen` | builder working storage |
+| `$82`      | `p0_hp`     | player 0 hit points (0 = dead)       |
+| `$83`      | `p1_hp`     | player 1 hit points (0 = dead)       |
+| `$84`      | `ball_x`    | ball leftmost visible pixel          |
+| `$85`      | `ball_y`    | ball first display row               |
+| `$86`      | `ball_dx`   | horizontal direction step            |
+| `$87`      | `ball_dy`   | vertical direction step              |
+| `$88-$89`  | `m0_x/m0_y` | missile 0 position                   |
+| `$8A-$8B`  | `m1_x/m1_y` | missile 1 position                   |
+| `$8C`      | `m_active`  | packed missile active mask (M0/M1)   |
+| `$8D`      | `hit_flags` | collision results (P0/P1 hit bits)   |
+| `$8E`      | `fire_prev` | packed fire edge + boot-sync state   |
+| `$8F-$90`  | `evCnt/scanCnt` | kernel state                     |
+| `$91-$AF`  | `evTbl`     | event table (variable size, max 31B) |
+| `$B0-$B2`  | `evRow/tempCount/tblLen` | builder working storage |
 
 The savings come from: variable-size table entries (31 vs 55 bytes), no
 record/order buffers (0 vs 40 bytes), no `joystate` (re-read `SWCHA`), packed

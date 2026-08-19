@@ -45,12 +45,12 @@ class TestRamLimit(unittest.TestCase):
         self.assertEqual(self.used + self.available, RAM_LIMIT)
 
     def test_round3_ram_usage(self):
-        # Round 4 RAM: players/ball (5) + missiles (5) + m_active/fire_prev
-        # (2) + hit_flags (1) + kernel evCnt/scanCnt (2) + event table (31)
-        # + builder temps (3) = 49 bytes.  The old records/order scratch
-        # buffers are gone: the builder now inserts directly into the
-        # variable-size event table.
-        self.assertEqual(self.used, 49)
+        # Round 5 RAM: players/ball (5) + missiles (5) + m_active/fire_prev
+        # (2) + hit_flags (1) + p0_hp/p1_hp (2) + kernel evCnt/scanCnt (2)
+        # + event table (31) + builder temps (3) = 51 bytes.  The old
+        # records/order scratch buffers are gone: the builder now inserts
+        # directly into the variable-size event table.
+        self.assertEqual(self.used, 51)
 
 
 if __name__ == "__main__":

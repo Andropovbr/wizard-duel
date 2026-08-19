@@ -21,6 +21,14 @@
 ;     writes CXCLR so a hit is never counted twice.  No HP/damage is applied
 ;     yet.  The own-player bits (M0 x P0, M1 x P1) are ignored: a missile
 ;     never damages its own player.
+;   * Round 5: hit_flags now drives real damage.  ProcessHitEffects (run at
+;     overscan init, right after ProcessCollisions) removes one HP from the
+;     player hit by each recorded cross-fire hit (no underflow below 0) and
+;     locks a dead player's fire input so it can never spawn a missile.  A
+;     dead player is no longer rendered (BuildEvents skips its events) but
+;     keeps its position, and a missile that was already flying survives its
+;     owner's death.  The overscan stays a fixed 10-line region: the WSYNC
+;     countdown drops to OVERSCAN_LOOP_COUNT = 7 to absorb the added work.
 ;   * the ball does NOT interact with the players or missiles yet (no
 ;     collision, collection, power-up, scoring or spells)
 ;
@@ -112,6 +120,11 @@ Reset:
     STA ball_dx
     LDA #DIR_DOWN
     STA ball_dy
+
+    ; Initial HP (Round 5): both players start at PLAYER_START_HP.
+    LDA #PLAYER_START_HP
+    STA p0_hp
+    STA p1_hp
 
     ; fire_prev and fire_sync are cleared by the RAM zeroing above. The first
     ; UpdateMissiles call after power-on synchronizes fire_prev with the real
@@ -275,10 +288,12 @@ KernelLoop:
     ; variable-cost collision pass the INTIM < 64 exit granularity made the
     ; overscan region land on different 76-cycle boundaries and the frame
     ; occasionally slipped to 263 scanlines.  Counting exactly
-    ; OVERSCAN_LOOP_COUNT WSYNCs instead anchors the region to exactly 760
-    ; cycles (10 lines), and the collision pass that runs before the loop is
-    ; branchless with a fixed ~84-cycle cost, so the whole overscan is
-    ; deterministic by construction.
+    ; OVERSCAN_LOOP_COUNT WSYNCs anchors the region: the collision pass
+    ; (branchless, fixed cost) plus the Round 5 hit effects (branchy, but
+    ; every path lands the first WSYNC on the same boundary - see
+    ; ProcessHitEffects below) run before the loop, and the loop count was
+    ; lowered to 7 so all that work still fits before the first boundary.
+    ; The whole overscan stays exactly 760 cycles (10 lines) on every path.
 .kernelEnd:
     LDA #VBLANK_BLANK       ; 2
     STA VBLANK              ; 3   blank output again
@@ -292,13 +307,18 @@ OverscanWait:
     ; Collision pass: reads the latches, updates hit_flags and m_active
     ; (fixed ~84 cycles, no branches - see ProcessCollisions below).
     JSR ProcessCollisions   ; 6 + ~84
+    ; Round 5: consume hit_flags as HP damage and lock dead players' fire
+    ; input.  Branchy, but its cost window keeps the first WSYNC on the same
+    ; boundary (see ProcessHitEffects below).
+    JSR ProcessHitEffects   ; 6 + 60..80
 
     ; Exactly OVERSCAN_LOOP_COUNT WSYNC writes.  From the kernel's last WSYNC
-    ; the epilogue (30) + JSR (6) + collision body (84 + 6 incl. RTS) + LDX
-    ; (2) put the first write at cycle 131, inside scanline 2 of the region;
-    ; the alignment then snaps each iteration to a 76-cycle boundary, giving
-    ; 8 lines (152..684), and the JMP + VSYNC preamble that follow align the
-    ; next frame's first VSYNC WSYNC to 760.
+    ; (K) the epilogue (7 + 22) + JSR (6) + collision body (84 incl. RTS) +
+    ; JSR (6) + hit-effects body (60..80 incl. RTS) + LDX (2) put the first
+    ; write on cycle K+187..K+207, inside scanline 3 of the region; the
+    ; alignment then snaps each iteration to a 76-cycle boundary, giving 7
+    ; lines (K+228..K+684), and the JMP + VSYNC preamble that follow align the
+    ; next frame's first VSYNC WSYNC to K+760.
     LDX #OVERSCAN_LOOP_COUNT ; 2
 .overscanLoop:
     STA WSYNC               ; 3   one overscan line per iteration
@@ -677,6 +697,89 @@ newActiveTbl:
     DC.B 0, 0, 0, 0         ; both hits: clear both
 
 ; =============================================================================
+; ProcessHitEffects (Round 5)
+;
+; Consumes the hit_flags record written by ProcessCollisions (same overscan)
+; as real HP damage and keeps dead players from firing:
+;
+;   * HIT_P0 -> decrement p0_hp, HIT_P1 -> decrement p1_hp, one HP per hit;
+;   * a player already at 0 HP ignores further hits (never goes negative);
+;   * hit_flags is READ but NOT cleared here: ProcessCollisions overwrites the
+;     byte at the start of the NEXT frame's overscan, so each recorded hit is
+;     consumed exactly once and Round 4's test contract (hit_flags observable
+;     after the frame) is preserved;
+;   * the dead-player fire lock: a player with 0 HP must never present a
+;     rising fire edge to UpdateMissiles, so its FIRE_P0/FIRE_P1 bit in
+;     fire_prev is forced to 1 ("pressed").  UpdateMissiles spawns only on a
+;     released->pressed edge and OVERWRITES fire_prev during every VBLANK, so
+;     the lock must be re-applied here every overscan.  It is computed
+;     branchlessly with the ADC carry trick ("LDA hp; CLC; ADC #$FF" sets
+;     carry = 1 iff the player is alive), building the dead mask
+;     FIRE_P0 * (p0 dead) + FIRE_P1 * (p1 dead) and OR-ing it into fire_prev.
+;
+; Cost: unlike ProcessCollisions this routine is BRANCHY.  That is safe
+; because the overscan is anchored by the fixed WSYNC countdown, not a timer:
+; every path only has to land the first overscan WSYNC on the same 76-cycle
+; boundary.  Per-path cost (emulator model, branch = 2 cycles):
+;
+;   P0 damage (not-hit / hit-dead / hit-alive)   7 / 12 / 17
+;   P1 damage (not-hit / hit-dead / hit-alive)   7 / 12 / 17
+;   fire lock (branchless)                      40
+;   RTS                                          6
+;
+;   total B in [60, 80].  From the last kernel WSYNC landing (K) the fixed
+;   part (DEC+Branch 7 + epilogue 22 + JSR ProcessCollisions 6 + collision
+;   body 84 + JSR 6 + LDX 2) is 127, so the first overscan WSYNC write happens
+;   at K + 127 + B in [K + 187, K + 207], which lands on K + 228 for EVERY
+;   path.  With OVERSCAN_LOOP_COUNT = 7 the last overscan WSYNC lands on
+;   K + 684 and the next frame's first VSYNC WSYNC lands on K + 760: the
+;   overscan region is exactly 10 lines regardless of how many hits occurred.
+;
+;   On a real 6502 a taken branch costs +1 (and +1 more on a page crossing):
+;   the damage costs become 8/13/17, total B in [62, 80], first write in
+;   [K + 190, K + 208] - still strictly inside (K + 152, K + 228].  The ALIGN
+;   256 below keeps the four BEQs inside one page so a page crossing can
+;   never add a cycle.
+; =============================================================================
+    ALIGN 256
+ProcessHitEffects:
+    ; ---- P0 damage: HIT_P0 set and P0 alive -> lose one HP ----
+    LDA hit_flags           ; 3
+    AND #HIT_P0             ; 2
+    BEQ .p0After            ; 2/3  not hit
+    LDA p0_hp               ; 3
+    BEQ .p0After            ; 2/3  already dead: ignore further hits
+    DEC p0_hp               ; 5
+.p0After:
+    ; ---- P1 damage: HIT_P1 set and P1 alive -> lose one HP ----
+    LDA hit_flags           ; 3
+    AND #HIT_P1             ; 2
+    BEQ .p1After            ; 2/3  not hit
+    LDA p1_hp               ; 3
+    BEQ .p1After            ; 2/3  already dead: ignore further hits
+    DEC p1_hp               ; 5
+.p1After:
+    ; ---- dead-player fire lock (branchless) ----
+    LDA p0_hp               ; 3
+    CLC                     ; 2
+    ADC #$FF                ; 2   carry = 1 iff p0 alive
+    LDA #0                  ; 2
+    ADC #0                  ; 2   A = alive0 (0/1)
+    EOR #1                  ; 2   A = dead0 (0/1)
+    STA tempCount           ; 3   dead mask bit 0
+    LDA p1_hp               ; 3
+    CLC                     ; 2
+    ADC #$FF                ; 2   carry = 1 iff p1 alive
+    LDA #0                  ; 2
+    ADC #0                  ; 2   A = alive1 (0/1)
+    EOR #1                  ; 2   A = dead1 (0/1)
+    ASL                     ; 2   A = dead1 * 2 (mask bit 1)
+    ORA tempCount           ; 3   full dead mask
+    ORA fire_prev           ; 3   force the locked bits
+    STA fire_prev           ; 3
+    RTS                     ; 6
+
+; =============================================================================
 ; PositionPlayers
 ;
 ; Horizontally places both players using the classic RESP0/RESP1 + HMP0/HMP1
@@ -804,7 +907,9 @@ PositionMissiles:
 ;     M0   ON (m0_y, ENAM0, MISSILE_ENABLE)     OFF (m0_y+4, ENAM0, 0)
 ;     M1   ON (m1_y, ENAM1, MISSILE_ENABLE)     OFF (m1_y+4, ENAM1, 0)
 ;
-;   Inactive missiles contribute nothing.  InsertEvent inserts every event
+;   Inactive missiles contribute nothing, and (Round 5) a player with 0 HP
+;   contributes nothing either: BuildEvents skips the P0/P1 events of a dead
+;   player so it is simply not drawn.  InsertEvent inserts every event
 ;   directly into evTbl in row order, merging same-row singles into doubles
 ;   and bumping surplus same-row events to row+1, so no scanline ever needs
 ;   more than two writes.  The table holds ABSOLUTE rows while it is built;
@@ -821,7 +926,9 @@ BuildEvents:
     STA evTbl               ; 3
     LDA #1                  ; 2
     STA tblLen              ; 3   table length in bytes
-    ; ---- P0 ON / OFF ----
+    ; ---- P0 ON / OFF (only while alive: a dead player is not rendered) ----
+    LDA p0_hp               ; 3
+    BEQ .p0EventsDone       ; 2/3  dead -> no events
     LDA P0Y                 ; 3
     LDX #EV_REG_GRP0        ; 2
     LDY #PADDLE_BITS        ; 2
@@ -832,7 +939,10 @@ BuildEvents:
     LDX #EV_REG_GRP0        ; 2
     LDY #0                  ; 2
     JSR InsertEvent         ; 6
-    ; ---- P1 ON / OFF ----
+.p0EventsDone:
+    ; ---- P1 ON / OFF (only while alive: a dead player is not rendered) ----
+    LDA p1_hp               ; 3
+    BEQ .p1EventsDone       ; 2/3  dead -> no events
     LDA P1Y                 ; 3
     LDX #EV_REG_GRP1        ; 2
     LDY #PADDLE_BITS        ; 2
@@ -843,6 +953,7 @@ BuildEvents:
     LDX #EV_REG_GRP1        ; 2
     LDY #0                  ; 2
     JSR InsertEvent         ; 6
+.p1EventsDone:
     ; ---- Ball ON / OFF ----
     LDA ball_y              ; 3
     LDX #EV_REG_ENABL       ; 2
@@ -1130,11 +1241,16 @@ fineAdjustTable EQU fineAdjustBegin - %11110001
 ;
 ; Round 4 adds one byte: hit_flags (HIT_P0/HIT_P1), the observable result of
 ; the missile-on-player collision detection -> 49 bytes total.
+;
+; Round 5 adds two bytes: p0_hp/p1_hp (PLAYER_START_HP each), the hit points
+; consumed by ProcessHitEffects -> 51 bytes total.
 ; =============================================================================
     SEG.U VARS
     ORG $80
 P0Y         DS 1            ; player 0 vertical position (0..PLAYER_Y_MAX)
 P1Y         DS 1            ; player 1 vertical position (0..PLAYER_Y_MAX)
+p0_hp       DS 1            ; player 0 hit points (0..PLAYER_START_HP)
+p1_hp       DS 1            ; player 1 hit points (0..PLAYER_START_HP)
 ball_x      DS 1            ; ball visible left pixel (BALL_X_MIN..BALL_X_MAX)
 ball_y      DS 1            ; ball first display row (BALL_Y_MIN..BALL_Y_MAX)
 ball_dx     DS 1            ; horizontal step (+1 = right, $FF = left)

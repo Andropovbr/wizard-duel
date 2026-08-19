@@ -16,11 +16,15 @@ Funcionalidades:
 * cada jogador pode disparar um míssil com o botão de fogo do joystick
   (INPT4 para P0, INPT5 para P1); mísseis voam horizontalmente a 2 px/quadro
   e desaparecem nas bordas da arena
+* colisões cruzadas (M0 -> P1, M1 -> P0) são detectadas pelos latches do TIA
+  e consomem HP: cada jogador começa com `PLAYER_START_HP = 3` pontos de vida
+  (Rodada 5)
 
-Intencionalmente ainda não há sistema de magia, HP, IA, colisões, placar ou
-HUD; as regras de jogo devem evoluir nas próximas rodadas sem exigir mudanças
-arquiteturais. Nesta rodada a bola e os mísseis não interagem com os
-jogadores.
+Intencionalmente ainda não há sistema de magia, IA, placar ou HUD; as regras
+de jogo devem evoluir nas próximas rodadas sem exigir mudanças arquiteturais.
+A bola não interage com os jogadores ou mísseis nesta rodada. Um jogador morto
+continua ocupando a arena, mas não é renderizado e não pode disparar; ainda
+não há transição de vitória/fim de jogo.
 
 ## Kernel orientado a eventos
 
@@ -83,23 +87,24 @@ endereços de registradores de hardware e constantes de build.
 | Endereço | Conteúdo                                        |
 | -------- | ---------------------------------------------- |
 | `$F000`  | `Reset` (inicialização)                        |
-| `$F04F`  | `StartOfFrame` (VSYNC + VBLANK + kernel + OS)  |
+| `$F055`  | `StartOfFrame` (VSYNC + VBLANK + kernel + OS)  |
 | `$F100`  | `KernelLoop` (kernel de exibição por eventos)  |
-| `$F150`  | `OverscanWait` (colisão + loop de WSYNC)       |
-| `$F15D`  | `UpdatePlayers` (entrada do joystick + movimento) |
-| `$F196`  | `UpdateBall` (movimento + quique da bola)      |
-| `$F1CD`  | `UpdateMissiles` (botões de fogo, movimento)   |
-| `$F262`  | `ProcessCollisions` (custo fixo, sem branches) |
+| `$F150`  | `OverscanWait` (colisão + efeitos de acerto + loop de WSYNC) |
+| `$F160`  | `UpdatePlayers` (entrada do joystick + movimento) |
+| `$F199`  | `UpdateBall` (movimento + quique da bola)      |
+| `$F1D0`  | `UpdateMissiles` (botões de fogo, movimento)   |
+| `$F265`  | `ProcessCollisions` (custo fixo, sem branches) |
 | `$F2A0`  | `newActiveTbl` (tabela de atualização do m_active) |
-| `$F2B0`  | `PositionPlayers` (RESP0/RESP1 + HMP + HMOVE)  |
-| `$F2D3`  | `PositionBall` (RESBL + HMBL)                  |
-| `$F2E5`  | `PositionMissiles` (RESM0/RESM1 + HMM)         |
-| `$F314`  | `BuildEvents` (insere eventos em ordem de linha) |
-| `$F394`  | `InsertEvent` (insere/mescla uma entrada)      |
-| `$F40A`  | `ShiftBy2` (estende uma simples em dupla)      |
-| `$F418`  | `ShiftBy3` (insere uma nova entrada simples)   |
-| `$F426`  | `ConvertDeltas` (linhas -> deltas do kernel)   |
-| `$F457`  | `PosObject` (RESPx/HMPx genérico)              |
+| `$F300`  | `ProcessHitEffects` (dano de HP + trava de disparo) |
+| `$F338`  | `PositionPlayers` (RESP0/RESP1 + HMP + HMOVE)  |
+| `$F35B`  | `PositionBall` (RESBL + HMBL)                  |
+| `$F36D`  | `PositionMissiles` (RESM0/RESM1 + HMM)         |
+| `$F39C`  | `BuildEvents` (insere eventos em ordem de linha) |
+| `$F424`  | `InsertEvent` (insere/mescla uma entrada)      |
+| `$F49A`  | `ShiftBy2` (estende uma simples em dupla)      |
+| `$F4A8`  | `ShiftBy3` (insere uma nova entrada simples)   |
+| `$F4B6`  | `ConvertDeltas` (linhas -> deltas do kernel)   |
+| `$F4E7`  | `PosObject` (RESPx/HMPx genérico)              |
 | `$F500`  | `fineAdjustBegin` (tabela HMP alinhada a página) |
 | `$FFFA`  | Vetores NMI / RESET / IRQ                      |
 
@@ -122,7 +127,7 @@ StartOfFrame
  │   ├─ PositionMissiles posicionamento RESM0/RESM1 + HMM0/HMM1
  │   └─ BuildEvents      reconstrói a tabela de eventos do kernel visível
  ├─ KERNEL 192 scanlines (loop explícito de WSYNC; apenas renderiza)
- └─ OVERSCAN 10 scanlines (ProcessCollisions + loop fixo de WSYNC; volta ao StartOfFrame)
+ └─ OVERSCAN 10 scanlines (ProcessCollisions + ProcessHitEffects + loop fixo de WSYNC; volta ao StartOfFrame)
 ```
 
 Entrada, movimento e build de eventos acontecem durante o VBLANK; o kernel
@@ -189,6 +194,33 @@ desaparece na borda da arena:
 Os mísseis são renderizados na cor da bola (`COLUPF`) e, como a bola, usam a
 compensação horizontal `input = x + 8` (são objetos Missile do TIA, não
 objetos Player).
+
+## Colisão e pontos de vida
+
+As colisões cruzadas são detectadas pelos latches de colisão do TIA e
+resolvidas no overscan, mantendo o kernel visível puramente de renderização:
+
+* **Detecção** (`ProcessCollisions`, início do overscan): lê CXM0P/CXM1P,
+  registra os acertos cruzados M0 -> P1 e M1 -> P0 no bitfield de um byte
+  `hit_flags` (bit 0 = P0, bit 1 = P1; acertos simultâneos contam os dois),
+  limpa o bit do míssil que marcou em `m_active` e escreve `CXCLR` para que um
+  acerto nunca seja contado duas vezes. Bits do próprio jogador (M0 x P0,
+  M1 x P1) são ignorados. A passagem é sem branches e de custo fixo (84
+  ciclos) para que o overscan contado por WSYNC permaneça exato.
+* **Dano** (`ProcessHitEffects`, mesmo overscan, depois das colisões):
+  remove um HP do jogador acertado (sem underflow abaixo de 0; `hit_flags` é
+  lido, mas não limpo aqui - `ProcessCollisions` o sobrescreve no próximo
+  quadro, então cada acerto é consumido exatamente uma vez) e força o bit de
+  FIRE de um jogador morto em `fire_prev` para "pressionado", de modo que
+  `UpdateMissiles` nunca veja uma borda de subida (a trava é recalculada todo
+  overscan porque `UpdateMissiles` reescreve `fire_prev` todo VBLANK). A
+  rotina é alinhada a página e tem branches, mas fica limitada a uma janela
+  de 60..80 ciclos que ainda coloca o primeiro WSYNC do overscan na mesma
+  fronteira em todos os caminhos.
+* **Morte**: um jogador com 0 HP não é renderizado (`BuildEvents` pula seus
+  eventos P0/P1) e não pode disparar, mas mantém posição e movimento; um
+  míssil que já estava voando sobrevive à morte do dono. Ainda não há
+  transição de vitória/fim de jogo - a rodada simplesmente continua.
 
 ## Renderização
 
@@ -275,23 +307,27 @@ disparar dentro do kernel de 192 linhas.
 
 ## Alocação de variáveis
 
-48 de 128 bytes de RAM do RIOT são usados (abaixo dos 122 da Rodada 3):
+51 de 128 bytes de RAM do RIOT são usados (48 na Rodada 3.1, +1 para
+`hit_flags` na Rodada 4, +2 para `p0_hp`/`p1_hp` na Rodada 5):
 
 | Endereço  | Nome        | Propósito                              |
 | --------- | ----------- | -------------------------------------- |
 | `$80`     | `P0Y`       | posição vertical do jogador 0          |
 | `$81`     | `P1Y`       | posição vertical do jogador 1          |
-| `$82`     | `ball_x`    | pixel visível mais à esquerda da bola  |
-| `$83`     | `ball_y`    | primeira linha de exibição da bola     |
-| `$84`     | `ball_dx`   | passo de direção horizontal            |
-| `$85`     | `ball_dy`   | passo de direção vertical              |
-| `$86-$87` | `m0_x/m0_y` | posição do míssil 0                    |
-| `$88-$89` | `m1_x/m1_y` | posição do míssil 1                    |
-| `$8A`     | `m_active`  | máscara ativa compactada (M0/M1)       |
-| `$8B`     | `fire_prev` | borda de fogo compactada + sync de boot|
-| `$8C-$8D` | `evCnt/scanCnt` | estado do kernel                   |
-| `$8E-$AC` | `evTbl`     | tabela de eventos (tamanho variável, máx. 31B) |
-| `$AD-$AF` | `evRow/tempCount/tblLen` | temporários do builder |
+| `$82`     | `p0_hp`     | pontos de vida do jogador 0 (0 = morto)|
+| `$83`     | `p1_hp`     | pontos de vida do jogador 1 (0 = morto)|
+| `$84`     | `ball_x`    | pixel visível mais à esquerda da bola  |
+| `$85`     | `ball_y`    | primeira linha de exibição da bola     |
+| `$86`     | `ball_dx`   | passo de direção horizontal            |
+| `$87`     | `ball_dy`   | passo de direção vertical              |
+| `$88-$89` | `m0_x/m0_y` | posição do míssil 0                    |
+| `$8A-$8B` | `m1_x/m1_y` | posição do míssil 1                    |
+| `$8C`     | `m_active`  | máscara ativa compactada (M0/M1)       |
+| `$8D`     | `hit_flags` | resultado de colisão (bits P0/P1)      |
+| `$8E`     | `fire_prev` | borda de fogo compactada + sync de boot|
+| `$8F-$90` | `evCnt/scanCnt` | estado do kernel                   |
+| `$91-$AF` | `evTbl`     | tabela de eventos (tamanho variável, máx. 31B) |
+| `$B0-$B2` | `evRow/tempCount/tblLen` | temporários do builder |
 
 As economias vêm de: entradas de tabela de tamanho variável (31 vs 55 bytes),
 nenhum buffer de registros/ordem (0 vs 40 bytes), nenhum `joystate` (relê o
