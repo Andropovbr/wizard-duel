@@ -12,16 +12,18 @@ RIOT.
 | Região    | Scanlines | Como é produzida               |
 | --------- | --------- | ------------------------------ |
 | VSYNC     | 3         | três `STA WSYNC` explícitos    |
-| VBLANK    | 57        | contagem `TIM64T = 69`         |
-| KERNEL    | 192       | loop explícito de `STA WSYNC`  |
+| VBLANK    | 64        | contagem `TIM64T = 77`         |
+| KERNEL    | 185       | loop explícito de `STA WSYNC`  |
 | OVERSCAN  | 10        | loop fixo de `WSYNC`            |
 | **Total** | **262**   |                                |
 
 O VBLANK cresceu de 37 (Rodada 2) para 57 linhas e o OVERSCAN encolheu de 30
 para 10 linhas para dar espaço ao `BuildEvents` reconstruir a tabela de
-eventos a cada quadro.
+eventos a cada quadro. Na Rodada 6 o VBLANK cresceu de 57 para 64 linhas e o
+KERNEL encolheu de 192 para 185 para fechar um bug de tremor de quadro sob
+timing de branch realista (ver abaixo).
 
-### Por que o timer do VBLANK é 69 e o overscan é um loop de WSYNC
+### Por que o timer do VBLANK é 77 e o overscan é um loop de WSYNC
 
 O timer do RIOT conta a cada 64 ciclos. A Rodada 2 usou `43`/`37` para uma
 divisão de 37/30 linhas; os valores da Rodada 3/4 foram derivados do mesmo
@@ -30,7 +32,7 @@ modo (o timer expira alguns ciclos antes do valor ingênuo `valor * 64`, e o
 empiricamente para que o emulador reporte exatamente 262 scanlines por
 quadro:
 
-* `VBLANK_TIMER_VALUE = 69` expira na penúltima linha do VBLANK; o
+* `VBLANK_TIMER_VALUE = 77` expira na penúltima linha do VBLANK; o
   `STA WSYNC` seguinte sincroniza na última linha do VBLANK, onde `HMOVE` é
   escrito imediatamente após o `WSYNC` (exigido para que os registradores de
   movimento atuem durante o blanking horizontal da última linha do VBLANK);
@@ -73,7 +75,7 @@ enable (`$00`, `PADDLE_BITS`, `BALL_ENABLE` ou `MISSILE_ENABLE`). É isso que
 permite a uma scanline que precisa de apenas uma escrita pular a segunda
 escrita em vez de gastar um dummy inofensivo.
 
-O kernel conta suas 192 linhas com uma contagem regressiva em RAM
+O kernel conta suas 185 linhas com uma contagem regressiva em RAM
 (`scanCnt`). Isso é deliberado: o código de evento usa `TAX` como índice de
 registrador, o que corromperia um contador de linhas em X a cada linha de
 evento e esticaria o quadro.
@@ -182,21 +184,51 @@ bordas de disparo) já está a poucos ciclos da fronteira de alinhamento da
 janela do timer, e adicionar uma passagem de custo variável ali fez um quadro
 por rodada de estresse escorregar para 263 scanlines. Com a colisão tratada
 no overscan, o trabalho do VBLANK termina com folga suficiente para que a
-espera do timer sempre segure a região em exatamente 57 linhas. A Rodada 5
-adiciona um gate com branches ao `BuildEvents` (um jogador morto não contribui
-com eventos), que custa ~10 ciclos apenas no caminho do jogador vivo; a saída
-do poll de VBLANK medida no pior caso ainda deixa ~45 ciclos de folga.
+espera do timer sempre segure a região em seu número fixo de linhas.
 
-O trabalho do OVERSCAN é `ProcessCollisions` (84 ciclos fixos, sem branches)
-mais `ProcessHitEffects` (Rodada 5: dano de HP + trava de disparo de jogador
-morto; com branches, mas limitado a uma janela de 60..80 ciclos) mais
-exatamente `OVERSCAN_LOOP_COUNT` escritas de `WSYNC`. Todo caminho de
-`ProcessHitEffects` coloca o primeiro `WSYNC` na mesma fronteira de 76 ciclos
-(ciclo 228 após a última linha do kernel), então a região de 10 linhas é
-determinística por construção: não pode derivar independentemente de quantos
-acertos forem detectados ou de os jogadores estarem mortos.
-`ProcessHitEffects` é alinhado a página (`ALIGN 256`) para que seus quatro
-branches nunca ganhem um ciclo extra de page crossing no silício real.
+### Rodada 6: o bug de tremor do VBLANK e como foi fechado
+
+A Rodada 5 deixou o VBLANK com 57 linhas e `VBLANK_TIMER_VALUE = 69`,
+ajustado contra um emulador cuja tabela de ciclos dobrava todo branch
+condicional em 2 ciclos. No silício real, um branch *tomado* custa 3 ciclos
+(4 com page crossing). Sob o trabalho de VBLANK da Rodada 5 (movimento +
+atualização de mísseis + `BuildEvents` com o gate de jogador morto), o pior
+caso realista chegou a ~4919 ciclos, mas o timer T=69 expira em ~4553 ciclos
+(`(69 - 1) * 64` antes de `INTIM` ler 0). Isso é invertido: o trabalho
+ultrapassou o timer, então `WaitVBlank` parou de esperar no `INTIM == 0`
+(fronteira fixa) e caiu para fora no *fim variável do trabalho*. Dependendo
+de onde o trabalho caía em relação à grade de 76 ciclos, quadros individuais
+esticavam para 263/264/265 scanlines — um tremor visível que os atalhos do
+emulador escondiam por completo.
+
+A Rodada 6 corrige o orçamento, não o poll:
+
+* `VBLANK_SCANLINES` 57 -> 64, KERNEL 192 -> 185, `VBLANK_TIMER_VALUE` 69 ->
+  77. O timer agora expira em ~4864 ciclos (`(77 - 1) * 64`), bem depois do
+  trabalho de pior caso medido de ~4455 ciclos (folga ~409). O poll sempre
+  sai na fronteira fixa do timer, então o quadro tem exatamente 262 scanlines
+  independentemente do comprimento do trabalho de VBLANK;
+* o emulador (`tools/emu6502.py`) agora modela o custo de branch tomado (+1)
+  e de page crossing (+2 num branch tomado, +1 em `LDA abs,Y`), para que a
+  regressão seja detectável sem hardware real. O benchmark registra
+  `vblank_work` (escrita do TIM64T até o primeiro `LDA INTIM`) e
+  `vblank_margin` (`(timer - 1) * 64 - vblank_work`).
+
+Uma espera `TIM64T` só é determinística quando o trabalho executado antes de
+armar o timer é fixo ou fica confortavelmente abaixo da expiração. O OVERSCAN
+também NÃO usa timer pelo mesmo motivo: uma passagem de custo variável
+(`ProcessHitEffects`) roda entre o kernel e a espera do overscan, então o
+overscan escreve exatamente `OVERSCAN_LOOP_COUNT = 7` `WSYNC`s. A partir da
+última linha do kernel, um epílogo fixo + o JSR e o corpo sem branches do
+`ProcessCollisions` + o JSR do `ProcessHitEffects` (Rodada 5) colocam o
+primeiro `WSYNC` entre os ciclos 187 e 207 da região (modelo do emulador;
+todo caminho cai na mesma fronteira no ciclo 228 = scanline 3). O loop conta
+então exatamente 10 linhas e o `JMP` + preâmbulo de VSYNC seguintes alinham o
+primeiro `WSYNC` de VSYNC do próximo quadro em 760 ciclos após a última linha
+do kernel. Como a única passagem de custo variável (`ProcessHitEffects`)
+fica confinada a uma janela que nunca escapa da primeira fronteira, a região
+tem exatamente 10 scanlines independentemente de quantos acertos forem
+detectados ou de os jogadores estarem mortos.
 
 ## Comprimento medido do quadro
 
@@ -209,10 +241,14 @@ o timer do RIOT:
   uniforme em 600+ quadros de estresse máximo (ambos os latches de colisão
   assertados todo quadro, pressionamentos de disparo alternados);
   anteriormente a mesma entrada fazia ~1% dos quadros escorregar para 263
-  linhas. A Rodada 5 adiciona os caminhos de HP/morte: o quadro permanece em
-  19912 ciclos sob a mesma entrada de estresse máximo (jogadores mantidos
-  vivos) e com ambos os jogadores mortos;
-* o kernel visível roda exatamente 192 iterações (a contagem `scanCnt`).
+linhas. A Rodada 5 adiciona os caminhos de HP/morte: o quadro permanece em
+   19912 ciclos sob a mesma entrada de estresse máximo (jogadores mantidos
+   vivos) e com ambos os jogadores mortos. A Rodada 6 revalida o mesmo
+   estresse com um emulador que modela timing de branch realista: o quadro
+   permanece em exatamente 19912 ciclos (262 scanlines) para todos os quadros
+   da rodada de estresse máximo, provando que o timer do VBLANK (T=77) nunca
+   ultrapassa;
+* o kernel visível roda exatamente 185 iterações (a contagem `scanCnt`).
 
 O primeiro quadro após ligar é alguns ciclos mais curto que o estado estável
 porque os relógios da CPU e do TIA ainda não estão alinhados; todos os
@@ -242,5 +278,9 @@ comportamento, não totais de ciclos exatos.
 certo, mas deriva para 260 ou 263 scanlines, viola o contrato de timing NTSC.
 Os valores do timer acima foram ajustados precisamente para que o quadro seja
 exatamente 262 scanlines, e a contagem `scanCnt` do kernel mantém a região
-visível em exatamente 192 linhas, independentemente de quantos eventos
-disparam.
+visível em exatamente 185 linhas, independentemente de quantos eventos
+disparam. O tremor de VBLANK da Rodada 6 era exatamente essa classe de bug:
+visualmente correto em um emulador com timing de branch abreviado, ele
+quebrava no silício real porque o orçamento do timer não cobria o pior caso
+de trabalho verdadeiro. O emulador agora modela os custos reais de ciclo para
+que a regressão seja detectada deterministicamente.

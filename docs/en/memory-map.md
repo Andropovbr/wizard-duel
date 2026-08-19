@@ -11,7 +11,7 @@ registers (`$0280-$02FF`).
 | `$F000`  | Reset/init (main.asm)                     |
 | `$F055`  | `StartOfFrame` (one-frame loop)           |
 | `$F07F`  | `WaitVBlank` (TIM64T + game logic)        |
-| `$F100`  | `KernelLoop` (event-driven 192-line kernel) |
+| `$F100`  | `KernelLoop` (event-driven 185-line kernel) |
 | `$F150`  | `OverscanWait` (collision + hit effects + WSYNC loop) |
 | `$F160`  | `UpdatePlayers` (vertical joystick input) |
 | `$F199`  | `UpdateBall` (move + bounce)              |
@@ -70,7 +70,7 @@ added `hit_flags` (1 byte); Round 5 adds `p0_hp`/`p1_hp` (2 bytes).
 | `$8D`     | `hit_flags` | 1    | collision results (bit0 P0, bit1 P1) |
 | `$8E`     | `fire_prev` | 1    | packed fire edge state (bit7 = sync) |
 | `$8F`     | `evCnt`     | 1    | kernel: scanlines to next event      |
-| `$90`     | `scanCnt`   | 1    | kernel: 192-line countdown           |
+| `$90`     | `scanCnt`   | 1    | kernel: 185-line countdown           |
 | `$91-$AF` | `evTbl`     | 31   | event table (variable-size, max 31B) |
 | `$B0`     | `evRow`     | 1    | builder: current event row           |
 | `$B1`     | `tempCount` | 1    | builder: shift point / prevRow       |

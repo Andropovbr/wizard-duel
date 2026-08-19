@@ -50,10 +50,18 @@
 ; Frame structure (NTSC):
 ;
 ;   VSYNC     3 scanlines   (lines 1..3,    explicit WSYNC)
-;   VBLANK   57 scanlines   (lines 4..60,   TIM64T = VBLANK_TIMER_VALUE)
-;   KERNEL  192 scanlines   (lines 61..252, explicit WSYNC loop)
+;   VBLANK   64 scanlines   (lines 4..67,   TIM64T = VBLANK_TIMER_VALUE)
+;   KERNEL  185 scanlines   (lines 68..252, explicit WSYNC loop)
 ;   OVERSCAN 10 scanlines   (lines 253..262, WSYNC countdown loop)
 ;   TOTAL   262 scanlines
+;
+; Round 6: VBLANK grew from 57 to 64 lines and the kernel shrank from 192 to
+; 185 so the VBLANK TIM64T value could grow from 69 to 77.  Under real 6502
+; branch timing (taken = 3 cycles, page crossing +1) the VBLANK work used to
+; overrun the 69-timer expiry, making WaitVBlank exit at the (variable) work
+; end instead of the timer, so frames slipped to 263/264/265 lines and the
+; whole screen shook.  The 77 timer expires ~146 cycles past the worst work
+; end; see constants.inc and docs/en/timing.md.
 ;
 ; Gameplay input/update happens during VBLANK; the visible kernel only
 ; renders. See docs for the full timing analysis.
@@ -143,7 +151,7 @@ StartOfFrame:
     STA WSYNC               ; 3   scanline 2
     STA WSYNC               ; 3   scanline 3
     LDA #VBLANK_TIMER_VALUE ; 2
-    STA TIM64T              ; 4   VBLANK countdown (56 * 64 = 3584 cycles)
+    STA TIM64T              ; 4   VBLANK countdown (77 * 64 = 4928 cycles)
     LDA #0                  ; 2
     STA VSYNC               ; 3   release vertical sync
 
@@ -187,7 +195,7 @@ WaitVBlank:
     JMP KernelLoop          ; 3
 
 ; =============================================================================
-; Visible kernel: 192 scanlines.
+; Visible kernel: 185 scanlines.
 ;
 ; Scanline budget: 76 cycles. The kernel is event-driven: each scanline just
 ; counts down evCnt and, when it reaches zero, applies the register writes of
@@ -197,7 +205,7 @@ WaitVBlank:
 ; The three paths below are the only code executed during display.
 ;
 ; The kernel counts exactly KERNEL_SCANLINES lines with a RAM countdown
-; (scanCnt, primed to 192 before the kernel).  The line counter deliberately
+; (scanCnt, primed to 185 before the kernel).  The line counter deliberately
 ; lives in RAM rather than in X: the event code uses X (TAX) as the register
 ; index, so an X line counter would be clobbered on every event line and the
 ; frame would drift longer than 262 scanlines.  Y holds the table byte offset
@@ -206,7 +214,7 @@ WaitVBlank:
 ; Worst case (a scanline where a double-entry fires):
 ;   STA WSYNC            3   start of scanline
 ;   DEC scanCnt          5   kernel line countdown
-;   BEQ .kernelEnd       2   (192 lines done)
+;   BEQ .kernelEnd       2   (185 lines done)
 ;   DEC evCnt            5   count down to the next event
 ;   BNE KernelLoop       2   event line: not taken
 ;   LDA evTbl+1,Y        4   register index 1 (bit 7 = single flag)
@@ -246,8 +254,8 @@ WaitVBlank:
     ALIGN 256
 KernelLoop:
     STA WSYNC               ; 3   start of scanline
-    DEC scanCnt             ; 5   kernel line countdown (192 lines total)
-    BEQ .kernelEnd          ; 2/3  192 lines drawn -> overscan
+    DEC scanCnt             ; 5   kernel line countdown (185 lines total)
+    BEQ .kernelEnd          ; 2/3  185 lines drawn -> overscan
     DEC evCnt               ; 5   count down to the next event
     BNE KernelLoop          ; 2/3  not an event line -> loop back
     ; ---- event line: apply the current entry ----
@@ -1143,7 +1151,7 @@ ShiftBy3:                    ; Y = first index to move
 ; Walks the finished table and replaces every absolute row with the delta the
 ; kernel counts down: delta(first) = row + 1 (prevRow starts at $FF = -1) and
 ; delta(next) = row - prevRow.  Events with a row >= KERNEL_SCANLINES are
-; emitted harmlessly: their delta never reaches zero inside the 192-line
+; emitted harmlessly: their delta never reaches zero inside the 185-line
 ; kernel.  The terminator keeps delta = EV_TERMINATOR_DELTA ($FF), which can
 ; never fire.  Clobbers A, X, Y, evRow and tempCount.
 ; =============================================================================

@@ -79,8 +79,8 @@ TIM64T  = $0296  ; write timer value, countdown clock = 64 cycles
 ; scanline. See docs/en/timing.md for the full derivation.
 ;
 ;   VSYNC      3 lines  (3 explicit WSYNC writes)
-;   VBLANK    57 lines  (TIM64T = 69, expires on the final VBLANK line)
-;   KERNEL   192 lines  (explicit WSYNC loop)
+;   VBLANK    64 lines  (TIM64T = 77, expires on the final VBLANK line)
+;   KERNEL   185 lines  (explicit WSYNC loop)
 ;   OVERSCAN  10 lines  (WSYNC countdown loop, see below)
 ;   TOTAL    262 lines
 ;
@@ -103,14 +103,29 @@ TIM64T  = $0296  ; write timer value, countdown clock = 64 cycles
 ; cycle K+187..K+207 (K = last kernel WSYNC landing), which lands on K+228;
 ; the 7 countdown WSYNCs reach K+684 and the next frame's first VSYNC WSYNC
 ; lands on K+760.  See ProcessHitEffects in main.asm for the cost window.
+;
+; Round 6: the VBLANK TIM64T value grew from 69 to 77 and the kernel shrank
+; from 192 to 185 lines to fix a whole-screen vertical shake when both
+; missiles are active.  The old VBLANK timer was too small: with real 6502
+; branch timing (taken = 3 cycles, page crossing +1) the VBLANK game logic
+; (UpdatePlayers..BuildEvents) can end as late as ~4919 cycles into the
+; frame, while a timer value of 69 expires at ~4553 cycles.  Whenever the
+; work overran the expiry, the WaitVBlank INTIM spin exited at the *work end*
+; (variable), so the final VBLANK WSYNC landed on different 76-cycle
+; boundaries and frames slipped to 263/264/265 scanlines.  The value 77
+; expires at ~4864 cycles ((77 - 1) * 64, when INTIM first reads 0), ~409
+; cycles past the worst work measured under the emulator's realistic branch
+; timing, so the spin always exits on the timer and every frame lands on the
+; same boundary -> exactly 262 lines.  The kernel lost 7 lines to pay for
+; the longer VBLANK.  See tools/benchmark.py (vblank_work/vblank_margin).
 ; ---------------------------------------------------------------------------
 FRAME_SCANLINES      = 262
 VSYNC_SCANLINES      = 3
-VBLANK_SCANLINES     = 57
-KERNEL_SCANLINES     = 192
+VBLANK_SCANLINES     = 64
+KERNEL_SCANLINES     = 185
 OVERSCAN_SCANLINES   = 10
 
-VBLANK_TIMER_VALUE   = 69
+VBLANK_TIMER_VALUE   = 77
 OVERSCAN_LOOP_COUNT  = 7
 
 ; ---------------------------------------------------------------------------
@@ -188,16 +203,16 @@ BALL_X_MIN         = 0                     ; left edge of the visible area
 BALL_X_MAX         = 160 - BALL_WIDTH      ; keep the 4-px ball fully visible
 BALL_Y_MIN         = 0                     ; drawn on the first kernel line
 BALL_Y_MAX         = KERNEL_SCANLINES - BALL_HEIGHT
-                                           ; last first-draw row = 188; the
-                                           ; ball occupies rows 188..191. The
-                                           ; ball OFF event at row 192 is
+                                           ; last first-draw row = 181; the
+                                           ; ball occupies rows 181..184. The
+                                           ; ball OFF event at row 185 is
                                            ; dropped by the event builder and
                                            ; ENABL is cleared explicitly during
                                            ; overscan init, so the ball can
                                            ; never bleed into overscan.
 
 BALL_X_INIT        = 78      ; ~center of the 160-pixel arena
-BALL_Y_INIT        = 95      ; ~center of the 192-line kernel
+BALL_Y_INIT        = 95      ; ~center of the 185-line kernel
 
 ; Direction steps added to ball_x/ball_y every frame (constant speed).
 DIR_LEFT  = $FF             ; -1
@@ -287,7 +302,7 @@ EV_SINGLE_FLAG = $80    ; bit 7 of reg1 marks a 3-byte single entry
 
 EV_MAX_EVENTS     = 10      ; 2 players + ball + 2 missiles, 2 events each
 EV_TBL_SIZE       = EV_MAX_EVENTS * 3 + 1   ; 10 singles + terminator = 31
-EV_TERMINATOR_DELTA = $FF   ; never fires inside a 192-line kernel
+EV_TERMINATOR_DELTA = $FF   ; never fires inside a 185-line kernel
 
 ; ---------------------------------------------------------------------------
 ; Joystick masks (SWCHA is active low: a bit is 0 when the direction is

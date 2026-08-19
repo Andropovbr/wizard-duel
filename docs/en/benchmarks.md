@@ -12,7 +12,21 @@ Measured deterministically from the assembled build artifacts (no display):
 | Kernel worst case | worst kernel scanline cost, recomputed from listing |
 | Kernel best case  | cheapest kernel scanline cost                       |
 | Kernel slack      | `kernel_budget - kernel_worst`                      |
-| VBLANK/OVERSCAN   | tuned RIOT timer values (69 / 11)                   |
+| VBLANK timer      | `VBLANK_TIMER_VALUE` (77 since Round 6)             |
+| VBLANK worst work | TIM64T write -> first `LDA INTIM` (worst, emulated) |
+| VBLANK margin     | `(timer - 1) * 64 - vblank_work`                    |
+| Overscan loop     | `OVERSCAN_LOOP_COUNT` WSYNC writes                  |
+
+## VBLANK margin
+
+The VBLANK wait is only deterministic when the work before it finishes
+comfortably before the timer expires; otherwise `WaitVBlank` falls through at
+the variable work end and the frame shakes (Round 6 bug). `vblank_work` is
+measured with the emulator's realistic branch timing under the worst-case
+input (both missiles + both collision latches + alternating fire, HP kept
+full), and `vblank_margin = (timer - 1) * 64 - vblank_work` is the slack
+before the poll would exit early. A negative margin means the frame length is
+input-dependent and is a hard regression.
 
 ## Kernel slack
 
@@ -122,9 +136,11 @@ as `build/regression-report.txt` / `build/regression-report.json` artifacts.
 
 `docs/benchmarks/history.csv` records one row per benchmark run
 (`latest.md` reflects the most recent run). In Round 1 the CSV gained the
-`kernel_slack` column; `tools/benchmark.py` migrates pre-existing rows in
-place, computing `slack = kernel_budget - kernel_worst`, so no historical
-data is lost.
+`kernel_slack` column; in Round 6 it gained `vblank_work` / `vblank_margin`.
+`tools/benchmark.py` migrates pre-existing rows in place (computing
+`slack = kernel_budget - kernel_worst`, leaving the VBLANK columns empty for
+rows measured before the emulator modeled realistic branch timing), so no
+historical data is lost.
 
 ## Baseline and current state
 
@@ -182,6 +198,17 @@ Kernel worst case: 65 / 76 cycles   (kernel unchanged)
 Kernel slack:      11 cycles
 Kernel best case:  18 cycles
 Overscan loop:     7 WSYNCs   (8 -> 7 to absorb ProcessHitEffects)
+
+Round 6 current (VBLANK shake fix):
+ROM used:          1296 bytes
+RAM used:          51 bytes
+Frame scanlines:   262
+Kernel worst case: 65 / 76 cycles   (kernel 192 -> 185 lines, same line cost)
+Kernel slack:      11 cycles
+VBLANK timer:      77         (69 -> 77; expiry ~4864 cycles)
+VBLANK worst work: 4455 cycles (emulated, realistic branch timing)
+VBLANK margin:     409 cycles  (timer expiry - worst work; must stay positive)
+Overscan loop:     7 WSYNCs
 ```
 
 These numbers are measured from the artifacts on every run, not hardcoded

@@ -73,7 +73,7 @@ writes AUDV1 (a harmless dummy), 1..5 address GRP0..ENABL.
 Deltas: the first entry fires on line `delta - 1`, every following entry
 fires `delta` lines after the previous one, so `BuildEvents` computes
 `delta(first) = row + 1` and `delta(next) = row - prevRow`. The kernel counts
-its 192 lines with a RAM countdown (`scanCnt`) rather than the X register,
+its 185 lines with a RAM countdown (`scanCnt`) rather than the X register,
 because the event code uses `TAX` as the register index and would clobber an
 X line counter on every event line.
 
@@ -117,7 +117,7 @@ files rather than hard-coding them.
 ```
 StartOfFrame
  ├─ VSYNC   3 scanlines  (three explicit WSYNC writes)
- ├─ VBLANK 57 scanlines  (TIM64T = 69; gameplay + event build run here)
+ ├─ VBLANK 64 scanlines  (TIM64T = 77; gameplay + event build run here)
  │   ├─ UpdatePlayers    read SWCHA, move P0/P1, clamp to the arena
  │   ├─ UpdateBall       move the ball, bounce off the arena edges
  │   ├─ UpdateMissiles   read INPT4/INPT5, fire/move/despawn missiles
@@ -125,13 +125,13 @@ StartOfFrame
  │   ├─ PositionBall     RESBL + HMBL placement
  │   ├─ PositionMissiles RESM0/RESM1 + HMM0/HMM1 placement
  │   └─ BuildEvents      rebuild the event table for the visible kernel
-├─ KERNEL 192 scanlines (explicit WSYNC loop; render events only)
+├─ KERNEL 185 scanlines (explicit WSYNC loop; render events only)
   └─ OVERSCAN 10 scanlines (ProcessCollisions + ProcessHitEffects + fixed WSYNC loop; back to StartOfFrame)
 ```
 
 Gameplay input, movement and event building happen during VBLANK; the visible
 kernel only applies the precomputed register writes. VBLANK is larger than in
-Round 2 (57 vs 37 lines) to give `BuildEvents` room; OVERSCAN shrinks to 10
+Round 2 (64 vs 37 lines) to give `BuildEvents` room; OVERSCAN shrinks to 10
 lines to keep the frame at 262.
 
 ## Input
@@ -295,7 +295,7 @@ hard bound; `tblLen` tracks the current length and a test asserts it never
 exceeds the bound under aggressive fire input.
 
 The table ends with a terminator entry whose delta (`$FF`) can never fire
-inside the 192-line kernel.
+inside the 185-line kernel.
 
 ## Variable allocation
 

@@ -74,7 +74,7 @@ Os índices de registrador são deslocamentos a partir de
 Deltas: a primeira entrada dispara na linha `delta - 1`; cada entrada seguinte
 dispara `delta` linhas depois da anterior, então `BuildEvents` calcula
 `delta(primeira) = linha + 1` e `delta(próxima) = linha - linhaAnterior`. O
-kernel conta suas 192 linhas com uma contagem regressiva em RAM (`scanCnt`)
+kernel conta suas 185 linhas com uma contagem regressiva em RAM (`scanCnt`)
 em vez do registrador X, porque o código de evento usa `TAX` como índice de
 registrador e corromperia um contador de linhas em X a cada linha de evento.
 
@@ -118,7 +118,7 @@ símbolos/listing em vez de valores fixos.
 ```
 StartOfFrame
  ├─ VSYNC   3 scanlines  (três escritas explícitas em WSYNC)
- ├─ VBLANK 57 scanlines  (TIM64T = 69; gameplay e build de eventos aqui)
+ ├─ VBLANK 64 scanlines  (TIM64T = 77; gameplay e build de eventos aqui)
  │   ├─ UpdatePlayers    lê SWCHA, move P0/P1, limita à arena
  │   ├─ UpdateBall       move a bola, quica nas bordas
  │   ├─ UpdateMissiles   lê INPT4/INPT5, dispara/move/remove mísseis
@@ -126,13 +126,13 @@ StartOfFrame
  │   ├─ PositionBall     posicionamento RESBL + HMBL
  │   ├─ PositionMissiles posicionamento RESM0/RESM1 + HMM0/HMM1
  │   └─ BuildEvents      reconstrói a tabela de eventos do kernel visível
- ├─ KERNEL 192 scanlines (loop explícito de WSYNC; apenas renderiza)
+ ├─ KERNEL 185 scanlines (loop explícito de WSYNC; apenas renderiza)
  └─ OVERSCAN 10 scanlines (ProcessCollisions + ProcessHitEffects + loop fixo de WSYNC; volta ao StartOfFrame)
 ```
 
 Entrada, movimento e build de eventos acontecem durante o VBLANK; o kernel
 visível apenas aplica as escritas pré-calculadas. O VBLANK é maior que na
-Rodada 2 (57 vs 37 linhas) para dar espaço ao `BuildEvents`; o OVERSCAN
+Rodada 2 (64 vs 37 linhas) para dar espaço ao `BuildEvents`; o OVERSCAN
 encolhe para 10 linhas para manter o quadro em 262.
 
 ## Entrada
@@ -303,7 +303,7 @@ e no máximo uma dupla por linha, a tabela precisa de no máximo 31 bytes.
 e um teste afirma que ele nunca excede o limite sob entrada de fogo agressiva.
 
 A tabela termina com uma entrada terminadora cujo delta (`$FF`) nunca pode
-disparar dentro do kernel de 192 linhas.
+disparar dentro do kernel de 185 linhas.
 
 ## Alocação de variáveis
 

@@ -230,12 +230,32 @@ class TestKernelSlackMetric(unittest.TestCase):
             self.assertEqual(rows[0]["kernel_slack"], "20")
             self.assertEqual(rows[0]["rom_used"], "528")
 
-    def test_history_migration_is_idempotent(self):
+    def test_history_migration_adds_vblank_columns(self):
+        import csv
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "history.csv"
+            # A Round 5 file already has kernel_slack but predates the
+            # Round 6 VBLANK work/margin columns.
             path.write_text(
                 "rom_used,kernel_worst,kernel_budget,kernel_slack\n"
                 "528,56,76,20\n")
+            self.assertTrue(migrate_history(path))
+            with path.open(newline="") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+            self.assertIn("vblank_work", reader.fieldnames)
+            self.assertIn("vblank_margin", reader.fieldnames)
+            self.assertEqual(rows[0]["kernel_slack"], "20")
+            self.assertEqual(rows[0]["vblank_work"], "")
+
+    def test_history_migration_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "history.csv"
+            header = ("rom_used,rom_available,ram_used,ram_available,"
+                      "scanlines,kernel_worst,kernel_best,kernel_budget,"
+                      "kernel_slack,vblank_timer,vblank_work,vblank_margin,"
+                      "overscan_loop")
+            path.write_text(header + "\n528,3568,3,125,262,56,44,76,20,44,,,\n")
             self.assertFalse(migrate_history(path))
 
 

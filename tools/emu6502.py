@@ -20,9 +20,14 @@ enough to let the frame loop advance and to validate game state and timing:
     geometry; see docs/en/timing.md for the Stella-based pixel validation).
   * Game RAM is RIOT $80-$FF plus a separate $0100-$01FF stack page.
 
-This is a functional model, not a cycle-perfect simulator: it validates
-behavior (missile firing, movement, frame scanline count), not every TIA
-edge case.
+This is a functional model with realistic 6502 branch timing: a branch
+costs 2 cycles when not taken, 3 when taken, and 4 when a taken branch
+crosses a page boundary; indexed loads (LDA abs,Y) add a cycle on a page
+crossing.  Without this the WaitVBlank INTIM spin is modelled too cheaply:
+the real (taken) branch cost was what pushed the VBLANK work past the
+TIM64T expiry and made frames slip to 263+ scanlines (the whole-screen
+shake, fixed in Round 6).  The model validates behavior (missile firing,
+movement, frame scanline count) and the timing it is exercised for.
 """
 
 from pathlib import Path
@@ -30,7 +35,10 @@ from pathlib import Path
 ROM_ORIGIN = 0xF000
 VECTOR_RESET = 0xFFFC
 
-# Cycle counts for the opcodes used by src/main.asm (6502, no page crossings).
+# Base cycle counts for the opcodes used by src/main.asm (6502).  Branches
+# are 2 here; execute() adds +1 when taken and +1 more when the taken branch
+# crosses a page boundary.  Indexed absolute loads (LDA abs,Y) are 4 here;
+# execute() adds +1 when the effective address crosses a page boundary.
 CYC = {
     0x18: 2, 0x38: 2, 0x78: 2, 0xD8: 2, 0xEA: 2, 0x48: 3, 0x68: 4, 0xAA: 2,
     0xA8: 2, 0x8A: 2, 0x98: 2, 0x9A: 2, 0xE8: 2, 0xC8: 2, 0xCA: 2, 0x88: 2,
@@ -181,7 +189,8 @@ class Cpu:
         if self.steps > 2_000_000:
             raise RuntimeError("step limit exceeded (possible hang)")
         self.cycles += CYC.get(op, 0)
-        self.execute(op)
+        extra = self.execute(op)
+        self.cycles += extra
         if self.timer:
             self.timer = max(0, self.timer - (self.cycles - start))
 
@@ -265,12 +274,17 @@ class Cpu:
         elif op in (0xA5, 0xAD, 0xB9):      # LDA zp / abs / abs,Y
             if op == 0xA5:
                 addr = self.zp_addr()
+                extra = 0
             elif op == 0xAD:
                 addr = self.abs_addr()
+                extra = 0
             else:
-                addr = self.absy_addr()
+                base = self.abs_addr()
+                addr = (base + self.y) & 0xFFFF
+                extra = 1 if (base & 0xFF) + self.y > 0xFF else 0
             self.a = self.read(addr)
             self.set_nz(self.a)
+            return extra
         elif op == 0xB5:                    # LDA zp,X
             self.a = self.read(self.zpx_addr())
             self.set_nz(self.a)
@@ -342,10 +356,15 @@ class Cpu:
                      0xB0: self.c, 0x90: not self.c,
                      0x30: bool(self.n)}[op]
             if taken:
-                self.pc = (self.pc + rel) & 0xFFFF
+                old_pc = self.pc
+                self.pc = (old_pc + rel) & 0xFFFF
+                page = 1 if (old_pc & 0xFF00) != (self.pc & 0xFF00) else 0
+                return 1 + page          # taken = +1, page crossing = +1
+            return 0                    # not taken = base 2 cycles
         else:
             raise AssertionError(
                 f"unhandled opcode ${op:02X} at ${self.pc-1:04X}")
+        return 0
 
     def _cmp(self, reg, v):
         t = reg - v

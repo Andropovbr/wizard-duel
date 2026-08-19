@@ -163,6 +163,43 @@ class TestFrameStability(unittest.TestCase):
                              f"frame {i} ran {cycles} cycles "
                              f"({cycles / 76:.0f} scanlines), expected 262")
 
+    def test_vblank_never_overruns_with_realistic_branch_timing(self):
+        # Regression: before Round 6, VBLANK_TIMER_VALUE=69.  The emulator
+        # folded every branch as 2 cycles, so the timer expiry (~4553 cycles)
+        # always landed after VBLANK work (~4400) and WaitVBlank exited on the
+        # timer, keeping 262 scanlines.  On real hardware taken branches cost 3
+        # cycles, pushing worst-case VBLANK work to ~4919 cycles -- past the
+        # T=69 expiry -- so the poll exited at the variable work end and frames
+        # drifted to 263/264/265 scanlines (visible shake).
+        #
+        # Round 6 raised the timer to T=77 (expiry ~5065, margin ~160) and
+        # shrunk the kernel 192 -> 185 so VBLANK could grow 57 -> 64 lines.
+        # The emulator's CYC table models taken branches and page crossings so
+        # this worst case (both missiles + both collision latches + alternating
+        # fire, HP re-filled to keep both missiles alive) must stay at exactly
+        # 19912 cycles = 262 scanlines every frame.
+        p0_hp = self._ram("p0_hp")
+        p1_hp = self._ram("p1_hp")
+        self.cpu.inpt[4] = 0xFF      # boot sync frames first
+        self.cpu.inpt[5] = 0xFF
+        self.run_frame()
+        for _ in range(3):
+            self.cpu.cxm0p = 0xC0
+            self.cpu.cxm1p = 0xC0
+            self.run_frame()
+        for i in range(80):
+            press = (i % 2 == 0)
+            self.cpu.inpt[4] = 0x00 if press else 0xFF
+            self.cpu.inpt[5] = 0x00 if press else 0xFF
+            self.cpu.cxm0p = 0xC0    # M0 x P1 AND M0 x P0 latched
+            self.cpu.cxm1p = 0xC0    # M1 x P0 AND M1 x P1 latched
+            self.cpu.ram[p0_hp] = 3  # keep both players alive
+            self.cpu.ram[p1_hp] = 3
+            cycles = self.run_frame()
+            self.assertEqual(cycles, 19912,
+                             f"frame {i} ran {cycles} cycles "
+                             f"({cycles / 76:.0f} scanlines), expected 262")
+
 
 if __name__ == "__main__":
     unittest.main()

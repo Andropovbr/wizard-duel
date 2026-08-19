@@ -11,15 +11,17 @@ models WSYNC stalls and the RIOT timer.
 | Region    | Scanlines | How it is produced             |
 | --------- | --------- | ------------------------------ |
 | VSYNC     | 3         | three explicit `STA WSYNC`     |
-| VBLANK    | 57        | `TIM64T = 69` countdown        |
-| KERNEL    | 192       | explicit `STA WSYNC` loop      |
+| VBLANK    | 64        | `TIM64T = 77` countdown        |
+| KERNEL    | 185       | explicit `STA WSYNC` loop      |
 | OVERSCAN  | 10        | fixed `WSYNC` countdown loop    |
 | **Total** | **262**   |                                |
 
 VBLANK grew from 37 (Round 2) to 57 lines and OVERSCAN shrank from 30 to 10
-lines to give `BuildEvents` room to rebuild the event table every frame.
+lines to give `BuildEvents` room to rebuild the event table every frame. In
+Round 6 VBLANK grew from 57 to 64 lines and KERNEL shrank from 192 to 185 to
+close a frame-shake bug under realistic branch timing (see below).
 
-### Why the VBLANK timer is 69 and the overscan is a WSYNC loop
+### Why the VBLANK timer is 77 and the overscan is a WSYNC loop
 
 The RIOT timer ticks once every 64 cycles. Round 2 used `43`/`37` for a 37/30
 line split; the Round 3/4 values were derived the same way (the timer expires
@@ -27,7 +29,7 @@ a few cycles earlier than the naive `value * 64` suggests, and the `STA WSYNC`
 after the wait syncs to the correct line) and then tuned empirically so the
 emulator reports exactly 262 scanlines per frame:
 
-* `VBLANK_TIMER_VALUE = 69` expires on the penultimate VBLANK line; the
+* `VBLANK_TIMER_VALUE = 77` expires on the penultimate VBLANK line; the
   `STA WSYNC` that follows syncs to the last VBLANK line, where `HMOVE` is
   written immediately after the `WSYNC` (required so the motion registers act
   during horizontal blanking of the last VBLANK line);
@@ -68,7 +70,7 @@ value (`$00`, `PADDLE_BITS`, `BALL_ENABLE` or `MISSILE_ENABLE`). This is what
 lets a scanline that needs only one write skip the second write entirely
 instead of wasting a harmless dummy write.
 
-The kernel counts its 192 lines with a RAM countdown (`scanCnt`). This is
+The kernel counts its 185 lines with a RAM countdown (`scanCnt`). This is
 deliberate: the event code uses `TAX` as the register index, which would
 clobber an X line counter on every event line and stretch the frame.
 
@@ -174,20 +176,50 @@ wait. The collision pass is deliberately NOT here: the heaviest VBLANK path
 VBLANK timer window's alignment boundary, and adding a variable-cost pass
 there made one frame per stress run slip to 263 scanlines. With collision
 handled in the overscan, the VBLANK work ends with enough margin that the
-timer wait always holds the region at exactly 57 lines. Round 5 adds a small
-branchy gate to `BuildEvents` (a dead player contributes no events), which
-costs ~10 cycles only on the alive path; the measured worst-case VBLANK poll
-exit still leaves ~45 cycles of margin.
+timer wait always holds the region at its fixed line count.
 
-The OVERSCAN work is `ProcessCollisions` (fixed 84 cycles, branchless) plus
-`ProcessHitEffects` (Round 5: HP damage + dead-player fire lock; branchy but
-bounded to a 60..80-cycle window) plus exactly `OVERSCAN_LOOP_COUNT` `WSYNC`
-writes. Every path through `ProcessHitEffects` lands the first `WSYNC` on the
-same 76-cycle boundary (cycle 228 after the kernel's last line), so the
-10-line region is deterministic by construction: it cannot drift regardless
-of how many hits are detected or whether players are dead. `ProcessHitEffects`
-is page-aligned (`ALIGN 256`) so its four branches can never gain a
-page-crossing cycle on real silicon.
+### Round 6: the VBLANK shake bug and how it was closed
+
+Round 5 left VBLANK at 57 lines with `VBLANK_TIMER_VALUE = 69`, tuned against
+an emulator whose cycle table folded every conditional branch to 2 cycles.
+On real silicon a *taken* branch costs 3 cycles (4 on a page crossing). Under
+the Round 5 VBLANK work (movement + missile update + `BuildEvents` with the
+dead-player gate), realistic worst-case work reached ~4919 cycles, but the
+T=69 timer expires at ~4553 cycles (`(69 - 1) * 64` before `INTIM` reads 0).
+That is backwards: the work outran the timer, so `WaitVBlank` stopped polling
+on `INTIM == 0` (fixed boundary) and instead fell through at the *variable
+work end*. Depending on where the work landed relative to the 76-cycle grid,
+individual frames stretched to 263/264/265 scanlines — a visible shake that
+emulator shortcuts hid entirely.
+
+Round 6 fixes the budget, not the poll:
+
+* `VBLANK_SCANLINES` 57 -> 64, KERNEL 192 -> 185, `VBLANK_TIMER_VALUE` 69 ->
+  77. The timer now expires at ~4864 cycles (`(77 - 1) * 64`), well after the
+  measured worst-case work of ~4455 cycles (margin ~409). The poll always
+  exits on the fixed timer boundary, so the frame is exactly 262 scanlines
+  regardless of VBLANK work length;
+* the emulator (`tools/emu6502.py`) now models taken-branch (+1) and
+  page-crossing (+2 on a taken branch, +1 on `LDA abs,Y`) cycle costs, so the
+  regression is detectable without real hardware. The benchmark tracks
+  `vblank_work` (TIM64T write to first `LDA INTIM`) and `vblank_margin`
+  (`(timer - 1) * 64 - vblank_work`).
+
+A `TIM64T` wait is only deterministic when the work executed before arming it
+is fixed or comfortably below the expiry. The overscan does NOT use a timer for
+the same reason: a variable-cost pass (`ProcessHitEffects`) runs between the
+kernel and the overscan wait, so the overscan writes exactly
+`OVERSCAN_LOOP_COUNT = 7` `WSYNC`s instead. From the
+kernel's last line a fixed epilogue + the `ProcessCollisions` JSR and
+branchless body + the `ProcessHitEffects` JSR (Round 5) put the first
+`WSYNC` between cycles 187 and 207 of the region (emulator model; every
+path lands on the same boundary at cycle 228 = scanline 3). The loop then
+counts exactly 10 lines and the `JMP` + VSYNC preamble that follow align
+the next frame's first VSYNC `WSYNC` to 760 cycles after the kernel's last
+line. Because the only variable-cost pass (`ProcessHitEffects`) is confined
+to a window that never escapes the first boundary, the region is exactly 10
+scanlines regardless of how many hits are detected or whether players are
+dead.
 
 ## Measured frame length
 
@@ -200,8 +232,12 @@ RIOT timer:
   frames (both collision latches asserted every frame, alternating fire
   presses); previously the same input made ~1% of frames slip to 263 lines.
   Round 5 adds the HP/death paths: the frame stays at 19912 cycles under the
-  same max-stress input (players kept alive) and with both players dead;
-* the visible kernel runs exactly 192 iterations (the `scanCnt` countdown).
+  same max-stress input (players kept alive) and with both players dead.
+  Round 6 re-validates the same stress with an emulator that models realistic
+  branch timing: the frame stays at exactly 19912 cycles (262 scanlines) for
+  every frame of the max-stress run, proving the VBLANK timer (T=77) never
+  overruns;
+* the visible kernel runs exactly 185 iterations (the `scanCnt` countdown).
 
 The very first frame after power-on is a few cycles shorter than steady state
 because the CPU and TIA clocks are not yet aligned; all subsequent frames are
@@ -228,4 +264,8 @@ asserts scanline count and behavior, not exact cycle totals.
 looks right but drifts to 260 or 263 scanlines violates the NTSC timing
 contract. The timer values above were tuned precisely so the frame is exactly
 262 scanlines, and the event kernel's `scanCnt` countdown keeps the visible
-region exactly 192 lines regardless of how many events fire.
+region exactly 185 lines regardless of how many events fire. Round 6's VBLANK
+shake was exactly this class of bug: visually fine in an emulator with
+shortcut branch timing, it broke on real silicon because the timer budget did
+not cover the true worst-case work. The emulator now models the real cycle
+costs so the regression is caught deterministically.

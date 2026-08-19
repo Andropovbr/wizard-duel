@@ -11,7 +11,7 @@ I/O/timer do RIOT (`$0280-$02FF`).
 | `$F000`  | Reset/inicialização (main.asm)             |
 | `$F055`  | `StartOfFrame` (loop de um quadro)         |
 | `$F07F`  | `WaitVBlank` (TIM64T + lógica do jogo)     |
-| `$F100`  | `KernelLoop` (kernel de 192 linhas por eventos) |
+| `$F100`  | `KernelLoop` (kernel de 185 linhas por eventos) |
 | `$F150`  | `OverscanWait` (colisão + efeitos de acerto + loop de WSYNC) |
 | `$F160`  | `UpdatePlayers` (input vertical do joystick) |
 | `$F199`  | `UpdateBall` (movimento + quique)          |
@@ -71,7 +71,7 @@ A Rodada 4 adicionou `hit_flags` (1 byte); a Rodada 5 adiciona `p0_hp`/`p1_hp`
 | `$8D`    | `hit_flags` | 1    | resultado de colisão (bit0 P0, bit1 P1) |
 | `$8E`    | `fire_prev` | 1    | borda de fogo compactada (bit7 = sync)|
 | `$8F`    | `evCnt`     | 1    | kernel: scanlines até o próximo evento|
-| `$90`    | `scanCnt`   | 1    | kernel: contagem regressiva de 192    |
+| `$90`    | `scanCnt`   | 1    | kernel: contagem regressiva de 185    |
 | `$91-$AF`| `evTbl`     | 31   | tabela de eventos (tamanho variável, máx. 31B) |
 | `$B0`    | `evRow`     | 1    | builder: linha atual do evento        |
 | `$B1`    | `tempCount` | 1    | builder: ponto de deslocamento / prevRow |

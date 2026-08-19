@@ -89,20 +89,21 @@ class TestFrameConstants(unittest.TestCase):
                  + self.c.get("OVERSCAN_SCANLINES", 0))
         self.assertEqual(total, self.c.get("FRAME_SCANLINES"))
 
-    def test_kernel_is_192_scanlines(self):
-        self.assertEqual(self.c.get("KERNEL_SCANLINES"), 192)
+    def test_kernel_is_185_scanlines(self):
+        self.assertEqual(self.c.get("KERNEL_SCANLINES"), 185)
 
     def test_vblank_and_overscan_blank_times(self):
-        # VBLANK 57 lines + OVERSCAN 10 lines + VSYNC 3 = 70 blank lines.
-        # VBLANK grew and OVERSCAN shrank in Round 3 to give BuildEvents room.
-        self.assertEqual(self.c.get("VBLANK_SCANLINES"), 57)
+        # VBLANK 64 lines + OVERSCAN 10 lines + VSYNC 3 = 77 blank lines.
+        # VBLANK grew from 57 to 64 in Round 6 to cover the realistic
+        # worst-case VBLANK work (~4905 cycles) under TIM64T with T=77.
+        self.assertEqual(self.c.get("VBLANK_SCANLINES"), 64)
         self.assertEqual(self.c.get("OVERSCAN_SCANLINES"), 10)
         self.assertEqual(self.c.get("VSYNC_SCANLINES"), 3)
 
-    def test_vblank_plus_overscan_is_67(self):
-        # 262 - 3 (VSYNC) - 192 (kernel) = 67 lines for VBLANK + overscan.
+    def test_vblank_plus_overscan_is_74(self):
+        # 262 - 3 (VSYNC) - 185 (kernel) = 74 lines for VBLANK + overscan.
         self.assertEqual(self.c.get("VBLANK_SCANLINES", 0)
-                         + self.c.get("OVERSCAN_SCANLINES", 0), 67)
+                         + self.c.get("OVERSCAN_SCANLINES", 0), 74)
 
     def test_timer_values_single_byte(self):
         for name in ("VBLANK_TIMER_VALUE", "OVERSCAN_LOOP_COUNT"):
@@ -113,8 +114,8 @@ class TestFrameConstants(unittest.TestCase):
         # PLAYER_Y_MAX is a computed EQU (KERNEL_SCANLINES - HEIGHT - 1);
         # verify the expression result against the constants we can read.
         self.assertEqual(height, 12)
-        self.assertEqual(self.c.get("KERNEL_SCANLINES"), 192)
-        self.assertEqual(192 - height - 1, 179)
+        self.assertEqual(self.c.get("KERNEL_SCANLINES"), 185)
+        self.assertEqual(185 - height - 1, 172)
         self.assertEqual(self.c.get("PLAYER_Y_MIN"), 0)
         self.assertEqual(self.c.get("PLAYER1_X"), 16)
         self.assertEqual(self.c.get("PLAYER2_X"), 136)
