@@ -50,13 +50,33 @@ suíte de testes.
 
 `stella -help` é uma opção real que funciona sem dispositivo de vídeo e
 imprime `Stella <versão>` além de `Usage: stella ...`. Ela é usada como a
-verificação do Stella.
+verificação do Stella. `tools/common.py` executa o executável com `-help`,
+captura os dois fluxos e exige os dois marcadores; um executável encontrado
+no `PATH` que não seja de fato o Stella é rejeitado.
+
+**Observação Windows / Stella 7.x.** No Windows, o Stella 7.x é um executável
+de subsistema GUI. Para `-help` (e `-rominfo`, `-listrominfo`) ele chama
+`AttachConsole(ATTACH_PARENT_PROCESS)` seguido de
+`freopen("CONOUT$", "w", stdout)`, o que re-aponta o `stdout` para o buffer de
+tela do console *independentemente do handle fornecido pelo processo pai*. O
+texto de ajuda vai, portanto, direto para o terminal do usuário e **não pode
+ser capturado por um pipe nem por redirecionamento para arquivo** enquanto
+existir um console pai — o `capture_output` volta vazio mesmo com o emulador
+funcionando. Para evitar um falso "não é Stella", quando a saída capturada
+está vazia no Windows a verificação inspeciona o próprio executável: ele deve
+ser um PE genuíno, sair com código 0 no `-help` e conter os marcadores
+distintivos ("Usage: stella", "Stella version") que o texto de ajuda
+imprimiria. Isso rejeita deliberadamente executáveis aleatórios que apenas
+compartilham o nome `stella.exe`. Nenhum redirecionamento via `cmd.exe` nem
+arquivo temporário é usado para isso.
 
 Observe que `stella -rominfo` é **diferente**: ele inicializa o SDL e,
 portanto, exige um dispositivo de vídeo mesmo sem abrir janela. Em Linux sem
 tela, `tools/common.py` tenta novamente o `-rominfo` via `xvfb-run -a`
 automaticamente quando não há `DISPLAY` disponível. O CI instala o `xvfb` por
-esse motivo.
+esse motivo. (No Windows o mesmo comportamento de CONOUT$ se aplica ao
+`-rominfo`, então a saída de console dele também não é capturável; as
+verificações de metadados da ROM são exclusivas de CI/Linux.)
 
 ## Artefatos de saída
 
