@@ -39,10 +39,12 @@ emulator reports exactly 262 scanlines per frame:
   boundaries and the frame occasionally slipped to 263 scanlines. Instead the
   overscan writes exactly `OVERSCAN_LOOP_COUNT = 6` `WSYNC`s. From the
   kernel's last line the epilogue + the `ProcessCollisions` JSR and
-  branchless body + the `ProcessHitEffects` JSR (Round 5) + 8 cycles of
-  padding put the first
-  `WSYNC` between cycles 236 and 254 of the region (emulator model; every
-  path lands on the same boundary at cycle 304 = scanline 4). The loop then
+  branchless body (including the fixed-cost ball contact pass, Round 6) + the
+  `ProcessHitEffects` JSR (Round 5) + 8 cycles of padding bring the first
+  overscan `WSYNC` write to the same boundary on every path. Measured on the
+  emulator across five states (no collision, both missile hits, both ball
+  contacts, all collisions, both players dead): the first overscan `WSYNC`
+  always lands at region cycle 304 = overscan scanline 4. The loop then
   counts exactly 10 lines and the `JMP` + VSYNC preamble that follow align
   the next frame's first VSYNC `WSYNC` to 760 cycles after the kernel's last
   line. Because the only variable-cost pass (`ProcessHitEffects`) is confined
@@ -212,10 +214,11 @@ the same reason: a variable-cost pass (`ProcessHitEffects`) runs between the
 kernel and the overscan wait, so the overscan writes exactly
 `OVERSCAN_LOOP_COUNT = 6` `WSYNC`s instead. From the
 kernel's last line the epilogue + the `ProcessCollisions` JSR and
-branchless body + the `ProcessHitEffects` JSR (Round 5) + 8 cycles of padding
-put the first `WSYNC` between cycles 236 and 254 of the region (emulator
-model; every path lands on the same boundary at cycle 304 = scanline 4). The
-loop then
+branchless body (including the fixed-cost ball contact pass, Round 6) + the
+`ProcessHitEffects` JSR (Round 5) + 8 cycles of padding bring the first
+overscan `WSYNC` write to the same boundary on every path (measured on the
+emulator: region cycle 304 = overscan scanline 4 for every collision state).
+The loop then
 counts exactly 10 lines and the `JMP` + VSYNC preamble that follow align
 the next frame's first VSYNC `WSYNC` to 760 cycles after the kernel's last
 line. Because the only variable-cost pass (`ProcessHitEffects`) is confined
@@ -299,6 +302,10 @@ RIOT timer:
   consecutive stressed frames all measure 19912 cycles = 262 scanlines, and
   the delta-0/priming walk through the real event table confirms the countdown
   never wraps;
+* Round 6 (ball contact) re-validates the same max-stress input with the ball
+  latches asserted on every frame on top of the missile latches: 500
+  consecutive frames all measure 19912 cycles = 262 scanlines, and the contact
+  record stays coherent across the run (`tests/test_ball_contact.py`);
 * the visible kernel runs exactly 185 iterations: `evCnt` is primed with
   `nullDelta` (or entry 0's own delta when it fires on line 0) and counts down
   to the marker entry, whose delta is read at the top of line 184 and ends the
@@ -319,7 +326,12 @@ the table length never exceeds `EV_TBL_SIZE` under aggressive fire input, and
 that missiles actually spawn and despawn through the event pipeline. Round 5
 adds `tests/test_hp.py`, which drives the real `ProcessHitEffects` assembly
 and asserts HP damage/death semantics, and keeps the max-stress regression
-alive by topping up HP every frame. The emulator's cycle counter is
+alive by topping up HP every frame. Round 6 adds `tests/test_ball_contact.py`,
+which drives the real `ProcessCollisions` assembly through the modeled
+`CXP0FB`/`CXP1FB` latches and asserts the ball contact contract (per-player
+bits, no side effects, dead players never contact, latch lifecycle, contact
+streaks) plus a 500-frame max-stress run that keeps every frame at exactly
+262 scanlines. The emulator's cycle counter is
 approximate (single-frame totals vary by a few cycles), so the runtime test
 asserts scanline count and behavior, not exact cycle totals.
 

@@ -262,8 +262,23 @@ resolvidas no overscan, mantendo o kernel visível puramente de renderização:
   `hit_flags` (bit 0 = P0, bit 1 = P1; acertos simultâneos contam os dois),
   limpa o bit do míssil que marcou em `m_active` e escreve `CXCLR` para que um
   acerto nunca seja contado duas vezes. Bits do próprio jogador (M0 x P0,
-  M1 x P1) são ignorados. A passagem é sem branches e de custo fixo (84
-  ciclos) para que o overscan contado por WSYNC permaneça exato.
+  M1 x P1) são ignorados. A passagem é sem branches e de custo fixo (117
+  ciclos: 84 do caminho de acerto de míssil, +33 do caminho de contato com a
+  bola) para que o overscan contado por WSYNC permaneça exato.
+* **Contato com a bola** (mesma passagem `ProcessCollisions`, antes do
+  `CXCLR`): lê `CXP0FB`/`CXP1FB` e registra Bola x P0 / Bola x P1 (D6 de cada
+  latch, `BALL_HIT_P0`/`BALL_HIT_P1`) no byte separado
+  `ball_contact_flags` (CONTACT_P0 no bit 0, CONTACT_P1 no bit 1; contatos
+  simultâneos contam os dois). Os bits D7 de jogador x playfield são
+  ignorados (o playfield nunca é exibido). Contato é apenas informação: sem
+  dano, sem alteração de míssil, sem quique da bola, sem mudança em
+  `hit_flags`/`m_active`. O byte é deliberadamente separado porque um contato
+  da bola não é um acerto de míssil e os bits livres de `m_active`/`fire_prev`
+  são reescritos a cada quadro. O registro é sobrescrito a cada overscan,
+  então um contato renderizado no quadro N fica visível para o quadro N+1 e
+  nunca se repete. Um jogador morto não é renderizado (`BuildEvents` pula
+  seus eventos), então o TIA nunca trava um contato de bola x jogador morto e
+  nenhuma verificação de HP é necessária.
 * **Dano** (`ProcessHitEffects`, mesmo overscan, depois das colisões):
   remove um HP do jogador acertado (sem underflow abaixo de 0; `hit_flags` é
   lido, mas não limpo aqui - `ProcessCollisions` o sobrescreve no próximo
@@ -362,9 +377,11 @@ linhas: é o valor da contagem lido na linha que encerra o kernel.
 
 ## Alocação de variáveis
 
-80 de 128 bytes de RAM do RIOT são usados (o kernel de delta=1 e a tabela
+81 de 128 bytes de RAM do RIOT são usados (o kernel de delta=1 e a tabela
 uniforme de 60 bytes custam 29 bytes sobre o layout da Rodada 10; documentado
-no changelog):
+no changelog). O +1 byte em relação à Rodada 11 é `ball_contact_flags`, o
+registro de contato bola x jogador da Rodada de contato, deliberadamente
+separado de `hit_flags`:
 
 | Endereço  | Nome        | Propósito                              |
 | --------- | ----------- | -------------------------------------- |
@@ -379,14 +396,15 @@ no changelog):
 | `$88-$89` | `m0_x/m0_y` | posição do míssil 0                    |
 | `$8A-$8B` | `m1_x/m1_y` | posição do míssil 1                    |
 | `$8C`     | `m_active`  | máscara ativa compactada (M0/M1)       |
-| `$8D`     | `hit_flags` | resultado de colisão (bits P0/P1)      |
-| `$8E`     | `fire_prev` | borda de fogo compactada + sync de boot|
-| `$8F`     | `evCnt`     | contagem regressiva de eventos do kernel |
-| `$90-$CB` | `evTbl`     | tabela de eventos (dummy + 10 entradas + marcador, 60B) |
-| `$CC`     | `evRow`     | temporário do builder                  |
-| `$CD`     | `tempCount` | temporário do builder                  |
-| `$CE`     | `tblLen`    | temporário do builder                  |
-| `$CF`     | `nullDelta` | valor de inicialização do primeiro delta |
+| `$8D`     | `hit_flags` | resultado de acerto de míssil (bits P0/P1) |
+| `$8E`     | `ball_contact_flags` | registro de contato da bola (bits P0/P1) |
+| `$8F`     | `fire_prev` | borda de fogo compactada + sync de boot|
+| `$90`     | `evCnt`     | contagem regressiva de eventos do kernel |
+| `$91-$CC` | `evTbl`     | tabela de eventos (dummy + 10 entradas + marcador, 60B) |
+| `$CD`     | `evRow`     | temporário do builder                  |
+| `$CE`     | `tempCount` | temporário do builder                  |
+| `$CF`     | `tblLen`    | temporário do builder                  |
+| `$D0`     | `nullDelta` | valor de inicialização do primeiro delta |
 
 As economias vêm de: flags de míssil compactadas (um byte para dois), nenhum
 `fire_sync` separado (bit 7 de `fire_prev`) e nenhum `evIdx` (o kernel lê a

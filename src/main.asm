@@ -29,8 +29,12 @@
 ;     keeps its position, and a missile that was already flying survives its
 ;     owner's death.  The overscan stays a fixed 10-line region: the WSYNC
 ;     countdown drops to OVERSCAN_LOOP_COUNT = 7 to absorb the added work.
-;   * the ball does NOT interact with the players or missiles yet (no
-;     collision, collection, power-up, scoring or spells)
+;   * Round 6: the ball x player contact is now detected.  The same overscan
+;     collision pass reads CXP0FB/CXP1FB (Ball x P0/P1, D6) and records the
+;     contact in the one-byte ball_contact_flags bitfield, a separate byte
+;     from hit_flags.  It is contact information ONLY: no damage, no state
+;     change and no ball interaction yet - the ball still passes through the
+;     players.  Dead players are not rendered, so they can never latch.
 ;
 ; The visible kernel is EVENT-DRIVEN. Round 2 rendered every object every
 ; scanline with a branchless "compute enable, write register" block; with a
@@ -380,9 +384,10 @@ KernelLoop:
     STA ENAM1               ; 3   the display must never bleed into overscan
     STA ENABL               ; 3
 OverscanWait:
-    ; Collision pass: reads the latches, updates hit_flags and m_active
-    ; (fixed ~84 cycles, no branches - see ProcessCollisions below).
-    JSR ProcessCollisions   ; 6 + ~84
+    ; Collision pass: reads the latches, updates hit_flags, m_active and
+    ; ball_contact_flags (fixed 117 cycles, no branches - see
+    ; ProcessCollisions below).
+    JSR ProcessCollisions   ; 6 + 117
     ; Round 5: consume hit_flags as HP damage and lock dead players' fire
     ; input.  Branchy, but its cost window keeps the first WSYNC on the same
     ; boundary (see ProcessHitEffects below).
@@ -391,15 +396,16 @@ OverscanWait:
     ; end-marker entry: the marker path reaches .kernelEnd at K+46 (K = last
     ; kernel WSYNC landing; Round 9 was K+44, Round 10 K+50 - the Round 11
     ; table-direct apply is 4 cycles shorter).  From K+46 the epilogue (22) +
-    ; JSR (6) + collision body (84 incl. RTS) + JSR (6) + hit-effects body
-    ; (62..80 incl. RTS) + NOPs (8) + LDX (2) put the first countdown WSYNC
-    ; write on K+236..K+254, inside scanline 4 of the region (K+228..K+304);
-    ; the alignment snaps it to K+304.  Without the padding the write could
-    ; land before K+228, splitting the region over five lines.  Six iterations
-    ; then reach K+684, and the JMP + VSYNC preamble that follow align the next
-    ; frame's first VSYNC WSYNC to K+760.  The overscan loop count was 7 before
-    ; Round 9; the NOPs replace the cycles that used to come from the scanCnt
-    ; epilogue (DEC/BEQ) + one extra WSYNC.
+    ; JSR (6) + collision body (117 incl. RTS; Round 6 added 33 for the ball
+    ; contact pass) + JSR (6) + hit-effects body (62..80 incl. RTS) + NOPs (8)
+    ; + LDX (2) put the first countdown WSYNC write on K+269..K+287, inside
+    ; scanline 4 of the region (K+228..K+304); the alignment snaps it to
+    ; K+304.  Without the padding the write could land before K+228, splitting
+    ; the region over five lines.  Six iterations then reach K+684, and the
+    ; JMP + VSYNC preamble that follow align the next frame's first VSYNC
+    ; WSYNC to K+760.  The overscan loop count was 7 before Round 9; the NOPs
+    ; replace the cycles that used to come from the scanCnt epilogue
+    ; (DEC/BEQ) + one extra WSYNC.
     NOP                     ; 2
     NOP                     ; 2
     NOP                     ; 2
@@ -687,7 +693,7 @@ UpdateMissiles:
 ; stays visible on the collision frame and disappears on the next - standard
 ; latch-based behavior.
 ;
-; Only the cross-fire hits matter this round:
+; The missile pass only reacts to the cross-fire hits:
 ;
 ;     CXM0P D7 (M0 x P1)  -> HIT_P1, deactivate M0
 ;     CXM1P D7 (M1 x P0)  -> HIT_P0, deactivate M1
@@ -698,28 +704,51 @@ UpdateMissiles:
 ; the end, so simultaneous hits (M0 -> P1 AND M1 -> P0 in the same frame)
 ; are both recorded and both missiles are deactivated independently.
 ;
+; Round 6 adds the ball contact pass:
+;
+;     CXP0FB D6 (Ball x P0)  -> CONTACT_P0 in ball_contact_flags
+;     CXP1FB D6 (Ball x P1)  -> CONTACT_P1 in ball_contact_flags
+;
+; This is contact information only: no damage, no state change, no ball
+; rebound.  ball_contact_flags is a separate byte from hit_flags so the
+; missile damage record stays unambiguous.  A dead player is not rendered
+; (BuildEvents skips its GRP events), so the TIA never latches a ball x dead
+; player overlap: the rendering gate keeps dead players contact-free, no HP
+; check is needed here.  The player x playfield bits (D7) are ignored: the
+; playfield is never displayed in this game.  The ball block is read BEFORE
+; the CXCLR strobe at the end, so a contact rendered in frame N is recorded
+; once and never again.
+;
 ; Placement note: ProcessCollisions deliberately runs at overscan init rather
 ; than in VBLANK.  The heaviest VBLANK path is already within a few cycles of
 ; the VBLANK timer window's alignment boundary, so adding the collision pass
 ; there made one frame per stress run slip to 263 scanlines.  An overscan
 ; TIM64T wait was also tried, but the emulator's INTIM < 64 exit granularity
 ; makes a timer wait nondeterministic whenever the pre-timer work varies, so
-; the collision pass had to become BRANCHLESS (fixed ~84-cycle cost) and the
+; the collision pass had to become BRANCHLESS (fixed 117-cycle cost) and the
 ; overscan had to become a fixed WSYNC countdown (see the overscan section).
 ;
 ; This routine is branchless by construction: the latches are turned into
 ; 0/1 flags with the carry (ASL + ADC #0), hit_flags is the packed sum
 ; 2*hit0 + hit1, and the m_active update is a single lookup in newActiveTbl
 ; indexed by m_active + 4*hit0 + 8*hit1 (the high index bits select whether
-; M0 and/or M1 cleared).  With no branches and a page-aligned table the cost
-; is fixed on every path.
+; M0 and/or M1 cleared).  The ball block turns each D6 latch into a 0/1 flag
+; with a double ASL (the second ASL moves D6 into the carry) and packs
+; CONTACT_P0 | 2*CONTACT_P1 the same way.  With no branches and a
+; page-aligned table the cost is fixed on every path.
 ;
 ; Cycle budget (fixed path, no branches):
 ;   hit0/hit1 extraction       22
 ;   hit_flags = 2*hit0 + hit1  11
 ;   m_active table lookup      42
+;   ball contact flags         33
 ;   CXCLR + RTS                 9
-;   Total                      84
+;   Total                     117
+;
+; Overscan anchoring: the fixed pre-loop cost before the first countdown
+; WSYNC grows by the same 33 cycles on every path, so all paths still land
+; that WSYNC on the same 76-cycle boundary (K+304) and the overscan stays
+; exactly 10 lines (see the overscan section for the recomputed window).
 ;
 ; tempCount is a BuildEvents scratch (written before every use in VBLANK);
 ; reusing it here is safe because the collision pass runs after BuildEvents
@@ -763,6 +792,26 @@ ProcessCollisions:
     TAY                     ; 2   Y = index
     LDA newActiveTbl,Y      ; 4   clear the bit of every scoring missile
     STA m_active            ; 3   M0 disappears at the next render
+
+    ; ---- ball_contact_flags = CONTACT_P0 | CONTACT_P1 ----
+    ; CXP0FB/CXP1FB D6 (the ball x player bits) become 0/1 flags via the
+    ; double-ASL carry trick, then pack to bits 0/1.  Branchless, read before
+    ; CXCLR below, so contacts are recorded once per frame.
+    LDA CXP0FB              ; 3   read the Ball/P0 collision latch
+    ASL                     ; 2
+    ASL                     ; 2   carry = Ball x P0 (D6)
+    LDA #0                  ; 2
+    ADC #0                  ; 2   A = contact0 (0/1)
+    STA ball_contact_flags  ; 3   CONTACT_P0 bit set iff the ball touched P0
+
+    LDA CXP1FB              ; 3   read the Ball/P1 collision latch
+    ASL                     ; 2
+    ASL                     ; 2   carry = Ball x P1 (D6)
+    LDA #0                  ; 2
+    ADC #0                  ; 2   A = contact1 (0/1)
+    ASL                     ; 2   A = 2*contact1 (CONTACT_P1 bit)
+    ORA ball_contact_flags  ; 3   merge both contact bits
+    STA ball_contact_flags  ; 3
 
     STA CXCLR               ; 3   clear every collision latch (strobe; the
                             ;     value written is ignored by the TIA)
@@ -1643,6 +1692,15 @@ fineAdjustTable EQU fineAdjustBegin - %11110001
 ; ($80-$CF).  The +1 byte is justified by the correctness fix: with the old
 ; two-phase pipeline, two events on consecutive rows silently dropped the
 ; first entry's writes (objects invisible or left enabled to the bottom edge).
+;
+; Round 6 (ball contact): adds ball_contact_flags (CONTACT_P0/CONTACT_P1),
+; the observable record of ball x player contact -> 81 bytes used / 47 free
+; ($80-$D0).  The +1 byte over Round 11 is deliberate and documented: the flag
+; is a distinct byte by design (contact information must never mix with the
+; hit_flags damage record), it must survive the whole frame (it cannot share
+; a VBLANK builder scratch or the fire/missile bit-packs, which are all
+; rewritten every VBLANK), and the alternative packings were rejected in the
+; Round 6 change log.  The project RAM budget was raised to 81 accordingly.
 ; =============================================================================
     SEG.U VARS
     ORG $80
@@ -1663,6 +1721,8 @@ m1_x        DS 1            ; missile 1 horizontal position
 m1_y        DS 1            ; missile 1 row (fixed while flying)
 m_active    DS 1            ; M0_BIT = M0 flying, M1_BIT = M1 flying
 hit_flags   DS 1            ; HIT_P0/HIT_P1, set by ProcessCollisions (Round 4)
+ball_contact_flags DS 1     ; CONTACT_P0/CONTACT_P1, set by ProcessCollisions
+                            ; (Round 6, ball x player contact record)
 
 fire_prev   DS 1            ; packed fire state (FIRE_P0/FIRE_P1 + FIRE_SYNC)
 evCnt       DS 1            ; kernel: scanlines until the next event fires

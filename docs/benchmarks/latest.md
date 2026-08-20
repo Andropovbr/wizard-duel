@@ -5,7 +5,7 @@ Measured from the assembled build artifacts.
 | Metric | Value |
 | ------ | ----- |
 | ROM used | 1808 / 4096 bytes |
-| RAM used | 80 / 128 bytes |
+| RAM used | 81 / 128 bytes |
 | Frame scanlines | 262 |
 | Kernel worst case | 54 / 76 cycles |
 | Kernel best case | 38 cycles |

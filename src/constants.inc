@@ -393,28 +393,37 @@ FIRE_P1 = %00000010
 FIRE_SYNC = %10000000
 
 ; ---------------------------------------------------------------------------
-; TIA collision registers (Round 4)
+; TIA collision registers (Round 4, ball contact added in Round 6)
 ; ---------------------------------------------------------------------------
 ; The TIA latches a bit whenever two objects render an overlapping pixel
 ; (same scanline, overlapping horizontal extent).  Once set, a latch persists
 ; until CXCLR is written; reading a latch has NO side effects.  The register
 ; READ addresses share bytes with write registers ($00 is also VSYNC, $01
-; also VBLANK): reads and writes on the same byte access different internal
-; registers, so "LDA CXM0P" and "STA VSYNC" never interfere.
+; also VBLANK, $02 also WSYNC, $03 also RSYNC): reads and writes on the same
+; byte access different internal registers, so "LDA CXM0P" and "STA VSYNC"
+; never interfere.
 ;
-;   CXM0P  ($00, read): D7 = M0 x P1,  D6 = M0 x P0
-;   CXM1P  ($01, read): D7 = M1 x P0,  D6 = M1 x P1
-;   CXCLR  ($2C, write): clear every collision latch (strobe, value ignored)
+;   CXM0P   ($00, read): D7 = M0 x P1,  D6 = M0 x P0
+;   CXM1P   ($01, read): D7 = M1 x P0,  D6 = M1 x P1
+;   CXP0FB  ($02, read): D7 = P0 x PF,  D6 = P0 x BL  (ball contact)
+;   CXP1FB  ($03, read): D7 = P1 x PF,  D6 = P1 x BL  (ball contact)
+;   CXCLR   ($2C, write): clear every collision latch (strobe, value ignored)
 ;
-; Only the cross-fire hits are gameplay this round.  The own-player bits
-; (M0 x P0, M1 x P1) are deliberately ignored by the collision logic so a
-; missile can never damage its own player.
+; Only the cross-fire missile hits are gameplay (Round 4).  The own-player
+; missile bits (M0 x P0, M1 x P1) are deliberately ignored so a missile can
+; never damage its own player.  The player x ball bits (Round 6) are recorded
+; in ball_contact_flags as pure contact information (no gameplay effect yet).
+; The player x playfield bits are ignored: the playfield is never displayed.
 CXM0P      = $00
 CXM1P      = $01
+CXP0FB     = $02
+CXP1FB     = $03
 M0_HIT_P1  = %10000000   ; CXM0P D7: M0 overlapped P1 (the M0 -> P1 hit)
 M0_HIT_P0  = %01000000   ; CXM0P D6: M0 overlapped P0 (own player, ignored)
 M1_HIT_P0  = %10000000   ; CXM1P D7: M1 overlapped P0 (the M1 -> P0 hit)
 M1_HIT_P1  = %01000000   ; CXM1P D6: M1 overlapped P1 (own player, ignored)
+BALL_HIT_P0 = %01000000  ; CXP0FB D6: the ball overlapped P0
+BALL_HIT_P1 = %01000000  ; CXP1FB D6: the ball overlapped P1
 
 ; hit_flags bitfield (Round 4): a compact, testable record of which player
 ; was hit by the missile-on-player collisions just processed.  One bit per
@@ -422,6 +431,17 @@ M1_HIT_P1  = %01000000   ; CXM1P D6: M1 overlapped P1 (own player, ignored)
 ; it as HP damage in the same overscan.
 HIT_P0     = %00000001   ; player 0 was hit by M1
 HIT_P1     = %00000010   ; player 1 was hit by M0
+
+; ball_contact_flags bitfield (Round 6): which player the ball touched during
+; the frame just rendered.  A deliberate SEPARATE byte from hit_flags: ball
+; contact is contact information only (no damage), while hit_flags is the
+; missile damage record consumed by ProcessHitEffects.  ProcessCollisions
+; overwrites it every overscan, so it always reflects the most recent frame.
+; A dead player is not rendered and therefore can never set a TIA latch: the
+; rendering gate (BuildEvents skipping its GRP events) is what keeps a dead
+; player contact-free, not an HP check here.
+CONTACT_P0 = %00000001   ; the ball overlapped player 0
+CONTACT_P1 = %00000010   ; the ball overlapped player 1
 
 ; ---------------------------------------------------------------------------
 ; Player HP (Round 5)

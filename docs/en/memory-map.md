@@ -17,7 +17,7 @@ registers (`$0280-$02FF`).
 | `$F181`  | `UpdateBall` (move + bounce)              |
 | `$F1B8`  | `UpdateMissiles` (fire, move, despawn)    |
 | `$F24D`  | `ProcessCollisions` (fixed-cost, branchless) |
-| `$F290`  | `newActiveTbl` (m_active update table)    |
+| `$F2A0`  | `newActiveTbl` (m_active update table)    |
 | `$F300`  | `ProcessHitEffects` (HP damage + fire lock, page-aligned) |
 | `$F338`  | `PositionPlayers` (RESP0/1 + HMP0/1)      |
 | `$F35B`  | `PositionBall` (RESBL + HMBL)             |
@@ -41,16 +41,20 @@ timing contract of the positioning routine.
 There are no sprite graphics tables: both players are solid rectangles drawn
 through the event table (see [timing.md]). ROM usage is measured by the
 high-water mark of emitted code below the vector block; the `$FF`-filled
-padding counts as available space. The build reports both numbers. Round 11
-uses 1808 of the 4096 bytes.
+padding counts as available space. The build reports both numbers. Round 6
+uses 1808 of the 4096 bytes; the round's added ball-contact code (24 bytes)
+was absorbed by existing `ALIGN` slack, so the high-water mark did not move.
 
 ## RAM layout (RIOT RAM `$80-$FF`, 128 bytes)
 
-Round 11 uses 80 bytes ($80-$CF). The event table is a fixed 60-byte block:
+Round 6 uses 81 bytes ($80-$D0). The event table is a fixed 60-byte block:
 a 5-byte dummy at offset 0, up to 10 real 5-byte entries and the 5-byte
 end-marker. The kernel reads the entries directly (table-direct apply), so
 the Round 10 pending registers and the Round 5 scratch buffers/`scanCnt`/
-`joystate`/separate missile flags are all gone.
+`joystate`/separate missile flags are all gone. The +1 byte over Round 11 is
+`ball_contact_flags`: ball x player contact information is deliberately a
+separate byte from `hit_flags` (a ball contact is not a missile hit) and from
+`m_active`/`fire_prev` (whose spare bits are rewritten every frame).
 
 | Address   | Name        | Size | Purpose                              |
 | --------- | ----------- | ---- | ------------------------------------ |
@@ -67,21 +71,22 @@ the Round 10 pending registers and the Round 5 scratch buffers/`scanCnt`/
 | `$8A`     | `m1_x`      | 1    | missile 1 horizontal position        |
 | `$8B`     | `m1_y`      | 1    | missile 1 row (fixed while flying)   |
 | `$8C`     | `m_active`  | 1    | packed active mask (bit0 M0, bit1 M1) |
-| `$8D`     | `hit_flags` | 1    | collision results (bit0 P0, bit1 P1) |
-| `$8E`     | `fire_prev` | 1    | packed fire edge state (bit7 = sync) |
-| `$8F`     | `evCnt`     | 1    | kernel: scanlines to next event      |
-| `$90-$CB` | `evTbl`     | 60   | dummy (5B) + entries (max 10 x 5B) + marker (5B) |
-| `$CC`     | `evRow`     | 1    | builder: current event row           |
-| `$CD`     | `tempCount` | 1    | builder: shift point / prevRow       |
-| `$CE`     | `tblLen`    | 1    | builder: number of real entries      |
-| `$CF`     | `nullDelta` | 1    | first entry's delta (185 when empty) |
-| `$D0-$FF` | -           | 48   | unallocated                          |
+| `$8D`     | `hit_flags` | 1    | missile hit results (bit0 P0, bit1 P1) |
+| `$8E`     | `ball_contact_flags` | 1 | ball contact record (bit0 P0, bit1 P1) |
+| `$8F`     | `fire_prev` | 1    | packed fire edge state (bit7 = sync) |
+| `$90`     | `evCnt`     | 1    | kernel: scanlines to next event      |
+| `$91-$CC` | `evTbl`     | 60   | dummy (5B) + entries (max 10 x 5B) + marker (5B) |
+| `$CD`     | `evRow`     | 1    | builder: current event row           |
+| `$CE`     | `tempCount` | 1    | builder: shift point / prevRow       |
+| `$CF`     | `tblLen`    | 1    | builder: number of real entries      |
+| `$D0`     | `nullDelta` | 1    | first entry's delta (185 when empty) |
+| `$D1-$FF` | -           | 47   | unallocated                          |
 
 Variables live in zero page so all accesses use the short, fast zero-page
 addressing modes. The event table (60 bytes) is the largest single block and
 is deliberately page-0 resident: the kernel indexes `evTbl-4,Y` (a zero-page
 base) with Y up to 55, so no indexed access can cross a page boundary and
-every kernel write has deterministic timing. The extra 48 free bytes are the
+every kernel write has deterministic timing. The extra 47 free bytes are the
 headroom for future rounds.
 
 ## Hardware register usage

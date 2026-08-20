@@ -274,10 +274,12 @@ class TestBallRamBudget(unittest.TestCase):
         cls.used, _ = ram_usage()
 
     def test_ram_usage(self):
-        # Round 11: P0Y..hit_flags (14) + fire_prev/evCnt (2) + evTbl (60,
-        # dummy + 10 entries + marker) + builder temps evRow/tempCount/tblLen
-        # (3) + nullDelta (1) = 80 bytes ($80-$CF).
-        self.assertEqual(self.used, 80)
+        # Round 6: P0Y..hit_flags + ball_contact_flags (15) + fire_prev/evCnt
+        # (2) + evTbl (60, dummy + 10 entries + marker) + builder temps
+        # evRow/tempCount/tblLen (3) + nullDelta (1) = 81 bytes ($80-$D0).
+        # The +1 byte over Round 11 is the ball x player contact record
+        # (CONTACT_P0/CONTACT_P1).
+        self.assertEqual(self.used, 81)
 
 
 class TestEventKernel(unittest.TestCase):

@@ -99,14 +99,16 @@ não reprova o CI. Os limites estão centralizados como constantes em
 | ----------------- | -------------------------------------------- |
 | Crescimento de ROM | > 32 bytes OU > 5,0%                        |
 | Crescimento de RAM | > 4 bytes OU > 10,0%                        |
-| Pressão de RAM    | RAM usada >= 75% do orçamento de 80 bytes    |
-| Pressão forte de RAM | RAM usada >= 90% do orçamento de 80 bytes |
+| Pressão de RAM    | RAM usada >= 75% do orçamento de 81 bytes    |
+| Pressão forte de RAM | RAM usada >= 90% do orçamento de 81 bytes |
 | Pior caso do kernel | aumento > 4 ciclos                         |
 | Kernel slack      | redução > 4 ciclos                            |
 
 Os limites de RAM sustentam o orçamento da Rodada 11 de manter o jogo abaixo
-de 80 dos 128 bytes do RIOT: cruzar 75% desse orçamento avisa, cruzar 90%
-avisa com força, e usar mais de 80 bytes reprova o CI (um portão hard). O
+de 81 dos 128 bytes do RIOT (o +1 byte em relação à Rodada 11 é
+`ball_contact_flags`, o registro de contato bola x jogador; veja o changelog):
+cruzar 75% desse orçamento avisa, cruzar 90%
+avisa com força, e usar mais de 81 bytes reprova o CI (um portão hard). O
 crescimento de RAM também é comparado com o baseline por bytes absolutos e
 percentual. Esses valores são intencionalmente conservadores; servem para
 tornar regressões significativas visíveis, não para falhar a cada byte.
@@ -232,6 +234,17 @@ Timer do VBLANK:    77
 Trabalho do VBLANK: 4528 ciclos (emulado, timing de branch realista)
 Folga do VBLANK:    336 ciclos
 Loop do overscan:   6 WSYNCs    (fim do kernel movido; overscan de 10 linhas)
+```
+
+Rodada de contato com a bola atual (contato bola x jogador, sobre a Rodada 11):
+```
+ROM usada:          1808 bytes  (inalterada: 24 bytes adicionados absorvidos pela folga dos ALIGN)
+RAM usada:          81 bytes    ($80-$D0; +1 = ball_contact_flags)
+ProcessCollisions:  117 ciclos  (84 -> 117; custo fixo sem branches, contato com a bola +33)
+Scanlines do quadro: 262        (500 quadros consecutivos de estresse máximo medidos)
+Pior caso do kernel: 54 / 76 ciclos   (kernel intocado nesta rodada)
+Timer/trabalho/folga do VBLANK: 77 / 4528 / 336 ciclos (intocados)
+Loop do overscan:   6 WSYNCs    (primeiro WSYNC do overscan ainda no ciclo 304 da região)
 ```
 
 Esses números são medidos a partir dos artefatos a cada execução, não

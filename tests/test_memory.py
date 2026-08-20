@@ -45,13 +45,15 @@ class TestRamLimit(unittest.TestCase):
         self.assertEqual(self.used + self.available, RAM_LIMIT)
 
     def test_round3_ram_usage(self):
-        # Round 11 RAM: players/ball/missiles/hp/flags (14) + fire_prev/evCnt
-        # (2) + event table (60: dummy + 10 entries + marker) + builder temps
-        # (3) + nullDelta (1) = 80 bytes ($80-$CF).  The four pending kernel
-        # registers from Round 10 are gone (the table-direct apply reads the
-        # entries directly), so the +1 byte over Round 10 is only the dummy
-        # entry that lets the pre-first-event apply write benign AUDV0.
-        self.assertEqual(self.used, 80)
+        # Round 6 (ball contact) RAM: players/ball/missiles/hp/flags (15,
+        # now including ball_contact_flags) + fire_prev/evCnt (2) + event
+        # table (60: dummy + 10 entries + marker) + builder temps (3) +
+        # nullDelta (1) = 81 bytes ($80-$D0).  The +1 byte over Round 11 is
+        # ball_contact_flags, a deliberate separate byte for the ball x
+        # player contact record (see main.asm VARS comment).  The four
+        # pending kernel registers from Round 10 are gone (the table-direct
+        # apply reads the entries directly).
+        self.assertEqual(self.used, 81)
 
 
 if __name__ == "__main__":
