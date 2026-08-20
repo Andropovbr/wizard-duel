@@ -41,15 +41,19 @@ quadro:
   colisão de custo variável fez a saída de `INTIM < 64` cair em fronteiras de
   76 ciclos diferentes e o quadro ocasionalmente escorregou para 263
   scanlines. Em vez disso, o overscan escreve exatamente `OVERSCAN_LOOP_COUNT
-  = 6` `WSYNC`s. A partir da última linha do kernel, um epílogo fixo + o JSR e
+  = 5` `WSYNC`s. A partir da última linha do kernel, um epílogo fixo + o JSR e
   o corpo sem branches do `ProcessCollisions` (incluindo a passagem de contato
-  com a bola de custo fixo) + o JSR do `ProcessHitEffects` (Rodada 5) + 8
+  com a bola de custo fixo) + o JSR e o corpo sem branches do
+  `ApplyBallRebound` (Rodada 7) + o JSR do `ProcessHitEffects` (Rodada 5) + 8
   ciclos de padding levam a primeira escrita de `WSYNC` do overscan à mesma
   fronteira em todos os caminhos. Medido no emulador em cinco estados (sem
   colisão, acertos dos dois mísseis, contatos da bola, todas as colisões,
   ambos os jogadores mortos): o primeiro `WSYNC` do overscan sempre cai no
-  ciclo 304 da região = scanline 4 do overscan. O loop conta então
-  exatamente 10 linhas e o `JMP` + preâmbulo
+  ciclo 380 da região = scanline 5 do overscan. A Rodada 7 adicionou 39 ciclos
+  fixos (JSR + corpo sem branches + RTS), deslocando a queda do ciclo 304 da
+  região (scanline 4) para 380 (scanline 5); por isso `OVERSCAN_LOOP_COUNT`
+  caiu de 6 para 5, mantendo a região com exatamente 10 linhas. O loop conta
+  então exatamente 10 linhas e o `JMP` + preâmbulo
   de VSYNC seguintes alinham o primeiro `WSYNC` de VSYNC do próximo quadro em
   760 ciclos após a última linha do kernel. Como a única passagem de custo
   variável (`ProcessHitEffects`) fica confinada a uma janela que nunca escapa
@@ -221,13 +225,17 @@ Uma espera `TIM64T` só é determinística quando o trabalho executado antes de
 armar o timer é fixo ou fica confortavelmente abaixo da expiração. O OVERSCAN
 também NÃO usa timer pelo mesmo motivo: uma passagem de custo variável
 (`ProcessHitEffects`) roda entre o kernel e a espera do overscan, então o
-overscan escreve exatamente `OVERSCAN_LOOP_COUNT = 6` `WSYNC`s. A partir da
+overscan escreve exatamente `OVERSCAN_LOOP_COUNT = 5` `WSYNC`s. A partir da
 última linha do kernel, um epílogo fixo + o JSR e o corpo sem branches do
 `ProcessCollisions` (incluindo a passagem de contato com a bola de custo fixo)
-+ o JSR do `ProcessHitEffects` (Rodada 5) + 8 ciclos de
++ o JSR e o corpo sem branches do `ApplyBallRebound` (Rodada 7) + o JSR do
+`ProcessHitEffects` (Rodada 5) + 8 ciclos de
 padding levam a primeira escrita de `WSYNC` do overscan à mesma fronteira em
-todos os caminhos (medido no emulador: ciclo 304 da região = scanline 4 do
-overscan para todos os estados de colisão). O loop conta então exatamente 10
+todos os caminhos (medido no emulador: ciclo 380 da região = scanline 5 do
+overscan para todos os estados de colisão). A Rodada 7 adicionou 39 ciclos
+fixos e deslocou a queda da scanline 4 (ciclo 304) para a scanline 5 (380);
+`OVERSCAN_LOOP_COUNT` caiu de 6 para 5 para que a região continue somando
+exatamente 10 linhas. O loop conta então exatamente 10
 linhas e o `JMP` + preâmbulo de
 VSYNC seguintes alinham o primeiro `WSYNC` de VSYNC do próximo quadro em 760
 ciclos após a última linha do kernel. Como a única passagem de custo variável

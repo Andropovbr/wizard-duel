@@ -27,7 +27,11 @@ Funcionalidades:
 
 Intencionalmente ainda não há sistema de magia, IA, placar ou HUD; as regras
 de jogo devem evoluir nas próximas rodadas sem exigir mudanças arquiteturais.
-A bola não interage com os jogadores ou mísseis nesta rodada. Um jogador morto
+A bola não interage com os mísseis. O contato bola x jogador é detectado pelos
+latches do TIA (Rodada 6) e a bola é conduzida horizontalmente no contato
+(Rodada 7): o P0 a envia para a direita, o P1 para a esquerda, com o movimento
+vertical inalterado; o rebote é uma passagem de custo fixo e sem branches no
+overscan. Um jogador morto
 continua ocupando a arena, mas não é renderizado e não pode disparar; ainda
 não há transição de vitória/fim de jogo.
 

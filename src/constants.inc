@@ -137,6 +137,17 @@ TIM64T  = $0296  ; write timer value, countdown clock = 64 cycles
 ; of K+44, so the first overscan WSYNC write lands on K+241..K+261 - still
 ; inside (K+228, K+304) - and the six countdown WSYNCs keep the overscan on
 ; exactly 10 lines.  The overscan loop count and padding are unchanged.
+;
+; Round 7: ApplyBallRebound adds a fixed 39 cycles (JSR 6 + branchless body 27
+; + RTS 6) between ProcessCollisions and ProcessHitEffects, pushing the first
+; overscan WSYNC write out of (K+228, K+304) and into (K+304, K+380): with
+; six countdown WSYNCs the region grew to 11 lines and frames slipped to 263
+; scanlines.  OVERSCAN_LOOP_COUNT drops from 6 to 5: the first WSYNC now
+; snaps to K+380, five countdown WSYNCs reach K+684, and the next frame's
+; first VSYNC WSYNC still lands on K+760, keeping the overscan at exactly
+; 10 lines on every path.  The landing stays in (K+304, K+380] with wide
+; margins: the write spans only ~18 cycles (K+308..K+326, worst real-6502
+; path ~K+330) inside a 76-cycle window.
 ; ---------------------------------------------------------------------------
 FRAME_SCANLINES      = 262
 VSYNC_SCANLINES      = 3
@@ -145,7 +156,7 @@ KERNEL_SCANLINES     = 185
 OVERSCAN_SCANLINES   = 10
 
 VBLANK_TIMER_VALUE   = 77
-OVERSCAN_LOOP_COUNT  = 6
+OVERSCAN_LOOP_COUNT  = 5
 
 ; ---------------------------------------------------------------------------
 ; Player constants

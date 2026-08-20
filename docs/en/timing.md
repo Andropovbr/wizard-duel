@@ -37,20 +37,24 @@ emulator reports exactly 262 scanlines per frame:
   when the work executed before arming it is fixed; Round 4's variable-cost
   collision pass made the `INTIM < 64` exit land on different 76-cycle
   boundaries and the frame occasionally slipped to 263 scanlines. Instead the
-  overscan writes exactly `OVERSCAN_LOOP_COUNT = 6` `WSYNC`s. From the
+  overscan writes exactly `OVERSCAN_LOOP_COUNT = 5` `WSYNC`s. From the
   kernel's last line the epilogue + the `ProcessCollisions` JSR and
   branchless body (including the fixed-cost ball contact pass, Round 6) + the
+  `ApplyBallRebound` JSR and branchless body (Round 7) + the
   `ProcessHitEffects` JSR (Round 5) + 8 cycles of padding bring the first
   overscan `WSYNC` write to the same boundary on every path. Measured on the
   emulator across five states (no collision, both missile hits, both ball
   contacts, all collisions, both players dead): the first overscan `WSYNC`
-  always lands at region cycle 304 = overscan scanline 4. The loop then
-  counts exactly 10 lines and the `JMP` + VSYNC preamble that follow align
-  the next frame's first VSYNC `WSYNC` to 760 cycles after the kernel's last
-  line. Because the only variable-cost pass (`ProcessHitEffects`) is confined
-  to a window that never escapes the first boundary, the region is exactly 10
-  scanlines regardless of how many hits are detected or whether players are
-  dead.
+  always lands at region cycle 380 = overscan scanline 5. Round 7 added a
+  fixed 39 cycles (JSR + branchless rebound body + RTS), which pushed the
+  write out of the Round 6 window (region cycle 304 = scanline 4), so
+  `OVERSCAN_LOOP_COUNT` dropped from 6 to 5 to keep the region at exactly 10
+  lines. The loop then counts exactly 10 lines and the `JMP` + VSYNC preamble
+  that follow align the next frame's first VSYNC `WSYNC` to 760 cycles after
+  the kernel's last line. Because the only variable-cost pass
+  (`ProcessHitEffects`) is confined to a window that never escapes the first
+  boundary, the region is exactly 10 scanlines regardless of how many hits are
+  detected or whether players are dead.
 
 ## The visible kernel
 
@@ -212,13 +216,16 @@ A `TIM64T` wait is only deterministic when the work executed before arming it
 is fixed or comfortably below the expiry. The overscan does NOT use a timer for
 the same reason: a variable-cost pass (`ProcessHitEffects`) runs between the
 kernel and the overscan wait, so the overscan writes exactly
-`OVERSCAN_LOOP_COUNT = 6` `WSYNC`s instead. From the
+`OVERSCAN_LOOP_COUNT = 5` `WSYNC`s instead. From the
 kernel's last line the epilogue + the `ProcessCollisions` JSR and
 branchless body (including the fixed-cost ball contact pass, Round 6) + the
+`ApplyBallRebound` JSR and branchless body (Round 7) + the
 `ProcessHitEffects` JSR (Round 5) + 8 cycles of padding bring the first
 overscan `WSYNC` write to the same boundary on every path (measured on the
-emulator: region cycle 304 = overscan scanline 4 for every collision state).
-The loop then
+emulator: region cycle 380 = overscan scanline 5 for every collision state).
+Round 7 added a fixed 39 cycles and moved that landing from scanline 4
+(region cycle 304) to scanline 5 (380); `OVERSCAN_LOOP_COUNT` dropped from 6
+to 5 so the region still sums to exactly 10 lines. The loop then
 counts exactly 10 lines and the `JMP` + VSYNC preamble that follow align
 the next frame's first VSYNC `WSYNC` to 760 cycles after the kernel's last
 line. Because the only variable-cost pass (`ProcessHitEffects`) is confined

@@ -26,9 +26,12 @@ Features:
 
 There is intentionally no magic system, AI, scoring or HUD yet; the gameplay
 rules are expected to evolve in later rounds without requiring architectural
-changes. The ball does not interact with the players or missiles in this
-round. A dead player keeps occupying the arena but is not rendered and
-cannot fire; there is no victory/game-over transition yet.
+changes. The ball does not interact with the missiles. Ball x player contact is
+detected via the TIA latches (Round 6) and the ball is steered horizontally on
+contact (Round 7): P0 sends it right, P1 sends it left, vertical motion
+unchanged; the rebound is a fixed-cost, branchless pass in overscan. A dead
+player keeps occupying the arena but is not rendered and cannot fire; there is
+no victory/game-over transition yet.
 
 ## Event-driven kernel
 

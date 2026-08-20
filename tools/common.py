@@ -59,16 +59,65 @@ def probe_stella(path):
     """Deterministically verify that `path` is a functional Stella executable.
 
     Stella supports a real `-help` option that works without a video device.
+
+    Windows note: Stella 7.x is a GUI-subsystem executable.  On Windows its
+    help text is written to the console the process inherits (WriteConsole)
+    rather than to the pipe Python captures, so `capture_output` can come back
+    EMPTY even though the emulator is fully functional and its help was shown
+    on the user's terminal.  To avoid a false "not Stella" verdict we:
+
+      1. decode both streams with an explicit UTF-8/replace so the string
+         check can never be defeated by a decode error;
+      2. on Windows, when the direct capture is empty, retry through
+         `cmd.exe /c` with both streams redirected to a temp file (a real
+         file handle makes the CRT fall back to WriteFile);
+      3. only if that file is ALSO empty, accept a genuine PE executable that
+         exits 0 on `-help` as a best-effort functional check (the output is
+         genuinely uncapturable for that build; the strict text check still
+         runs on Linux/macOS and in CI).
     """
     try:
         result = subprocess.run([path, "-help"], capture_output=True, text=True,
-                                timeout=30)
+                                encoding="utf-8", errors="replace", timeout=30)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, f"could not execute stella: {exc}"
     out = (result.stdout or "") + (result.stderr or "")
     if "Stella" in out and "Usage: stella" in out:
         return True, "ok"
+    if os.name == "nt" and not out.strip():
+        return _probe_stella_windows_redirect(path)
     return False, f"did not behave like Stella (output: {out.strip()[:200]})"
+
+
+def _probe_stella_windows_redirect(path):
+    """Windows fallback probe for Stella builds whose -help output cannot be
+    captured through a pipe (see probe_stella)."""
+    import tempfile
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            outfile = Path(td) / "stella-help.txt"
+            cmd = f'""{path}" -help > "{outfile}" 2>&1"'
+            result = subprocess.run(cmd, shell=True, timeout=30)
+            text = outfile.read_text(encoding="utf-8", errors="replace")
+            if "Stella" in text and "Usage: stella" in text:
+                return True, "ok"
+            # Some GUI builds still print nothing anywhere.  Accept a real
+            # Windows PE that exits cleanly on -help as a best-effort check.
+            if result.returncode == 0 and _is_pe_executable(path):
+                return True, "ok (console output not capturable; verified PE + exit 0)"
+            return False, (f"did not behave like Stella (redirected output: "
+                           f"{text.strip()[:200]})")
+    except (OSError, subprocess.TimeoutExpired, PermissionError) as exc:
+        return False, f"could not execute stella: {exc}"
+
+
+def _is_pe_executable(path):
+    """True if `path` is a Windows PE file (starts with the 'MZ' magic)."""
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(2) == b"MZ"
+    except OSError:
+        return False
 
 
 def tool(name, what, probe=None):

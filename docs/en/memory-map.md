@@ -18,6 +18,8 @@ registers (`$0280-$02FF`).
 | `$F1B8`  | `UpdateMissiles` (fire, move, despawn)    |
 | `$F24D`  | `ProcessCollisions` (fixed-cost, branchless) |
 | `$F2A0`  | `newActiveTbl` (m_active update table)    |
+| `$F2B0`  | `ApplyBallRebound` (fixed-cost, branchless ball steer) |
+| `$F2D0`  | `reboundTbl` (ball dx table, 16-byte aligned) |
 | `$F300`  | `ProcessHitEffects` (HP damage + fire lock, page-aligned) |
 | `$F338`  | `PositionPlayers` (RESP0/1 + HMP0/1)      |
 | `$F35B`  | `PositionBall` (RESBL + HMBL)             |

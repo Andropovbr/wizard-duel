@@ -18,6 +18,8 @@ I/O/timer do RIOT (`$0280-$02FF`).
 | `$F1B8`  | `UpdateMissiles` (disparo, movimento, remoção) |
 | `$F24D`  | `ProcessCollisions` (custo fixo, sem branches) |
 | `$F2A0`  | `newActiveTbl` (tabela de atualização do m_active) |
+| `$F2B0`  | `ApplyBallRebound` (condução da bola, custo fixo, sem branches) |
+| `$F2D0`  | `reboundTbl` (tabela do ball_dx, alinhada a 16 bytes) |
 | `$F300`  | `ProcessHitEffects` (dano de HP + trava de disparo, alinhado a página) |
 | `$F338`  | `PositionPlayers` (RESP0/1 + HMP0/1)       |
 | `$F35B`  | `PositionBall` (RESBL + HMBL)              |

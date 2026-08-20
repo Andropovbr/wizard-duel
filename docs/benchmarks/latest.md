@@ -13,4 +13,4 @@ Measured from the assembled build artifacts.
 | VBLANK timer value | 77 |
 | VBLANK worst work | 4528 cycles |
 | VBLANK margin | 336 cycles |
-| Overscan WSYNC loop | 6 |
+| Overscan WSYNC loop | 5 |
