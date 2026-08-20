@@ -285,6 +285,12 @@ ciclos, margem ~379 -> ~378, ainda confortavelmente dentro da expiração T=77
 (~4864). O kernel não foi alterado (65/76, folga 11) e o quadro permanece em
 exatamente 262 scanlines.
 
+**A Rodada 11 supera os números de kernel das Rodadas 7-8 acima**: o
+despacho simples/dupla foi substituído pelo apply direto da tabela descrito
+em "O kernel visível" (pior caminho 54/76, folga 22, sem desvios dependentes
+de dados). As seções das Rodadas 7-8 ficam como histórico de como as regras
+de bump e de ordem de slot evoluíram.
+
 ## Comprimento medido do quadro
 
 Verificado com um emulador 6502 determinístico que modela paradas de WSYNC e
@@ -302,7 +308,10 @@ linhas. A Rodada 5 adiciona os caminhos de HP/morte: o quadro permanece em
    estresse com um emulador que modela timing de branch realista: o quadro
    permanece em exatamente 19912 ciclos (262 scanlines) para todos os quadros
    da rodada de estresse máximo, provando que o timer do VBLANK (T=77) nunca
-   ultrapassa;
+   ultrapassa; a Rodada 11 revalida o mesmo estresse contra o kernel
+   table-direct: 80 quadros estressados consecutivos medem todos 19912 ciclos
+   = 262 scanlines, e a caminhada de inicialização/delta-0 pela tabela de
+   eventos real confirma que a contagem nunca envolve;
 * o kernel visível roda exatamente 185 iterações: `evCnt` é inicializado com
   `nullDelta` (ou com o delta da própria entrada 0 quando ela dispara na linha
   0) e conta até o marcador, cujo delta é lido no topo da linha 184 e encerra

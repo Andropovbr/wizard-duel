@@ -16,6 +16,7 @@ REQUIRED_PAIRS = [
     ("en/timing.md", "pt-BR/timing.md"),
     ("en/build.md", "pt-BR/build.md"),
     ("en/benchmarks.md", "pt-BR/benchmarks.md"),
+    ("en/event-kernel-timing-analysis.md", "pt-BR/analise-timing-kernel-eventos.md"),
     ("benchmarks/latest.md", "benchmarks/latest.md"),
 ]
 

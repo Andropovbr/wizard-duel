@@ -273,6 +273,12 @@ path (VBLANK): measured worst-case VBLANK work 4485 -> 4486 cycles, margin
 ~379 -> ~378, still comfortably inside the T=77 expiry (~4864). The kernel
 is untouched (65/76, slack 11) and the frame stays exactly 262 scanlines.
 
+**Round 11 supersedes the Rounds 7-8 kernel numbers above**: the
+single/double dispatch was replaced by the table-direct apply described in
+"The visible kernel" (worst path 54/76, slack 22, no data-dependent
+branching). The Rounds 7-8 sections are kept as history of how the bump and
+slot-ordering rules evolved.
+
 ## Measured frame length
 
 Verified with a deterministic 6502 emulator that models WSYNC stalls and the
@@ -289,6 +295,10 @@ RIOT timer:
   branch timing: the frame stays at exactly 19912 cycles (262 scanlines) for
   every frame of the max-stress run, proving the VBLANK timer (T=77) never
   overruns;
+  Round 11 re-validates the same stress against the table-direct kernel: 80
+  consecutive stressed frames all measure 19912 cycles = 262 scanlines, and
+  the delta-0/priming walk through the real event table confirms the countdown
+  never wraps;
 * the visible kernel runs exactly 185 iterations: `evCnt` is primed with
   `nullDelta` (or entry 0's own delta when it fires on line 0) and counts down
   to the marker entry, whose delta is read at the top of line 184 and ends the
