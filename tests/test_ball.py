@@ -224,24 +224,26 @@ class TestBallConstants(unittest.TestCase):
 
     def test_ball_bounds_within_visible_area(self):
         height = self.c.get("BALL_HEIGHT")
+        kernel = self.c.get("KERNEL_SCANLINES")
         self.assertEqual(self.c.get("BALL_X_MIN"), 0)
         self.assertEqual(self.c.get("BALL_X_MAX"), 160 - 4)
         self.assertEqual(self.c.get("BALL_Y_MIN"), 0)
         # ball_y is the FIRST display row; the ball occupies rows
         # ball_y .. ball_y + BALL_HEIGHT - 1.  BALL_Y_MAX keeps the last row
-        # on the last visible kernel line (191); the ball OFF event at row
-        # 192 is dropped by the event builder and ENABL is cleared during
-        # overscan init.
-        self.assertEqual(self.c.get("BALL_Y_MAX"), 192 - height)
+        # on the last visible kernel line (kernel - 1); the ball OFF event at
+        # row KERNEL_SCANLINES is dropped by the event builder and ENABL is
+        # cleared during overscan init.
+        self.assertEqual(self.c.get("BALL_Y_MAX"), kernel - height)
 
     def test_ball_display_rows_stay_inside_visible_area(self):
         # For every allowed ball_y the ball is displayed on scanlines
-        # ball_y .. ball_y + BALL_HEIGHT - 1, all within 0..191.
+        # ball_y .. ball_y + BALL_HEIGHT - 1, all within the visible region.
         height = self.c.get("BALL_HEIGHT")
+        kernel = self.c.get("KERNEL_SCANLINES")
         y_min = self.c.get("BALL_Y_MIN")
         y_max = self.c.get("BALL_Y_MAX")
         self.assertGreaterEqual(y_min, 0)
-        self.assertLessEqual(y_max + height - 1, 192 - 1)
+        self.assertLessEqual(y_max + height - 1, kernel - 1)
 
     def test_ball_color_enable_and_size_register(self):
         self.assertEqual(self.c.get("BALL_COLOR"), 0x0E)
@@ -272,10 +274,10 @@ class TestBallRamBudget(unittest.TestCase):
         cls.used, _ = ram_usage()
 
     def test_ram_usage(self):
-        # Round 4: P0Y..ball_dy (5) + missiles (5) + m_active/fire_prev (2)
-        # + hit_flags (1) + evCnt/scanCnt (2) + evTbl (31) + builder temps
-        # (3) = 49 bytes.
-        self.assertEqual(self.used, 49)
+        # Round 11: P0Y..hit_flags (14) + fire_prev/evCnt (2) + evTbl (60,
+        # dummy + 10 entries + marker) + builder temps evRow/tempCount/tblLen
+        # (3) + nullDelta (1) = 80 bytes ($80-$CF).
+        self.assertEqual(self.used, 80)
 
 
 class TestEventKernel(unittest.TestCase):
@@ -291,16 +293,11 @@ class TestEventKernel(unittest.TestCase):
         cls.kernel_bytes = cls.rom[start - ROM_ORIGIN:end - ROM_ORIGIN]
         cls.c = read_constants()
 
-    def test_kernel_counts_down_scanlines_in_ram(self):
-        # The kernel counts its 192 lines with a RAM countdown (DEC zp) so the
-        # event code can freely use X (TAX) as the TIA register index.  An X
-        # line counter would be clobbered on every event line.
-        scan = self.sym["scanCnt"] & 0xFF
-        self.assertIn(bytes([0xC6, scan]), self.kernel_bytes,
-                      "kernel must DEC the scanline countdown (scanCnt)")
-
     def test_kernel_counts_down_event_delta(self):
-        # evCnt holds the scanlines until the next event fires.
+        # evCnt holds the scanlines until the next event fires.  The Round 11
+        # kernel uses a single RAM countdown (DEC evCnt) on every scanline:
+        # the line counter and the event counter are the same byte, so the
+        # kernel never needs a separate scanCnt.
         evc = self.sym["evCnt"] & 0xFF
         self.assertIn(bytes([0xC6, evc]), self.kernel_bytes,
                       "kernel must DEC evCnt")
@@ -327,14 +324,15 @@ class TestEventKernel(unittest.TestCase):
         self.assertEqual(self.c["BALL_HEIGHT"], 4)
 
     def test_no_ball_bleed_into_overscan(self):
-        # BALL_Y_MAX = 192 - BALL_HEIGHT keeps the ball's last row on the last
-        # kernel line (191); the ball OFF event at row 192 is dropped and the
-        # overscan init clears ENABL, so the ball can never bleed into
-        # overscan.
+        # BALL_Y_MAX = KERNEL_SCANLINES - BALL_HEIGHT keeps the ball's last
+        # row on the last kernel line; the ball OFF event at row
+        # KERNEL_SCANLINES is dropped and the overscan init clears ENABL, so
+        # the ball can never bleed into overscan.
         height = self.c["BALL_HEIGHT"]
+        kernel = self.c["KERNEL_SCANLINES"]
         y_max = self.c["BALL_Y_MAX"]
-        self.assertEqual(y_max, 192 - height)
-        self.assertEqual(y_max + height - 1, 191)
+        self.assertEqual(y_max, kernel - height)
+        self.assertEqual(y_max + height - 1, kernel - 1)
         # Overscan init clears GRP0..ENABL (LDA #0 + five consecutive STAs),
         # so ENABL can never hold 1 into overscan.
         clear_all = bytes([0xA9, 0x00, 0x85, 0x1B, 0x85, 0x1C,

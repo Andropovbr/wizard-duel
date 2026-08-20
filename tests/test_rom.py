@@ -24,13 +24,13 @@ class TestSymbols(unittest.TestCase):
         for name in ("Reset", "StartOfFrame", "WaitVBlank", "KernelLoop",
                      "OverscanWait", "UpdatePlayers", "UpdateBall",
                      "UpdateMissiles", "PositionPlayers", "PositionBall",
-                     "PositionMissiles", "BuildEvents", "InsertEvent",
-                     "ShiftBy2", "ShiftBy3", "ConvertDeltas", "PosObject",
+                     "PositionMissiles", "BuildEvents", "AppendEvent",
+                     "ShiftBy5", "ConvertDeltas", "PosObject",
                      "fineAdjustTable", "fineAdjustBegin", "P0Y", "P1Y",
                      "ball_x", "ball_y", "ball_dx", "ball_dy",
                      "m0_x", "m0_y", "m1_x", "m1_y",
-                     "m_active", "fire_prev", "evCnt", "scanCnt",
-                     "evTbl", "evRow", "tempCount", "tblLen"):
+                     "m_active", "hit_flags", "fire_prev", "evCnt",
+                     "evTbl", "evRow", "tempCount", "tblLen", "nullDelta"):
             self.assertIn(name, self.sym, f"missing symbol {name}")
 
     def test_reset_at_rom_origin(self):
@@ -40,8 +40,8 @@ class TestSymbols(unittest.TestCase):
         for name in ("P0Y", "P1Y",
                      "ball_x", "ball_y", "ball_dx", "ball_dy",
                      "m0_x", "m0_y", "m1_x", "m1_y",
-                     "m_active", "fire_prev", "evCnt", "scanCnt",
-                     "evTbl", "evRow", "tempCount", "tblLen"):
+                     "m_active", "hit_flags", "fire_prev", "evCnt",
+                     "evTbl", "evRow", "tempCount", "tblLen", "nullDelta"):
             self.assertGreaterEqual(self.sym[name], 0x80)
             self.assertLessEqual(self.sym[name], 0xFF)
 

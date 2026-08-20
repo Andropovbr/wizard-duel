@@ -9,25 +9,26 @@ I/O/timer do RIOT (`$0280-$02FF`).
 | Endereço | Conteúdo                                   |
 | -------- | ------------------------------------------ |
 | `$F000`  | Reset/inicialização (main.asm)             |
-| `$F04F`  | `StartOfFrame` (loop de um quadro)         |
-| `$F079`  | `WaitVBlank` (TIM64T + lógica do jogo)     |
-| `$F100`  | `KernelLoop` (kernel de 192 linhas por eventos) |
-| `$F150`  | `OverscanWait` (colisão + loop de WSYNC)   |
-| `$F15D`  | `UpdatePlayers` (input vertical do joystick) |
-| `$F196`  | `UpdateBall` (movimento + quique)          |
-| `$F1CD`  | `UpdateMissiles` (disparo, movimento, remoção) |
-| `$F262`  | `ProcessCollisions` (custo fixo, sem branches) |
-| `$F2A0`  | `newActiveTbl` (tabela de atualização do m_active) |
-| `$F2B0`  | `PositionPlayers` (RESP0/1 + HMP0/1)       |
-| `$F2D3`  | `PositionBall` (RESBL + HMBL)              |
-| `$F2E5`  | `PositionMissiles` (RESM0/1 + HMM0/1)      |
-| `$F314`  | `BuildEvents` (insere eventos em ordem de linha) |
-| `$F394`  | `InsertEvent` (insere/mescla uma entrada)  |
-| `$F40A`  | `ShiftBy2` (estende uma simples em dupla)  |
-| `$F418`  | `ShiftBy3` (insere uma nova entrada simples) |
-| `$F426`  | `ConvertDeltas` (linhas -> deltas do kernel) |
-| `$F457`  | `PosObject` (RESPx/HMPx genérico)          |
-| `$F500`  | `fineAdjustBegin` (tabela HMP, alinhada a página) |
+| `$F055`  | `StartOfFrame` (loop de um quadro)         |
+| `$F07F`  | `WaitVBlank` (TIM64T + lógica do jogo)     |
+| `$F100`  | `KernelLoop` (kernel de 185 linhas por eventos) |
+| `$F134`  | `OverscanWait` (colisão + efeitos de acerto + loop de WSYNC) |
+| `$F148`  | `UpdatePlayers` (input vertical do joystick) |
+| `$F181`  | `UpdateBall` (movimento + quique)          |
+| `$F1B8`  | `UpdateMissiles` (disparo, movimento, remoção) |
+| `$F24D`  | `ProcessCollisions` (custo fixo, sem branches) |
+| `$F290`  | `newActiveTbl` (tabela de atualização do m_active) |
+| `$F300`  | `ProcessHitEffects` (dano de HP + trava de disparo, alinhado a página) |
+| `$F338`  | `PositionPlayers` (RESP0/1 + HMP0/1)       |
+| `$F35B`  | `PositionBall` (RESBL + HMBL)              |
+| `$F36D`  | `PositionMissiles` (RESM0/1 + HMM0/1)      |
+| `$F39C`  | `BuildEvents` (insere eventos em ordem de linha) |
+| `$F58A`  | `AppendEvent` (insere/mescla uma entrada)  |
+| `$F60F`  | `fineAdjustTable` (tabela HMP)             |
+| `$F648`  | `ShiftBy5` (desloca entradas em um slot)   |
+| `$F65F`  | `ConvertDeltas` (linhas -> deltas do kernel) |
+| `$F68C`  | `PosObject` (RESPx/HMPx genérico)          |
+| `$F700`  | `fineAdjustBegin` (tabela HMP, alinhada a página) |
 | `$FFFA`  | vetor NMI (`Reset`)                        |
 | `$FFFC`  | vetor RESET (`Reset`)                      |
 | `$FFFE`  | vetor IRQ (`Reset`)                        |
@@ -41,42 +42,48 @@ Não existem tabelas de gráficos de sprites: os dois jogadores são retângulos
 sólidos desenhados pela tabela de eventos (veja [timing.md](timing.md)). O uso
 de ROM é medido pelo maior endereço emitido abaixo do bloco de vetores; o
 preenchimento com `$FF` conta como espaço disponível. O build reporta ambos
-os números. A Rodada 3.1 usa 1296 dos 4096 bytes.
+os números. A Rodada 11 usa 1808 dos 4096 bytes.
 
 ## Layout da RAM (RAM RIOT `$80-$FF`, 128 bytes)
 
-A Rodada 3.1 usa 48 bytes. A tabela de eventos agora tem tamanho variável
-(entradas com uma ou duas escritas) e o builder insere os eventos diretamente
-nela, então a tabela fixa de 55 bytes, os buffers de registros/ordem,
-`evIdx`, `joystate`, as duas flags separadas de míssil e `fire_sync` foram
-removidos.
+A Rodada 11 usa 80 bytes ($80-$CF). A tabela de eventos é um bloco fixo de 60
+bytes: um dummy de 5 bytes no offset 0, até 10 entradas reais de 5 bytes e o
+marcador de fim de 5 bytes. O kernel lê as entradas diretamente (apply direto
+da tabela), então os registradores pendentes da Rodada 10 e os buffers de
+registros/ordem, `evIdx`, `joystate`, `scanCnt` e as flags separadas de
+míssil foram removidos.
 
 | Endereço | Nome        | Tam. | Finalidade                            |
 | -------- | ----------- | ---- | ------------------------------------- |
-| `$80`    | `P0Y`       | 1    | posição vertical do jogador 0 (0..179)|
-| `$81`    | `P1Y`       | 1    | posição vertical do jogador 1 (0..179)|
-| `$82`    | `ball_x`    | 1    | pixel visível mais à esquerda (0..156)|
-| `$83`    | `ball_y`    | 1    | primeira linha de exibição (0..188)   |
-| `$84`    | `ball_dx`   | 1    | passo horizontal (+1 / $FF)           |
-| `$85`    | `ball_dy`   | 1    | passo vertical (+1 / $FF)             |
-| `$86`    | `m0_x`      | 1    | posição horizontal do míssil 0        |
-| `$87`    | `m0_y`      | 1    | linha do míssil 0 (fixa em voo)       |
-| `$88`    | `m1_x`      | 1    | posição horizontal do míssil 1        |
-| `$89`    | `m1_y`      | 1    | linha do míssil 1 (fixa em voo)       |
-| `$8A`    | `m_active`  | 1    | máscara ativa compactada (bit0 M0, bit1 M1) |
-| `$8B`    | `fire_prev` | 1    | borda de fogo compactada (bit7 = sync)|
-| `$8C`    | `evCnt`     | 1    | kernel: scanlines até o próximo evento|
-| `$8D`    | `scanCnt`   | 1    | kernel: contagem regressiva de 192    |
-| `$8E-$AC`| `evTbl`     | 31   | tabela de eventos (tamanho variável, máx. 31B) |
-| `$AD`    | `evRow`     | 1    | builder: linha atual do evento        |
-| `$AE`    | `tempCount` | 1    | builder: ponto de deslocamento / prevRow |
-| `$AF`    | `tblLen`    | 1    | builder: tamanho da tabela em bytes   |
-| `$B0-$FF`| -           | 80   | não alocado                          |
+| `$80`    | `P0Y`       | 1    | posição vertical do jogador 0 (0..172)|
+| `$81`    | `P1Y`       | 1    | posição vertical do jogador 1 (0..172)|
+| `$82`    | `p0_hp`     | 1    | pontos de vida do jogador 0 (0..3)    |
+| `$83`    | `p1_hp`     | 1    | pontos de vida do jogador 1 (0..3)    |
+| `$84`    | `ball_x`    | 1    | pixel visível mais à esquerda (0..156)|
+| `$85`    | `ball_y`    | 1    | primeira linha de exibição (0..181)   |
+| `$86`    | `ball_dx`   | 1    | passo horizontal (+1 / $FF)           |
+| `$87`    | `ball_dy`   | 1    | passo vertical (+1 / $FF)             |
+| `$88`    | `m0_x`      | 1    | posição horizontal do míssil 0        |
+| `$89`    | `m0_y`      | 1    | linha do míssil 0 (fixa em voo)       |
+| `$8A`    | `m1_x`      | 1    | posição horizontal do míssil 1        |
+| `$8B`    | `m1_y`      | 1    | linha do míssil 1 (fixa em voo)       |
+| `$8C`    | `m_active`  | 1    | máscara ativa compactada (bit0 M0, bit1 M1) |
+| `$8D`    | `hit_flags` | 1    | resultado de colisão (bit0 P0, bit1 P1) |
+| `$8E`    | `fire_prev` | 1    | borda de fogo compactada (bit7 = sync)|
+| `$8F`    | `evCnt`     | 1    | kernel: scanlines até o próximo evento|
+| `$90-$CB`| `evTbl`     | 60   | dummy (5B) + entradas (máx. 10 x 5B) + marcador (5B) |
+| `$CC`    | `evRow`     | 1    | builder: linha atual do evento        |
+| `$CD`    | `tempCount` | 1    | builder: ponto de deslocamento / prevRow |
+| `$CE`    | `tblLen`    | 1    | builder: número de entradas reais     |
+| `$CF`    | `nullDelta` | 1    | delta da primeira entrada (185 se vazia) |
+| `$D0-$FF`| -           | 48   | não alocado                          |
 
 As variáveis ficam na zero page para que todos os acessos usem os modos de
-endereçamento curtos e rápidos de zero page. A tabela de eventos (no máximo
-31 bytes) é o maior bloco único; o estado do jogo em si é compacto. Os 80
-bytes livres extras são a margem que esta otimização compra para as próximas
+endereçamento curtos e rápidos de zero page. A tabela de eventos (60 bytes) é
+o maior bloco único e fica deliberadamente na página 0: o kernel indexa
+`evTbl-4,Y` (base de zero page) com Y de até 55, então nenhum acesso indexado
+pode cruzar uma fronteira de página e cada escrita do kernel tem tempo
+determinístico. Os 48 bytes livres extras são a margem para as próximas
 rodadas.
 
 ## Uso de registradores de hardware

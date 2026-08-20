@@ -79,8 +79,8 @@ TIM64T  = $0296  ; write timer value, countdown clock = 64 cycles
 ; scanline. See docs/en/timing.md for the full derivation.
 ;
 ;   VSYNC      3 lines  (3 explicit WSYNC writes)
-;   VBLANK    57 lines  (TIM64T = 69, expires on the final VBLANK line)
-;   KERNEL   192 lines  (explicit WSYNC loop)
+;   VBLANK    64 lines  (TIM64T = 77, expires on the final VBLANK line)
+;   KERNEL   185 lines  (explicit WSYNC loop)
 ;   OVERSCAN  10 lines  (WSYNC countdown loop, see below)
 ;   TOTAL    262 lines
 ;
@@ -93,19 +93,59 @@ TIM64T  = $0296  ; write timer value, countdown clock = 64 cycles
 ; deterministic because the pre-timer work was fixed; with a variable-cost
 ; collision pass the INTIM < 64 exit granularity made the overscan region land
 ; on different 76-cycle boundaries, so the frame occasionally slipped to 263
-; scanlines.  The overscan is now a fixed WSYNC countdown: exactly
-; OVERSCAN_LOOP_COUNT WSYNC writes occupy the 10 overscan lines and the
-; fixed-cost branchless ProcessCollisions runs before the loop, so the region
-; is exactly 760 cycles regardless of how many hits are detected.
+; scanlines.  The overscan is now a fixed WSYNC countdown anchored to exactly
+; 760 cycles (10 lines), and any variable-cost work that runs before the loop
+; must land the first WSYNC on the same 76-cycle boundary on every path.
+;
+; Round 5: OVERSCAN_LOOP_COUNT drops from 8 to 7 so the region can absorb
+; ProcessHitEffects (HP damage + dead-player fire lock) which runs after
+; ProcessCollisions.  The fixed pre-loop work puts the first WSYNC write on
+; cycle K+187..K+207 (K = last kernel WSYNC landing), which lands on K+228;
+; the 7 countdown WSYNCs reach K+684 and the next frame's first VSYNC WSYNC
+; lands on K+760.  See ProcessHitEffects in main.asm for the cost window.
+;
+; Round 6: the VBLANK TIM64T value grew from 69 to 77 and the kernel shrank
+; from 192 to 185 lines to fix a whole-screen vertical shake when both
+; missiles are active.  The old VBLANK timer was too small: with real 6502
+; branch timing (taken = 3 cycles, page crossing +1) the VBLANK game logic
+; (UpdatePlayers..BuildEvents) can end as late as ~4919 cycles into the
+; frame, while a timer value of 69 expires at ~4553 cycles.  Whenever the
+; work overran the expiry, the WaitVBlank INTIM spin exited at the *work end*
+; (variable), so the final VBLANK WSYNC landed on different 76-cycle
+; boundaries and frames slipped to 263/264/265 scanlines.  The value 77
+; expires at ~4864 cycles ((77 - 1) * 64, when INTIM first reads 0), ~409
+; cycles past the worst work measured under the emulator's realistic branch
+; timing, so the spin always exits on the timer and every frame lands on the
+; same boundary -> exactly 262 lines.  The kernel lost 7 lines to pay for
+; the longer VBLANK.  See tools/benchmark.py (vblank_work/vblank_margin).
+;
+; Round 9: OVERSCAN_LOOP_COUNT drops from 7 to 6 and 8 cycles of NOP padding
+; are inserted after ProcessHitEffects so the overscan stays anchored after
+; the kernel redesign.  The kernel now ends on its own end-marker entry
+; (KERNEL_SCANLINES lines, no scanCnt countdown), and the marker path reaches
+; .kernelEnd at K+44 (K = last kernel WSYNC landing).  With the epilogue
+; (22) + ProcessCollisions (90 incl. JSR) + ProcessHitEffects (6 + B, B in
+; [62, 80]) + padding (8) + LDX (2), the first overscan WSYNC write lands on
+; K+235..K+255, i.e. inside (K+228, K+304), so it snaps to K+304.  Six
+; countdown WSYNCs then reach K+684 and the next frame's first VSYNC WSYNC
+; lands on K+760, keeping the overscan exactly 10 lines.  See the overscan
+; section of main.asm and docs/en/timing.md.
+;
+; Round 10 (table-direct kernel): the kernel is redesigned again so it ends on
+; its own marker entry and every scanline is a fixed-cost path (see the kernel
+; comment in main.asm).  The marker path now reaches .kernelEnd at K+50 instead
+; of K+44, so the first overscan WSYNC write lands on K+241..K+261 - still
+; inside (K+228, K+304) - and the six countdown WSYNCs keep the overscan on
+; exactly 10 lines.  The overscan loop count and padding are unchanged.
 ; ---------------------------------------------------------------------------
 FRAME_SCANLINES      = 262
 VSYNC_SCANLINES      = 3
-VBLANK_SCANLINES     = 57
-KERNEL_SCANLINES     = 192
+VBLANK_SCANLINES     = 64
+KERNEL_SCANLINES     = 185
 OVERSCAN_SCANLINES   = 10
 
-VBLANK_TIMER_VALUE   = 69
-OVERSCAN_LOOP_COUNT  = 8
+VBLANK_TIMER_VALUE   = 77
+OVERSCAN_LOOP_COUNT  = 6
 
 ; ---------------------------------------------------------------------------
 ; Player constants
@@ -182,16 +222,16 @@ BALL_X_MIN         = 0                     ; left edge of the visible area
 BALL_X_MAX         = 160 - BALL_WIDTH      ; keep the 4-px ball fully visible
 BALL_Y_MIN         = 0                     ; drawn on the first kernel line
 BALL_Y_MAX         = KERNEL_SCANLINES - BALL_HEIGHT
-                                           ; last first-draw row = 188; the
-                                           ; ball occupies rows 188..191. The
-                                           ; ball OFF event at row 192 is
+                                           ; last first-draw row = 181; the
+                                           ; ball occupies rows 181..184. The
+                                           ; ball OFF event at row 185 is
                                            ; dropped by the event builder and
                                            ; ENABL is cleared explicitly during
                                            ; overscan init, so the ball can
                                            ; never bleed into overscan.
 
 BALL_X_INIT        = 78      ; ~center of the 160-pixel arena
-BALL_Y_INIT        = 95      ; ~center of the 192-line kernel
+BALL_Y_INIT        = 95      ; ~center of the 185-line kernel
 
 ; Direction steps added to ball_x/ball_y every frame (constant speed).
 DIR_LEFT  = $FF             ; -1
@@ -237,39 +277,68 @@ M1_BIT = %00000010
 ; ---------------------------------------------------------------------------
 ; The visible kernel is event-driven: instead of computing every object's
 ; enable every scanline, BuildEvents (run during VBLANK) writes a small table
-; of variable-size "register write" entries.  Each entry is either:
+; of uniform 5-byte "register write" entries.  Each entry is:
 ;
-;   single entry (3 bytes):   byte 0  delta
-;                             byte 1  reg1 | EV_SINGLE_FLAG
-;                             byte 2  val1
-;   double entry (5 bytes):   byte 0  delta
-;                             byte 1  reg1
-;                             byte 2  val1
-;                             byte 3  reg2
-;                             byte 4  val2
+;   byte 0   delta          (scanlines until the NEXT event fires)
+;   byte 1   reg1           (EV_WRITE_BASE offset, 1..5)
+;   byte 2   val1
+;   byte 3   reg2           (0 = single event: write 2 is a harmless AUDV1)
+;   byte 4   val2
 ;
-; EV_SINGLE_FLAG (bit 7 of reg1) marks a single entry.  The kernel loads reg1
-; and tests bit 7 with BMI: flag set -> one write, flag clear -> two writes.
-; Entries are stored in ascending row order; a terminator entry (delta =
-; EV_TERMINATOR_DELTA, a single byte) closes the table.
+; A single event is stored with reg2 = 0: the kernel applies BOTH pending
+; writes unconditionally, so write 2 becomes a benign write to AUDV1 ($1A + 0).
+; The marker entry is [delta = EV_MARKER_VAL ($FF), 0, 0, 0, 0]; the kernel
+; detects it by comparing the current entry's delta byte with EV_MARKER_VAL.
+; Real deltas are 1..185, so $FF is an unambiguous sentinel.
 ;
 ; Register indices are offsets from EV_WRITE_BASE = AUDV1 ($1A); indices 1..5
-; address GRP0..ENABL.  A single entry performs exactly one write (no dummy),
-; which is what makes the variable-size entries worth their code.
+; address GRP0..ENABL.
 ;
-; Deltas: the first entry fires on line (delta - 1) and every following entry
-; fires `delta` lines after the previous one, so the builder computes
-; delta(first) = row + 1 and delta(next) = row - prevRow.  The kernel counts
-; exactly KERNEL_SCANLINES lines with a RAM countdown, so the table only holds
-; real events followed by a terminator whose delta can never fire
-; (EV_TERMINATOR_DELTA = $FF > any possible remaining line count).
+; Round 10 (table-direct kernel): the table is now uniform 5-byte entries and
+; EV_SINGLE_FLAG is gone.  Deltas are gaps to the NEXT event (see
+; ConvertDeltas); the first event's delta is stored separately in the nullDelta
+; byte.
 ;
-; Size bound: 10 events, each contributing at most one single entry (3 bytes)
-; when on a distinct row -> 30 bytes + 1 terminator = 31.  Merging two
-; same-row singles into a double saves one byte, so the table can never exceed
-; EV_TBL_SIZE bytes.  A row that already holds a double never accepts a third
-; write: the builder bumps the extra event to row+1 instead, keeping every
-; scanline inside the kernel's cycle budget.
+; Round 11 (delta=1 fix): the kernel applies the last-decoded entry's two
+; writes DIRECTLY from the table on every scanline (LDX/LDA evTbl-4,Y ...), so
+; no pending registers exist.  The decode is only "load delta, test the marker,
+; advance Y".  Because the apply runs unconditionally at the START of every
+; line, consecutive events (delta 1) can no longer collide: each entry's writes
+; land on its own row.  The table carries a 5-byte DUMMY entry at offset 0
+; (all zeros -> benign AUDV0 writes); real entries start at offset 5 and the
+; kernel primes Y = 5 (so the pre-first-event lines read the dummy).  When the
+; first entry fires on row 0 the priming primes Y = 10 instead (the apply then
+; reads real entry 0 from line 0).  The end-marker entry fires on line 184
+; (its delta byte is $FF), so the kernel always renders exactly
+; KERNEL_SCANLINES lines and the overscan countdown stays anchored.
+;
+; Deltas: entry i applies on its DISPLAY row.  The entry is decoded on line
+; row-1 (when evCnt hits 0) and, because the apply reads the last-decoded
+; entry on every line, its writes land at the start of line row.  delta(first)
+; = row_1 is stored in nullDelta; delta(i) = row_i - row_{i-1}; the last real
+; entry's delta is KERNEL_SCANLINES - row_last (the gap to the marker on line
+; 184).
+;
+; Row bound: an event with row >= KERNEL_SCANLINES is dropped by the builder
+; (it could never be rendered and would push the marker past its line, breaking
+; the 185-line frame).
+;
+; Size bound: EV_MAX_EVENTS = 10 events, each occupying exactly 5 bytes, plus
+; the 5-byte dummy at offset 0 and the 5-byte marker -> EV_TBL_SIZE = 60 bytes.
+; Merging two same-row singles into a double does not change the size (every
+; entry is 5 bytes).  A row that already holds a double never accepts a third
+; write: the builder bumps the extra event to row+1 (dropping it if that row
+; would land past the last display line), keeping every scanline inside the
+; kernel's cycle budget.
+;
+; Write-slot rule (Round 10, unchanged): on every line the kernel writes write
+; 1 at scanline cycle ~15 (before the beam reaches pixel 0 at ~cycle 23) and
+; write 2 at cycle ~27, which is only safe for objects with x >= 15.  The
+; builder therefore guarantees, by insertion order and merge rules:
+;   * the ball is always slot 1 on any row it shares (ball is inserted first),
+;   * missile 1 is never slot 2 (its x can be as low as 2 < 15),
+; so slot 2 is always one of P0 (x=16), P1 (x=136) or M0 (x >= 18).
+; See the kernel comment in main.asm and docs/en/timing.md.
 ; ---------------------------------------------------------------------------
 EV_REG_GRP0   = 1       ; GRP0  ($1B) - player 0 sprite
 EV_REG_GRP1   = 2       ; GRP1  ($1C) - player 1 sprite
@@ -277,11 +346,24 @@ EV_REG_ENAM0  = 3       ; ENAM0 ($1D) - missile 0
 EV_REG_ENAM1  = 4       ; ENAM1 ($1E) - missile 1
 EV_REG_ENABL  = 5       ; ENABL ($1F) - ball
 EV_WRITE_BASE = $1A     ; AUDV1; STA EV_WRITE_BASE,X writes the register above
-EV_SINGLE_FLAG = $80    ; bit 7 of reg1 marks a 3-byte single entry
 
-EV_MAX_EVENTS     = 10      ; 2 players + ball + 2 missiles, 2 events each
-EV_TBL_SIZE       = EV_MAX_EVENTS * 3 + 1   ; 10 singles + terminator = 31
-EV_TERMINATOR_DELTA = $FF   ; never fires inside a 192-line kernel
+EV_MAX_EVENTS     = 10    ; 2 players + ball + 2 missiles, 2 events each
+EV_TBL_SIZE       = EV_MAX_EVENTS * 5 + 10  ; dummy + 10 entries + marker = 60
+EV_MARKER_ROW     = $FF   ; builder sentinel: the marker's "row" during build
+EV_MARKER_VAL     = $FF   ; kernel sentinel: the marker's delta byte (CMP #$FF)
+
+; BuildEvents active/phase masks.  During the build nullDelta doubles as the
+; active-object mask (bit set = the object still has an event to emit) and
+; evCnt doubles as the ON-pending mask (bit set = its ON event is still due).
+; Both are dead at that point in the frame: ConvertDeltas rewrites nullDelta
+; right after the build, and the kernel primes evCnt after BuildEvents returns.
+; The ball is scanned FIRST in the selection (bit 4) so it wins row ties and
+; keeps slot 1 on any row it shares (see the write-slot rule above).
+OBJ_BALL_BIT  = %00010000   ; bit 4: ball (always active)
+OBJ_M1_BIT    = %00000001   ; bit 0: missile 1
+OBJ_M0_BIT    = %00000010   ; bit 1: missile 0
+OBJ_P0_BIT    = %00000100   ; bit 2: player 0 (only while alive)
+OBJ_P1_BIT    = %00001000   ; bit 3: player 1 (only while alive)
 
 ; ---------------------------------------------------------------------------
 ; Joystick masks (SWCHA is active low: a bit is 0 when the direction is
@@ -336,9 +418,21 @@ M1_HIT_P1  = %01000000   ; CXM1P D6: M1 overlapped P1 (own player, ignored)
 
 ; hit_flags bitfield (Round 4): a compact, testable record of which player
 ; was hit by the missile-on-player collisions just processed.  One bit per
-; player; no HP/damage is applied yet.
+; player; ProcessCollisions sets it and ProcessHitEffects (Round 5) consumes
+; it as HP damage in the same overscan.
 HIT_P0     = %00000001   ; player 0 was hit by M1
 HIT_P1     = %00000010   ; player 1 was hit by M0
+
+; ---------------------------------------------------------------------------
+; Player HP (Round 5)
+; ---------------------------------------------------------------------------
+; Each player starts a round with PLAYER_START_HP hit points.  A valid
+; cross-fire hit removes one HP (see ProcessHitEffects in main.asm); at 0 HP
+; the player is dead and, while still occupying the arena, is no longer
+; rendered and can no longer fire.  The value is deliberately not baked into
+; the gameplay logic: damage and death only compare against zero, so any
+; starting value works.
+PLAYER_START_HP      = 3
 
 ; VBLANK values. Bit 1 blanks the display; bit 6 ($40) only controls the
 ; INPT latches used for paddles, which are not used yet.

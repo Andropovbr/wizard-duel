@@ -23,7 +23,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 
 from common import ROM_PATH, require_build
 from emu6502 import Cpu, load_rom
-from test_events import EV_TBL_SIZE
+from test_timing import read_constants
+
+C = read_constants()
+EV_MARKER_VAL = C["EV_MARKER_VAL"]
+EV_TBL_SIZE = C["EV_TBL_SIZE"]
+EV_MAX_EVENTS = C["EV_MAX_EVENTS"]
 
 
 class TestFrameStability(unittest.TestCase):
@@ -42,17 +47,23 @@ class TestFrameStability(unittest.TestCase):
     def _ram(self, name):
         return self.sym[name] - 0x80
 
-    def run_frame(self):
+    def run_frame(self, inject_at=None, inject_fn=None):
         """Run exactly one frame (returns cycles consumed).
 
         If the CPU is already at StartOfFrame (the state left by a previous
         call), the frame currently being entered is the one measured, so a
         call always returns exactly one frame's worth of cycles.
+
+        If `inject_at` is a PC address, `inject_fn` is invoked every time the
+        CPU reaches it during the frame (used to force game state right before
+        BuildEvents consumes it).
         """
         start = self.cpu.cycles
         at_sof = self.cpu.pc == self.sof
         count = 0
         while count < 2:
+            if inject_at is not None and self.cpu.pc == inject_at:
+                inject_fn()          # inject before BuildEvents executes
             self.cpu.step()
             if self.cpu.pc == self.sof:
                 count += 1
@@ -70,6 +81,8 @@ class TestFrameStability(unittest.TestCase):
     def test_table_never_exceeds_max_with_aggressive_fire(self):
         # Alternate both fire buttons aggressively so M0 and M1 keep spawning
         # and despawning; the builder must keep the table within EV_TBL_SIZE.
+        # tblLen is the NUMBER of real entries (<= EV_MAX_EVENTS); the byte
+        # size is 5*tblLen + 10 (dummy + entries + marker).
         tlen = self._ram("tblLen")
         self.cpu.inpt[4] = 0xFF      # first frame is the boot sync frame
         self.cpu.inpt[5] = 0xFF
@@ -80,9 +93,12 @@ class TestFrameStability(unittest.TestCase):
             self.cpu.inpt[4] = 0x00 if p0 else 0xFF
             self.cpu.inpt[5] = 0x00 if p1 else 0xFF
             self.run_frame()
-            self.assertLessEqual(self.cpu.ram[tlen], EV_TBL_SIZE,
-                                 f"tblLen exceeded EV_TBL_SIZE at frame {i}")
-            self.assertGreaterEqual(self.cpu.ram[tlen], 1,
+            n = self.cpu.ram[tlen]
+            self.assertLessEqual(n, EV_MAX_EVENTS,
+                                 f"tblLen exceeded EV_MAX_EVENTS at frame {i}")
+            self.assertLessEqual(5 * n + 10, EV_TBL_SIZE,
+                                 f"table exceeded EV_TBL_SIZE at frame {i}")
+            self.assertGreaterEqual(n, 1,
                                     f"tblLen empty at frame {i}")
 
     def test_missiles_actually_fire_and_despawn(self):
@@ -112,6 +128,14 @@ class TestFrameStability(unittest.TestCase):
         # (both collision latches asserted every frame + alternating fire
         # presses, so both missiles re-spawn after every hit) and asserts
         # every frame is exactly 19912 cycles = 262 scanlines.
+        #
+        # Round 5 keeps the stress real: without topping HP the players would
+        # die during the 3 boot frames and spend the 80 loop frames dead
+        # (no missiles), silently weakening the worst case.  HP is therefore
+        # re-filled to PLAYER_START_HP every loop frame so both missiles keep
+        # spawning and hitting for the whole test.
+        p0_hp = self._ram("p0_hp")
+        p1_hp = self._ram("p1_hp")
         self.cpu.inpt[4] = 0xFF      # boot sync frames first
         self.cpu.inpt[5] = 0xFF
         self.run_frame()
@@ -125,6 +149,123 @@ class TestFrameStability(unittest.TestCase):
             self.cpu.inpt[5] = 0x00 if press else 0xFF
             self.cpu.cxm0p = 0xC0    # M0 x P1 AND M0 x P0 latched
             self.cpu.cxm1p = 0xC0    # M1 x P0 AND M1 x P1 latched
+            self.cpu.ram[p0_hp] = 3  # keep both players alive
+            self.cpu.ram[p1_hp] = 3
+            cycles = self.run_frame()
+            self.assertEqual(cycles, 19912,
+                             f"frame {i} ran {cycles} cycles "
+                             f"({cycles / 76:.0f} scanlines), expected 262")
+
+    def test_no_stretched_objects_when_missiles_cross_ball(self):
+        # Round 7 regression: a third event colliding with a double table row
+        # must be bumped to row+1.  Before the fix the ORIGINAL stacked row
+        # was stored, producing two entries at the same absolute row -> delta 0
+        # -> the kernel's DEC evCnt wrapped 0 -> $FF -> the OFF event never
+        # fired and the object stayed enabled to the bottom edge (vertical
+        # stretch).  The realistic trigger is both players alive at the same
+        # row, both missiles flying, and the ball crossing the missile rows
+        # (ball OFF + player OFF + missile OFF on one row, and player ON +
+        # missile ON + missile ON on another).  Positions are injected exactly
+        # when pc reaches BuildEvents (after VBLANK movement) so the 3-way rows
+        # genuinely coincide, then the full frame - kernel included - must run
+        # 262 scanlines and produce a delta-0-free table.  Real entries start
+        # at table offset 5 (after the 5-byte dummy).
+        evTbl = self._ram("evTbl")
+        tblLen = self._ram("tblLen")
+        nullDelta = self._ram("nullDelta")
+        be = self.sym["BuildEvents"]
+        p0_hp = self._ram("p0_hp")
+        p1_hp = self._ram("p1_hp")
+        self.cpu.inpt[4] = 0xFF      # boot sync frame first
+        self.cpu.inpt[5] = 0xFF
+        self.run_frame()
+        for i in range(60):
+            self.cpu.ram[p0_hp] = 3   # keep both players alive all the way
+            self.cpu.ram[p1_hp] = 3
+            cycles = self.run_frame(inject_at=be, inject_fn=self._align_players)
+            self.assertEqual(cycles, 19912,
+                             f"frame {i} ran {cycles} cycles "
+                             f"({cycles / 76:.0f} scanlines), expected 262")
+            # The kernel for frame i just rendered this table: it must contain
+            # no delta-0 entry (two entries on the same absolute row).
+            tlen = self.cpu.ram[tblLen]
+            raw = bytes(self.cpu.ram[evTbl + 5:evTbl + 5 + 5 * tlen + 5])
+            row = self.cpu.ram[nullDelta]
+            j = 0
+            rows_seen = []
+            while raw[j] != EV_MARKER_VAL:
+                rows_seen.append(row)          # entry j's absolute row
+                row += raw[j]                  # its delta = gap to next
+                j += 5
+            self.assertEqual(len(rows_seen), len(set(rows_seen)),
+                             f"frame {i}: duplicate absolute row in evTbl "
+                             f"(delta 0 -> stretched object): {rows_seen}")
+
+    def _align_players(self):
+        """Force the 3-way same-row collision state at BuildEvents time."""
+        ram = self.cpu.ram
+        ram[self._ram("P0Y")] = 88
+        ram[self._ram("P1Y")] = 88
+        ram[self._ram("ball_y")] = 96
+        ram[self._ram("m0_y")] = 88
+        ram[self._ram("m1_y")] = 88
+        ram[self._ram("m_active")] = 0x03   # both missiles flying
+
+    def test_frame_stays_262_while_players_dead(self):
+        # Round 5: the hit-effects pass (HP damage + fire lock) is branchy.
+        # A dead player (no P0/P1 events, fire locked, no more hits taken) is
+        # the OTHER heavy path through ProcessHitEffects, so frame timing must
+        # hold there too: 19912 cycles = 262 scanlines with both players dead.
+        p0_hp = self._ram("p0_hp")
+        p1_hp = self._ram("p1_hp")
+        self.cpu.inpt[4] = 0xFF      # boot sync frame first
+        self.cpu.inpt[5] = 0xFF
+        self.run_frame()
+        self.cpu.ram[p0_hp] = 0      # kill both players up front
+        self.cpu.ram[p1_hp] = 0
+        for i in range(60):
+            press = (i % 2 == 0)
+            self.cpu.inpt[4] = 0x00 if press else 0xFF
+            self.cpu.inpt[5] = 0x00 if press else 0xFF
+            self.cpu.cxm0p = 0xC0    # hits keep landing on the dead players
+            self.cpu.cxm1p = 0xC0
+            cycles = self.run_frame()
+            self.assertEqual(cycles, 19912,
+                             f"frame {i} ran {cycles} cycles "
+                             f"({cycles / 76:.0f} scanlines), expected 262")
+
+    def test_vblank_never_overruns_with_realistic_branch_timing(self):
+        # Regression: before Round 6, VBLANK_TIMER_VALUE=69.  The emulator
+        # folded every branch as 2 cycles, so the timer expiry (~4553 cycles)
+        # always landed after VBLANK work (~4400) and WaitVBlank exited on the
+        # timer, keeping 262 scanlines.  On real hardware taken branches cost 3
+        # cycles, pushing worst-case VBLANK work to ~4919 cycles -- past the
+        # T=69 expiry -- so the poll exited at the variable work end and frames
+        # drifted to 263/264/265 scanlines (visible shake).
+        #
+        # Round 6 raised the timer to T=77 (expiry ~5065, margin ~160) and
+        # shrunk the kernel 192 -> 185 so VBLANK could grow 57 -> 64 lines.
+        # The emulator's CYC table models taken branches and page crossings so
+        # this worst case (both missiles + both collision latches + alternating
+        # fire, HP re-filled to keep both missiles alive) must stay at exactly
+        # 19912 cycles = 262 scanlines every frame.
+        p0_hp = self._ram("p0_hp")
+        p1_hp = self._ram("p1_hp")
+        self.cpu.inpt[4] = 0xFF      # boot sync frames first
+        self.cpu.inpt[5] = 0xFF
+        self.run_frame()
+        for _ in range(3):
+            self.cpu.cxm0p = 0xC0
+            self.cpu.cxm1p = 0xC0
+            self.run_frame()
+        for i in range(80):
+            press = (i % 2 == 0)
+            self.cpu.inpt[4] = 0x00 if press else 0xFF
+            self.cpu.inpt[5] = 0x00 if press else 0xFF
+            self.cpu.cxm0p = 0xC0    # M0 x P1 AND M0 x P0 latched
+            self.cpu.cxm1p = 0xC0    # M1 x P0 AND M1 x P1 latched
+            self.cpu.ram[p0_hp] = 3  # keep both players alive
+            self.cpu.ram[p1_hp] = 3
             cycles = self.run_frame()
             self.assertEqual(cycles, 19912,
                              f"frame {i} ran {cycles} cycles "

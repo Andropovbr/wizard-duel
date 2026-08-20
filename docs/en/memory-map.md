@@ -9,25 +9,26 @@ registers (`$0280-$02FF`).
 | Address  | Content                                   |
 | -------- | ----------------------------------------- |
 | `$F000`  | Reset/init (main.asm)                     |
-| `$F04F`  | `StartOfFrame` (one-frame loop)           |
-| `$F079`  | `WaitVBlank` (TIM64T + game logic)        |
-| `$F100`  | `KernelLoop` (event-driven 192-line kernel) |
-| `$F150`  | `OverscanWait` (collision pass + WSYNC loop) |
-| `$F15D`  | `UpdatePlayers` (vertical joystick input) |
-| `$F196`  | `UpdateBall` (move + bounce)              |
-| `$F1CD`  | `UpdateMissiles` (fire, move, despawn)    |
-| `$F262`  | `ProcessCollisions` (fixed-cost, branchless) |
-| `$F2A0`  | `newActiveTbl` (m_active update table)    |
-| `$F2B0`  | `PositionPlayers` (RESP0/1 + HMP0/1)      |
-| `$F2D3`  | `PositionBall` (RESBL + HMBL)             |
-| `$F2E5`  | `PositionMissiles` (RESM0/1 + HMM0/1)     |
-| `$F314`  | `BuildEvents` (insert events in row order) |
-| `$F394`  | `InsertEvent` (insert + merge table entry) |
-| `$F40A`  | `ShiftBy2` (extend a single into a double) |
-| `$F418`  | `ShiftBy3` (insert a new single entry)    |
-| `$F426`  | `ConvertDeltas` (rows -> kernel deltas)   |
-| `$F457`  | `PosObject` (generic RESPx + HMPx)        |
-| `$F500`  | `fineAdjustBegin` (HMP table, page-aligned) |
+| `$F055`  | `StartOfFrame` (one-frame loop)           |
+| `$F07F`  | `WaitVBlank` (TIM64T + game logic)        |
+| `$F100`  | `KernelLoop` (event-driven 185-line kernel) |
+| `$F134`  | `OverscanWait` (collision + hit effects + WSYNC loop) |
+| `$F148`  | `UpdatePlayers` (vertical joystick input) |
+| `$F181`  | `UpdateBall` (move + bounce)              |
+| `$F1B8`  | `UpdateMissiles` (fire, move, despawn)    |
+| `$F24D`  | `ProcessCollisions` (fixed-cost, branchless) |
+| `$F290`  | `newActiveTbl` (m_active update table)    |
+| `$F300`  | `ProcessHitEffects` (HP damage + fire lock, page-aligned) |
+| `$F338`  | `PositionPlayers` (RESP0/1 + HMP0/1)      |
+| `$F35B`  | `PositionBall` (RESBL + HMBL)             |
+| `$F36D`  | `PositionMissiles` (RESM0/1 + HMM0/1)     |
+| `$F39C`  | `BuildEvents` (insert events in row order) |
+| `$F58A`  | `AppendEvent` (insert + merge table entry) |
+| `$F60F`  | `fineAdjustTable` (HMP table)             |
+| `$F648`  | `ShiftBy5` (shift entries by one slot)    |
+| `$F65F`  | `ConvertDeltas` (rows -> kernel deltas)   |
+| `$F68C`  | `PosObject` (generic RESPx + HMPx)        |
+| `$F700`  | `fineAdjustBegin` (HMP table, page-aligned) |
 | `$FFFA`  | NMI vector (`Reset`)                      |
 | `$FFFC`  | RESET vector (`Reset`)                    |
 | `$FFFE`  | IRQ vector (`Reset`)                      |
@@ -40,42 +41,48 @@ timing contract of the positioning routine.
 There are no sprite graphics tables: both players are solid rectangles drawn
 through the event table (see [timing.md]). ROM usage is measured by the
 high-water mark of emitted code below the vector block; the `$FF`-filled
-padding counts as available space. The build reports both numbers. Round 3.1
-uses 1296 of the 4096 bytes.
+padding counts as available space. The build reports both numbers. Round 11
+uses 1808 of the 4096 bytes.
 
 ## RAM layout (RIOT RAM `$80-$FF`, 128 bytes)
 
-Round 3.1 uses 48 bytes. The event table is now variable-size (entries hold
-one or two writes) and the builder inserts events directly into it, so the
-fixed 55-byte table, the records/order scratch buffers, `evIdx`, `joystate`,
-the two separate missile-active flags and `fire_sync` are all gone.
+Round 11 uses 80 bytes ($80-$CF). The event table is a fixed 60-byte block:
+a 5-byte dummy at offset 0, up to 10 real 5-byte entries and the 5-byte
+end-marker. The kernel reads the entries directly (table-direct apply), so
+the Round 10 pending registers and the Round 5 scratch buffers/`scanCnt`/
+`joystate`/separate missile flags are all gone.
 
 | Address   | Name        | Size | Purpose                              |
 | --------- | ----------- | ---- | ------------------------------------ |
-| `$80`     | `P0Y`       | 1    | player 0 vertical position (0..179)  |
-| `$81`     | `P1Y`       | 1    | player 1 vertical position (0..179)  |
-| `$82`     | `ball_x`    | 1    | ball leftmost visible pixel (0..156) |
-| `$83`     | `ball_y`    | 1    | ball first display row (0..188)      |
-| `$84`     | `ball_dx`   | 1    | horizontal step (+1 / $FF)           |
-| `$85`     | `ball_dy`   | 1    | vertical step (+1 / $FF)             |
-| `$86`     | `m0_x`      | 1    | missile 0 horizontal position        |
-| `$87`     | `m0_y`      | 1    | missile 0 row (fixed while flying)   |
-| `$88`     | `m1_x`      | 1    | missile 1 horizontal position        |
-| `$89`     | `m1_y`      | 1    | missile 1 row (fixed while flying)   |
-| `$8A`     | `m_active`  | 1    | packed active mask (bit0 M0, bit1 M1) |
-| `$8B`     | `fire_prev` | 1    | packed fire edge state (bit7 = sync) |
-| `$8C`     | `evCnt`     | 1    | kernel: scanlines to next event      |
-| `$8D`     | `scanCnt`   | 1    | kernel: 192-line countdown           |
-| `$8E-$AC` | `evTbl`     | 31   | event table (variable-size, max 31B) |
-| `$AD`     | `evRow`     | 1    | builder: current event row           |
-| `$AE`     | `tempCount` | 1    | builder: shift point / prevRow       |
-| `$AF`     | `tblLen`    | 1    | builder: table length in bytes       |
-| `$B0-$FF` | -           | 80   | unallocated                          |
+| `$80`     | `P0Y`       | 1    | player 0 vertical position (0..172)  |
+| `$81`     | `P1Y`       | 1    | player 1 vertical position (0..172)  |
+| `$82`     | `p0_hp`     | 1    | player 0 hit points (0..3)           |
+| `$83`     | `p1_hp`     | 1    | player 1 hit points (0..3)           |
+| `$84`     | `ball_x`    | 1    | ball leftmost visible pixel (0..156) |
+| `$85`     | `ball_y`    | 1    | ball first display row (0..181)      |
+| `$86`     | `ball_dx`   | 1    | horizontal step (+1 / $FF)           |
+| `$87`     | `ball_dy`   | 1    | vertical step (+1 / $FF)             |
+| `$88`     | `m0_x`      | 1    | missile 0 horizontal position        |
+| `$89`     | `m0_y`      | 1    | missile 0 row (fixed while flying)   |
+| `$8A`     | `m1_x`      | 1    | missile 1 horizontal position        |
+| `$8B`     | `m1_y`      | 1    | missile 1 row (fixed while flying)   |
+| `$8C`     | `m_active`  | 1    | packed active mask (bit0 M0, bit1 M1) |
+| `$8D`     | `hit_flags` | 1    | collision results (bit0 P0, bit1 P1) |
+| `$8E`     | `fire_prev` | 1    | packed fire edge state (bit7 = sync) |
+| `$8F`     | `evCnt`     | 1    | kernel: scanlines to next event      |
+| `$90-$CB` | `evTbl`     | 60   | dummy (5B) + entries (max 10 x 5B) + marker (5B) |
+| `$CC`     | `evRow`     | 1    | builder: current event row           |
+| `$CD`     | `tempCount` | 1    | builder: shift point / prevRow       |
+| `$CE`     | `tblLen`    | 1    | builder: number of real entries      |
+| `$CF`     | `nullDelta` | 1    | first entry's delta (185 when empty) |
+| `$D0-$FF` | -           | 48   | unallocated                          |
 
 Variables live in zero page so all accesses use the short, fast zero-page
-addressing modes. The event table (at most 31 bytes) is the largest single
-block; the game state itself is compact. The extra 80 free bytes are the
-headroom this optimization buys for future rounds.
+addressing modes. The event table (60 bytes) is the largest single block and
+is deliberately page-0 resident: the kernel indexes `evTbl-4,Y` (a zero-page
+base) with Y up to 55, so no indexed access can cross a page boundary and
+every kernel write has deterministic timing. The extra 48 free bytes are the
+headroom for future rounds.
 
 ## Hardware register usage
 

@@ -66,7 +66,10 @@ RAM_PRESSURE_STRONG_PCT = 90.0
 
 # Current round's RAM target.  Exceeding it is a hard regression even though
 # the hardware limit is 128 bytes, so budget pressure is caught early.
-PROJECT_RAM_BUDGET = 64
+# Round 11: 80 bytes ($80-$CF) - the event table grew to 60 bytes (5-byte
+# dummy + 10 entries + marker) so the table-direct kernel can apply every
+# entry from the table without pending registers (the delta=1 fix).
+PROJECT_RAM_BUDGET = 80
 
 # (key, label, unit) -- the labels/order used in the report.
 METRICS = [

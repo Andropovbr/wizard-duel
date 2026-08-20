@@ -12,18 +12,37 @@ Medidas deterministicamente a partir dos artefatos do build (sem tela):
 | Pior caso do kernel | maior custo de scanline do kernel, recalculado do listing |
 | Melhor caso do kernel | menor custo de scanline do kernel              |
 | Kernel slack      | `kernel_budget - kernel_worst`                     |
-| VBLANK/OVERSCAN   | valores ajustados do timer do RIOT (69 / 11)       |
+| Timer do VBLANK   | `VBLANK_TIMER_VALUE` (77 desde a Rodada 6)         |
+| Trabalho do VBLANK | escrita do TIM64T -> primeiro `LDA INTIM` (pior, emulado) |
+| Folga do VBLANK   | `(timer - 1) * 64 - vblank_work`                   |
+| Loop do overscan  | escritas de `OVERSCAN_LOOP_COUNT` `WSYNC`          |
+
+## Folga do VBLANK
+
+A espera do VBLANK só é determinística quando o trabalho anterior termina
+confortavelmente antes de o timer expirar; caso contrário `WaitVBlank` cai
+para fora no fim variável do trabalho e o quadro treme (bug da Rodada 6).
+`vblank_work` é medido com o timing de branch realista do emulador sob a
+entrada de pior caso (dois mísseis + dois latches de colisão + disparo
+alternado, HP mantido cheio), e `vblank_margin = (timer - 1) * 64 -
+vblank_work` é a folga antes de o poll sair cedo. Uma folga negativa significa
+que o comprimento do quadro depende da entrada e é uma regressão hard.
 
 ## Kernel slack
 
-Uma scanline NTSC tem 76 ciclos de CPU. O kernel da Rodada 3.1 é orientado a
-eventos: uma linha sem evento custa 18 ciclos, uma linha de evento de escrita
-única custa 54 ciclos e uma linha de evento de duas escritas (o pior caso)
-custa 65 ciclos, portanto:
+Uma scanline NTSC tem 76 ciclos de CPU. O kernel da Rodada 11 é orientado a
+eventos e aplica a tabela de eventos diretamente em toda scanline: uma linha
+sem evento custa 38 ciclos, uma linha de evento custa 54 ciclos e a linha do
+marcador (fim) custa 46 ciclos, portanto:
 
 ```text
-kernel slack = 76 - 65 = 11 ciclos
+kernel slack = 76 - 54 = 22 ciclos
 ```
+
+O custo do kernel é constante independentemente de quantas escritas uma
+entrada contém ou de quais objetos dispararam (sem desvios dependentes de
+dados), então o caminho de evento de 54 ciclos é o único que compete com o
+orçamento.
 
 O slack é uma **métrica de primeira classe**: é registrado em `latest.md`,
 em `history.csv`, em `baseline.json` e no relatório de regressão. Trabalho de
@@ -80,14 +99,14 @@ não reprova o CI. Os limites estão centralizados como constantes em
 | ----------------- | -------------------------------------------- |
 | Crescimento de ROM | > 32 bytes OU > 5,0%                        |
 | Crescimento de RAM | > 4 bytes OU > 10,0%                        |
-| Pressão de RAM    | RAM usada >= 75% do orçamento de 64 bytes    |
-| Pressão forte de RAM | RAM usada >= 90% do orçamento de 64 bytes |
+| Pressão de RAM    | RAM usada >= 75% do orçamento de 80 bytes    |
+| Pressão forte de RAM | RAM usada >= 90% do orçamento de 80 bytes |
 | Pior caso do kernel | aumento > 4 ciclos                         |
 | Kernel slack      | redução > 4 ciclos                            |
 
-Os limites de RAM sustentam o objetivo da Rodada 3.1 de manter o jogo abaixo
-de 64 dos 128 bytes do RIOT: cruzar 75% desse orçamento avisa, cruzar 90%
-avisa com força, e usar mais de 64 bytes reprova o CI (um portão hard). O
+Os limites de RAM sustentam o orçamento da Rodada 11 de manter o jogo abaixo
+de 80 dos 128 bytes do RIOT: cruzar 75% desse orçamento avisa, cruzar 90%
+avisa com força, e usar mais de 80 bytes reprova o CI (um portão hard). O
 crescimento de RAM também é comparado com o baseline por bytes absolutos e
 percentual. Esses valores são intencionalmente conservadores; servem para
 tornar regressões significativas visíveis, não para falhar a cada byte.
@@ -125,9 +144,11 @@ como artefato `build/regression-report.txt` / `build/regression-report.json`.
 
 `docs/benchmarks/history.csv` registra uma linha por execução de benchmark
 (`latest.md` reflete a execução mais recente). Na Rodada 1 o CSV ganhou a
-coluna `kernel_slack`; `tools/benchmark.py` migra as linhas anteriores no
-lugar, calculando `slack = kernel_budget - kernel_worst`, então nenhum dado
-histórico é perdido.
+coluna `kernel_slack`; na Rodada 6 ganhou `vblank_work` / `vblank_margin`.
+`tools/benchmark.py` migra as linhas anteriores no lugar (calculando
+`slack = kernel_budget - kernel_worst` e deixando as colunas de VBLANK vazias
+para linhas medidas antes de o emulador modelar timing de branch realista),
+então nenhum dado histórico é perdido.
 
 ## Baseline e estado atual
 
@@ -167,6 +188,50 @@ Scanlines do quadro: 262
 Pior caso do kernel: 65 / 76 ciclos   (linha de evento de duas escritas)
 Kernel slack:       11 ciclos   (7 -> 11)
 Melhor caso do kernel: 18 ciclos   (linha sem evento)
+
+Rodada 4 atual (colisão + overscan fixo):
+ROM usada:          1296 bytes  (métrica; ALIGN 256 absorve o crescimento)
+RAM usada:          49 bytes    (48 -> 49, +hit_flags)
+Scanlines do quadro: 262
+Pior caso do kernel: 65 / 76 ciclos
+Kernel slack:       11 ciclos
+Melhor caso do kernel: 18 ciclos
+Loop do overscan:   8 WSYNCs
+
+Rodada 5 atual (HP e morte de jogador):
+ROM usada:          1296 bytes  (métrica; alinhamento de página absorve o crescimento)
+RAM usada:          51 bytes    (49 -> 51, +p0_hp/p1_hp)
+Scanlines do quadro: 262
+Pior caso do kernel: 65 / 76 ciclos   (kernel inalterado)
+Kernel slack:       11 ciclos
+Melhor caso do kernel: 18 ciclos
+Loop do overscan:   7 WSYNCs   (8 -> 7 para absorver o ProcessHitEffects)
+
+Rodada 6 atual (correção do tremor do VBLANK):
+ROM usada:          1296 bytes
+RAM usada:          51 bytes
+Scanlines do quadro: 262
+Pior caso do kernel: 65 / 76 ciclos   (kernel 192 -> 185 linhas, mesmo custo por linha)
+Kernel slack:       11 ciclos
+Timer do VBLANK:    77         (69 -> 77; expira em ~4864 ciclos)
+Trabalho do VBLANK: 4455 ciclos (emulado, timing de branch realista)
+Folga do VBLANK:    409 ciclos  (expiração do timer - pior trabalho; deve ser positiva)
+Loop do overscan:   7 WSYNCs
+```
+
+Rodada 11 atual (kernel table-direct, correção de delta=1):
+```
+ROM usada:          1808 bytes  (+512 sobre a Rodada 8; builder ciente de offsets + regras de slot)
+RAM usada:          80 bytes    ($80-$CF; tabela de eventos uniforme de 60 bytes)
+Scanlines do quadro: 262
+Pior caso do kernel: 54 / 76 ciclos   (linha de evento; constante para toda entrada)
+Kernel slack:       22 ciclos   (era 11 nas Rodadas 3.1-8; 76-54)
+Melhor caso do kernel: 38 ciclos   (linha sem evento)
+Linha do marcador:  46 ciclos   (encerra o kernel na linha 185)
+Timer do VBLANK:    77
+Trabalho do VBLANK: 4528 ciclos (emulado, timing de branch realista)
+Folga do VBLANK:    336 ciclos
+Loop do overscan:   6 WSYNCs    (fim do kernel movido; overscan de 10 linhas)
 ```
 
 Esses números são medidos a partir dos artefatos a cada execução, não
