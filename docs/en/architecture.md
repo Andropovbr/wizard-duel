@@ -3,7 +3,11 @@
 Round 3 adds basic projectiles and replaces the Round 2 branchless display
 kernel with an event-driven one. Round 3.1 shrinks the RAM footprint from 122
 to 48 bytes by switching the event table to variable-size entries and
-removing the separate record/order scratch buffers.
+removing the separate record/order scratch buffers. Round 11 fixes a
+delta=1 kernel bug by making the kernel apply the event table directly on
+every scanline (uniform 5-byte entries, table-direct apply) - see
+[event-kernel-timing-analysis.md](event-kernel-timing-analysis.md) for the
+full bug analysis.
 
 Features:
 
@@ -31,63 +35,71 @@ cannot fire; there is no victory/game-over transition yet.
 With a second pair of objects (the missiles) the Round 2 branchless kernel no
 longer fits in the 76-cycle scanline budget (it needed ~98 cycles for two
 players, the ball and two missiles). Instead of computing every object's
-enable on every scanline, `BuildEvents` runs during VBLANK and writes a small
-table (`evTbl`) describing the register writes each scanline must perform.
-The kernel then only counts down to the next entry and applies its writes,
-keeping every scanline well under 76 cycles (65 worst case, see
+enable on every scanline, `BuildEvents` runs during VBLANK and writes a table
+(`evTbl`) describing the register writes each scanline must perform. The
+kernel then counts down to the next entry and applies its writes, keeping
+every scanline well under 76 cycles (54 worst case, see
 [timing.md](timing.md)).
 
-Each table entry is variable size (Round 3.1):
+Each table entry is a fixed 5 bytes (Round 11):
 
 | byte | meaning                                    |
 | ---- | ------------------------------------------ |
 | 0    | delta: scanlines until this entry fires    |
 | 1    | register index of the first write          |
-
-If the entry has a second write, bit 7 of byte 1 is clear and two more bytes
-follow:
-
-| byte | meaning                                    |
-| ---- | ------------------------------------------ |
 | 2    | value of the first write                   |
-| 3    | register index of the second write         |
+| 3    | register index of the second write (0 = none) |
 | 4    | value of the second write                  |
 
-If bit 7 of byte 1 is set, the entry is a single write and only one value
-byte follows (the value carries no bit 7 because it is always an enable
-register write of `$00`, `PADDLE_BITS`, `BALL_ENABLE` or `MISSILE_ENABLE`,
-none of which set bit 7). The kernel dispatches on that bit with a single
-`BMI`:
+The entry is a **single write** when byte 3 is 0 (that second write is a
+harmless AUDV0 dummy) and a **double write** otherwise. There is no
+variable-size entry and no bit-7 dispatch: the kernel treats every entry
+identically, so timing is constant regardless of how many writes an entry
+holds.
 
-* single entry (3 bytes): delta + `reg|$80` + value
-* double entry (5 bytes): delta + reg + value + reg + value
+The kernel applies the table **directly on every scanline** (this is the
+delta=1 fix that replaces the Round 10 two-phase pending pipeline). `Y`
+always points one entry past the last-decoded one, so each line reads its two
+writes from `evTbl-4,Y` / `evTbl-3,Y` (write 1) and `evTbl-2,Y` /
+`evTbl-1,Y` (write 2), then counts `evCnt` down:
 
-Both paths are straight-line, so event lines keep deterministic timing (54
-cycles single, 65 double, 11 cycles slack on the worst path). A single event
-line needs no second write at all; when no event fires, the kernel spends
-only 18 cycles before `WSYNC`.
+* if `evCnt > 0` the line is a plain non-event line: 38 cycles total;
+* if `evCnt == 0` an event fires: the kernel loads the next entry's delta
+  into `evCnt`, advances `Y` by 5, and loops - 54 cycles;
+* if that delta is `$FF` (`EV_MARKER_VAL`) the kernel ends on this line - 46
+  cycles.
 
-Register indices are offsets from `EV_WRITE_BASE = AUDV1 ($1A)`: index 0
-writes AUDV1 (a harmless dummy), 1..5 address GRP0..ENABL.
+Because the apply block runs unconditionally at the top of every line -
+before any countdown - an event on the very next row (delta 1) cannot collide
+with the previous event the way the old deferred pipeline did: each entry
+applies its writes on the first line of its own display row. Re-applying the
+same entry on the lines between events is idempotent and harmless.
+
+The first five bytes of the table are a **dummy entry** (both registers 0,
+both writes to AUDV0) so the apply on lines before the first event fires
+touches only the harmless dummy register. Real entries start at offset 5.
 
 Deltas: the first entry fires on line `delta - 1`, every following entry
 fires `delta` lines after the previous one, so `BuildEvents` computes
-`delta(first) = row + 1` and `delta(next) = row - prevRow`. The kernel counts
-its 185 lines with a RAM countdown (`scanCnt`) rather than the X register,
-because the event code uses `TAX` as the register index and would clobber an
-X line counter on every event line.
+`delta(first) = row + 1` and `delta(next) = row - prevRow`. The `evCnt`
+countdown handles the first entry (primed with `nullDelta`) and the marker's
+delta ends the kernel on line 185. The kernel does not need a line counter in
+a register: the countdown + marker structure fixes the visible region at
+exactly 185 lines.
 
-### Same-row collisions (Round 7)
+### Same-row collisions and write-slot ordering (Rounds 7/8/11)
 
 Up to ten events can land on the same scanline row (two players + ball +
 two missiles, ON and OFF each). `InsertEvent` keeps the table sorted by row
 and allows at most two writes per entry:
 
-* two events on the same row merge into a double entry (both writes fire on
-  that line);
+* two events on the same row merge into a double entry - because entries are
+  uniform 5-byte records, the merge only fills `reg2/val2` at `+3/+4`; there
+  is no shifting of the tail (the old `ShiftBy2` extension of a 3-byte single
+  into a 5-byte double is gone);
 * a third event on a row that already holds a double is **bumped to row+1**
   and the scan continues - so no scanline ever needs more than two writes,
-  which protects the 76-cycle kernel budget.
+  which protects the kernel budget.
 
 Round 7 fixed a bug in the bump path: `.insertSingle` stored the event's
 original stacked row even after the row was bumped. A third event colliding
@@ -96,34 +108,28 @@ with a double then produced two table entries at the same absolute row,
 `0 -> $FF`, so that OFF event never fired and the object stayed enabled to
 the bottom edge of the screen (a vertical stretch). The realistic trigger
 was both players alive at the same row, both missiles flying and the ball
-crossing the missile rows. `.insertSingle` now discards the original stacked
+crossing the missile rows. `AppendEvent` now discards the original stacked
 row and writes the effective (possibly bumped) `evRow` instead, keeping the
 table strictly sorted with no delta-0 entries in any valid state.
 
-### Ball write-slot ordering (Round 8)
+The write *timing* of a double entry also matters (Round 8): the kernel
+writes the first register at CPU cycle 15 and the second at cycle 27
+(measured on the deterministic emulator). A TIA write only applies to the
+current scanline if it completes before the beam passes the object's
+horizontal position. The second write therefore requires `x >= 13` on the
+conservative beam model. The ball's X spans the whole arena (0..156) and M1
+can reach x = 2, so they must never occupy the second slot. `InsertEvent`
+enforces the slot rule:
 
-A double entry fires two writes on the same scanline, but not at the same
-time: the kernel writes the first register at CPU cycle 30 and the second at
-cycle 44 (measured on the deterministic emulator). A TIA write only applies
-to the current scanline if it completes before the beam passes the object's
-horizontal position. The first and second writes are ~42-49 pixels apart on
-the beam, so an object in the second slot with a small X can miss its own
-gate and appear one scanline late.
+* the ball and M1 events are inserted **before** the players and M0, so on a
+  same-row merge they naturally take the first write;
+* the ball is never merged with M1 (both can fall below the second-write
+  gate) - the later event is bumped to row+1, reusing the three-on-a-row
+  mechanism.
 
-Before Round 8, a same-row merge kept generation order: the existing event
-became the first write and the new event the second. Because the ball is
-generated between the players and the missiles, a ball event merging into a
-player or missile single was written **second**, so whenever the ball was
-left of the second-write gate its ON/OFF fired one scanline late and the
-whole ball shifted vertically. The fix makes `InsertEvent` swap the ball
-(ENABL) into the **first** write whenever a ball event merges into a single:
-the ball's X spans the whole arena (0..156), so it must never take the late
-second slot. The co-object then takes the second write; its only fixed-X
-member is P0 (x=16), which is left of even the first-write gate on the
-documented model, so those rare shared rows shift a paddle edge instead of
-the ball. The swap is ~40 bytes of VBLANK-time code (plus 256 bytes of
-page-alignment padding because the event code now crosses the `$F500`
-boundary before the fine-adjust table); the kernel is untouched.
+With these rules every second write targets GRP0 (x=16), GRP1 (x=136) or
+ENAM0 (x >= 18), so the horizontal guarantee holds for all objects at all
+positions.
 
 ## Code layout
 
@@ -136,23 +142,23 @@ register addresses and build-time constants.
 | `$F000`  | `Reset` (initialization)                       |
 | `$F055`  | `StartOfFrame` (VSYNC + VBLANK + kernel + OS)  |
 | `$F100`  | `KernelLoop` (event-driven display kernel)     |
-| `$F150`  | `OverscanWait` (collision + hit effects + WSYNC loop) |
-| `$F160`  | `UpdatePlayers` (joystick input + movement)    |
-| `$F199`  | `UpdateBall` (ball movement + bounce)          |
-| `$F1D0`  | `UpdateMissiles` (fire buttons, movement)      |
-| `$F265`  | `ProcessCollisions` (fixed-cost, branchless)   |
-| `$F2A0`  | `newActiveTbl` (m_active update table)         |
+| `$F134`  | `OverscanWait` (collision + hit effects + WSYNC loop) |
+| `$F148`  | `UpdatePlayers` (joystick input + movement)    |
+| `$F181`  | `UpdateBall` (ball movement + bounce)          |
+| `$F1B8`  | `UpdateMissiles` (fire buttons, movement)      |
+| `$F24D`  | `ProcessCollisions` (fixed-cost, branchless)   |
+| `$F290`  | `newActiveTbl` (m_active update table)         |
 | `$F300`  | `ProcessHitEffects` (HP damage + fire lock)    |
 | `$F338`  | `PositionPlayers` (RESP0/RESP1 + HMP + HMOVE)  |
 | `$F35B`  | `PositionBall` (RESBL + HMBL)                  |
 | `$F36D`  | `PositionMissiles` (RESM0/RESM1 + HMM)         |
 | `$F39C`  | `BuildEvents` (insert events in row order)     |
-| `$F424`  | `InsertEvent` (insert/merge a table entry)     |
-| `$F49A`  | `ShiftBy2` (extend a single into a double)     |
-| `$F4A8`  | `ShiftBy3` (insert a new single entry)         |
-| `$F4B6`  | `ConvertDeltas` (rows -> kernel deltas)        |
-| `$F4E7`  | `PosObject` (generic RESPx/HMPx)               |
-| `$F500`  | `fineAdjustBegin` (page-aligned HMP table)     |
+| `$F58A`  | `AppendEvent` (insert/merge/bump a table entry)|
+| `$F60F`  | `fineAdjustTable` (page-aligned HMP table)     |
+| `$F648`  | `ShiftBy5` (shift the table tail by 5)         |
+| `$F65F`  | `ConvertDeltas` (rows -> kernel deltas)        |
+| `$F68C`  | `PosObject` (generic RESPx/HMPx)               |
+| `$F700`  | `fineAdjustBegin` (page-aligned HMP table)     |
 | `$FFFA`  | NMI / RESET / IRQ vectors                      |
 
 There are no sprite graphics tables: both players are solid `PADDLE_BITS`
@@ -317,38 +323,38 @@ play area.
 
 ## Event table builder
 
-Round 3.1 replaces the record/order/emit pipeline with a direct insertion
-builder: `BuildEvents` resets the table to a single `$FF` terminator and then
-inserts each object's ON/OFF events straight into `evTbl` in row order, so no
-separate record or order buffers exist (the 40 bytes they used in Round 3 are
-gone). Because the entries are variable size, insertion needs an explicit
-move loop instead of a stable sort:
+Round 11 uses a direct insertion builder: `BuildEvents` writes a dummy entry
+at offset 0 of `evTbl` and then inserts each object's ON/OFF events straight
+into the table in row order, so no separate record or order buffers exist.
+Because the entries are uniform 5-byte records, insertion is a simple
+sorted-insert with a fixed 5-byte shift:
 
-1. `InsertEvent` scans the table comparing entry rows. On a matching row it
-   merges:
-   * a single entry -> `ShiftBy2` shifts the tail by 2 and writes the second
-     value (the merged entry becomes a 5-byte double);
-   * an already-double entry -> the row is bumped to row+1 and the scan
-     continues (this can only happen transiently during a single build, so
-     the table never exceeds its bound).
-   Otherwise `ShiftBy3` shifts the tail by 3 and writes a new 3-byte single.
+1. `AppendEvent` scans the table comparing entry rows. On a matching row it
+   merges: fills `reg2/val2` at `+3/+4` (no shift - the entry is already
+   5 bytes wide). On an already-double row it bumps the event to row+1 and
+   continues the scan (this can only happen transiently during a single
+   build, so the table never exceeds its bound). Otherwise it shifts the tail
+   by 5 (`ShiftBy5`) and writes a new 5-byte entry. Insertion order encodes
+   the slot rule: the ball and M1 are inserted first, so on a merge they take
+   the first write slot; the ball is never merged with M1 (bumped instead).
 2. After all events are inserted, `ConvertDeltas` rewrites the rows in place
-   as kernel deltas (first delta = row+1, next deltas = row - prevRow),
-   leaving the `$FF` terminator at the end of the table.
+   as kernel deltas (first delta = row+1, next deltas = row - prevRow,
+   advancing by 5 unconditionally) and appends the marker entry whose delta
+   is `$FF` (`EV_MARKER_VAL`).
 
-Because a 3-byte single can merge into a 5-byte double, the worst-case table
-size is no longer 10 x 5 bytes: with 10 object boundaries and at most one
-double per row, the table needs at most 31 bytes. `EV_TBL_SIZE = 31` is a
-hard bound; `tblLen` tracks the current length and a test asserts it never
-exceeds the bound under aggressive fire input.
+Every event (single or merged double) is a 5-byte entry, so the worst-case
+table size is `dummy(5) + 10 * 5 + marker(5) = 60` bytes. `EV_TBL_SIZE = 60`
+is a hard bound; `tblLen` tracks the current length and a test asserts it
+never exceeds the bound under aggressive fire input.
 
-The table ends with a terminator entry whose delta (`$FF`) can never fire
-inside the 185-line kernel.
+The marker entry's delta (`$FF`) can never fire inside the 185-line kernel:
+it is the countdown value read on the line that ends the kernel.
 
 ## Variable allocation
 
-51 of 128 bytes of RIOT RAM are used (48 in Round 3.1, +1 for `hit_flags`
-in Round 4, +2 for `p0_hp`/`p1_hp` in Round 5):
+80 of 128 bytes of RIOT RAM are used (the delta=1 kernel and the uniform
+60-byte table cost 29 bytes over the Round 10 layout; documented in the
+change log):
 
 | Address    | Name        | Purpose                              |
 | ---------- | ----------- | ------------------------------------ |
@@ -365,14 +371,18 @@ in Round 4, +2 for `p0_hp`/`p1_hp` in Round 5):
 | `$8C`      | `m_active`  | packed missile active mask (M0/M1)   |
 | `$8D`      | `hit_flags` | collision results (P0/P1 hit bits)   |
 | `$8E`      | `fire_prev` | packed fire edge + boot-sync state   |
-| `$8F-$90`  | `evCnt/scanCnt` | kernel state                     |
-| `$91-$AF`  | `evTbl`     | event table (variable size, max 31B) |
-| `$B0-$B2`  | `evRow/tempCount/tblLen` | builder working storage |
+| `$8F`      | `evCnt`     | kernel event countdown               |
+| `$90-$CB`  | `evTbl`     | event table (dummy + 10 entries + marker, 60B) |
+| `$CC`      | `evRow`     | builder working storage              |
+| `$CD`      | `tempCount` | builder working storage              |
+| `$CE`      | `tblLen`    | builder working storage              |
+| `$CF`      | `nullDelta` | first-delta prime value for `evCnt`  |
 
-The savings come from: variable-size table entries (31 vs 55 bytes), no
-record/order buffers (0 vs 40 bytes), no `joystate` (re-read `SWCHA`), packed
-missile flags (one byte for two), no separate `fire_sync` (bit 7 of
-`fire_prev`), and no `evIdx` (the kernel scans the table linearly).
+The savings come from: packed missile flags (one byte for two), no separate
+`fire_sync` (bit 7 of `fire_prev`), and no `evIdx` (the kernel reads the
+table through `Y`, which always points one entry past the last-decoded one).
+The pending-register bytes of the Round 10 kernel are gone because the apply
+reads straight from the table.
 
 ## Why VBLANK for gameplay
 

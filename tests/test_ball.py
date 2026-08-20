@@ -274,10 +274,10 @@ class TestBallRamBudget(unittest.TestCase):
         cls.used, _ = ram_usage()
 
     def test_ram_usage(self):
-        # Round 5: P0Y..ball_dy (5) + missiles (5) + m_active/fire_prev (2)
-        # + hit_flags (1) + p0_hp/p1_hp (2) + evCnt/scanCnt (2) + evTbl (31)
-        # + builder temps (3) = 51 bytes.
-        self.assertEqual(self.used, 51)
+        # Round 11: P0Y..hit_flags (14) + fire_prev/evCnt (2) + evTbl (60,
+        # dummy + 10 entries + marker) + builder temps evRow/tempCount/tblLen
+        # (3) + nullDelta (1) = 80 bytes ($80-$CF).
+        self.assertEqual(self.used, 80)
 
 
 class TestEventKernel(unittest.TestCase):
@@ -293,16 +293,11 @@ class TestEventKernel(unittest.TestCase):
         cls.kernel_bytes = cls.rom[start - ROM_ORIGIN:end - ROM_ORIGIN]
         cls.c = read_constants()
 
-    def test_kernel_counts_down_scanlines_in_ram(self):
-        # The kernel counts its 185 lines with a RAM countdown (DEC zp) so the
-        # event code can freely use X (TAX) as the TIA register index.  An X
-        # line counter would be clobbered on every event line.
-        scan = self.sym["scanCnt"] & 0xFF
-        self.assertIn(bytes([0xC6, scan]), self.kernel_bytes,
-                      "kernel must DEC the scanline countdown (scanCnt)")
-
     def test_kernel_counts_down_event_delta(self):
-        # evCnt holds the scanlines until the next event fires.
+        # evCnt holds the scanlines until the next event fires.  The Round 11
+        # kernel uses a single RAM countdown (DEC evCnt) on every scanline:
+        # the line counter and the event counter are the same byte, so the
+        # kernel never needs a separate scanCnt.
         evc = self.sym["evCnt"] & 0xFF
         self.assertIn(bytes([0xC6, evc]), self.kernel_bytes,
                       "kernel must DEC evCnt")

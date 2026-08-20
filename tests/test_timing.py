@@ -126,16 +126,16 @@ class TestFrameConstants(unittest.TestCase):
 class TestKernelCycleBudget(unittest.TestCase):
     """Recompute the worst-case kernel scanline cost from the listing.
 
-    The Round 3.1 kernel is event-driven: every scanline counts down scanCnt
-    (the 192-line countdown) and evCnt (the next table entry).  Three paths
-    exist inside the loop:
+    The Round 11 kernel is a single fixed loop: every scanline starts by
+    applying the last-decoded entry's two writes directly from the table
+    (LDX/LDA evTbl-4,Y), then counts down with DEC evCnt and BNE; when evCnt
+    hits zero the line ALSO loads the next delta and advances Y.  No pending
+    registers exist, so the apply runs on every line (this is the delta=1
+    fix).  Three paths exist inside the loop:
 
-      * non-event line: 18 cycles (WSYNC, DEC scanCnt, BEQ not taken,
-        DEC evCnt, BNE taken back to KernelLoop)
-      * event line, single write: 54 cycles (the BNE is not taken and the
-        BMI .singleWrite is taken)
-      * event line, two writes: 65 cycles (neither the BNE nor the BMI is
-        taken and the straight-line double-write code runs)
+      * non-event line: 38 cycles (WSYNC, apply, DEC, BNE taken, JMP)
+      * event line:     54 cycles (BNE not taken, decode + advance Y + JMP)
+      * end-marker:     46 cycles (BEQ .kernelEnd taken, kernel ends)
 
     All must stay inside the 76-cycle scanline budget.
     """
@@ -144,14 +144,14 @@ class TestKernelCycleBudget(unittest.TestCase):
         0x85: 3,   # STA zp
         0xC6: 5,   # DEC zp
         0xB9: 4,   # LDA abs,Y
-        0xAA: 2,   # TAX
+        0xB6: 4,   # LDX zp,Y (DASM emits zp,Y for a zero-page base)
+        0xA6: 3,   # LDX zp
+        0xA5: 3,   # LDA zp
         0x95: 4,   # STA zp,X
         0x98: 2,   # TYA
-        0x18: 2,   # CLC
         0x69: 2,   # ADC #imm
         0xA8: 2,   # TAY
-        0x29: 2,   # AND #imm
-        0x30: 2,   # BMI rel
+        0xC9: 2,   # CMP #imm
         0x4C: 3,   # JMP abs
     }
 
@@ -166,8 +166,8 @@ class TestKernelCycleBudget(unittest.TestCase):
         """Collect (addr, bytes) for every instruction of the kernel body.
 
         The body spans KernelLoop up to (and including) the JMP that closes
-        the event path; the overscan that follows (the BEQ target) is not
-        part of a normal scanline's work.
+        the apply-pending block; the overscan that follows (OverscanWait) is
+        not part of a normal scanline's work.
         """
         start = cls.sym["KernelLoop"]
         end = cls.sym["OverscanWait"]
@@ -189,7 +189,7 @@ class TestKernelCycleBudget(unittest.TestCase):
             rel -= 0x100
         return (addr + 2 + rel) & 0xFFFF
 
-    def _simulate(self, event_line, two_write=True):
+    def _simulate(self, event_line, marker=False):
         """Cost of one full loop iteration for the given event outcome."""
         pc = self.sym["KernelLoop"]
         total = 0
@@ -198,32 +198,24 @@ class TestKernelCycleBudget(unittest.TestCase):
             steps += 1
             addr, bts = self._at(pc)
             op = bts[0]
-            if op == 0x4C:  # JMP KernelLoop: closes the event path
+            if op == 0x4C:  # JMP KernelLoop: closes the event/apply path
                 total += self.OPC_CYCLES[0x4C]
                 return total
-            if op in (0xF0, 0xD0):  # BEQ / BNE
-                target = self._target(addr, bts)
-                if op == 0xD0 and target < addr:
-                    # BNE KernelLoop: the loop terminator.  Taken = non-event
-                    # line (we are back at KernelLoop); not taken = event line
-                    # (fall into the event code).
-                    if not event_line:
-                        return total + 3
-                    total += 2
-                else:
-                    # BEQ .kernelEnd (or any other forward branch): on a
-                    # normal scanline it is not taken.
-                    total += 2
-                pc = addr + len(bts)
-            elif op == 0x30:  # BMI .singleWrite
-                # Single-write event: taken, jump into the single path.
-                # Two-write event: not taken, run the straight-line path.
-                if two_write:
+            if op == 0xD0:  # BNE .applyPending
+                # Taken = non-event line (apply pending); not taken = event
+                # line (decode the entry).
+                if event_line:
                     total += 2
                     pc = addr + len(bts)
                 else:
                     total += 3
                     pc = self._target(addr, bts)
+            elif op == 0xF0:  # BEQ .kernelEnd: taken only on the marker
+                if marker:
+                    total += 3
+                    return total
+                total += 2
+                pc = addr + len(bts)
             else:
                 total += self.OPC_CYCLES[op]
                 pc = addr + len(bts)
@@ -233,38 +225,41 @@ class TestKernelCycleBudget(unittest.TestCase):
         self.assertGreater(len(self.insts), 10)
 
     def test_worst_case_within_budget(self):
-        cost = self._simulate(event_line=True, two_write=True)   # two-write event line
+        cost = self._simulate(event_line=True)   # event line
         self.assertLessEqual(cost, SCANLINE_BUDGET,
                              f"event path is {cost} > 76 cycles")
-        self.assertEqual(cost, 65)  # documented worst case
-
-    def test_single_write_within_budget(self):
-        cost = self._simulate(event_line=True, two_write=False)  # single-write event
-        self.assertLessEqual(cost, SCANLINE_BUDGET,
-                             f"single-write path is {cost} > 76 cycles")
-        self.assertEqual(cost, 54)  # documented single-write case
+        self.assertEqual(cost, 54)  # documented worst case
 
     def test_best_case_within_budget(self):
         cost = self._simulate(event_line=False)   # non-event line
         self.assertLessEqual(cost, SCANLINE_BUDGET)
-        self.assertEqual(cost, 18)  # documented best case
+        self.assertEqual(cost, 38)  # documented best case
+
+    def test_marker_line_within_budget(self):
+        cost = self._simulate(event_line=True, marker=True)   # end-marker
+        self.assertLessEqual(cost, SCANLINE_BUDGET)
+        self.assertEqual(cost, 46)  # documented end-marker case
 
     def test_event_code_is_straight_line(self):
-        # Between the DEC evCnt and the closing JMP, the event code has two
-        # branches: the BMI that splits single/double writes and the closing
-        # JMP.  The only other conditional branches in the whole kernel are
-        # the BEQ (line countdown done) and the BNE (event or not).
+        # The kernel has exactly two conditional branches: the BNE that picks
+        # the non-event path and the BEQ that ends the kernel on the marker.
         body = self.insts
         branches = [(a, b) for a, b in body if b[0] in (0xF0, 0xD0, 0x30)]
-        self.assertEqual(len(branches), 3,
-                         "kernel must contain exactly three conditional branches")
+        self.assertEqual(len(branches), 2,
+                         "kernel must contain exactly two conditional branches")
 
     def test_event_and_non_event_paths_within_budget(self):
         for event in (True, False):
-            for two_write in (True, False):
-                with self.subTest(event=event, two_write=two_write):
-                    cost = self._simulate(event_line=event, two_write=two_write)
+            for marker in (False,):
+                with self.subTest(event=event):
+                    cost = self._simulate(event_line=event, marker=marker)
                     self.assertLessEqual(cost, SCANLINE_BUDGET)
+
+    def test_event_and_marker_paths_within_budget(self):
+        for event in (True, False):
+            with self.subTest(event=event):
+                cost = self._simulate(event_line=event, marker=True)
+                self.assertLessEqual(cost, SCANLINE_BUDGET)
 
 
 if __name__ == "__main__":

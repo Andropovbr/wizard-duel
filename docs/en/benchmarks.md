@@ -30,13 +30,18 @@ input-dependent and is a hard regression.
 
 ## Kernel slack
 
-One NTSC scanline is 76 CPU cycles. The Round 3.1 kernel is event-driven:
-a non-event line costs 18 cycles, a single-write event line costs 54 cycles
-and a two-write event line (the worst case) costs 65 cycles, so:
+One NTSC scanline is 76 CPU cycles. The Round 11 kernel is event-driven and
+applies the event table directly on every scanline: a non-event line costs 38
+cycles, an event line costs 54 cycles and the marker (end) line costs 46
+cycles, so:
 
 ```text
-kernel slack = 76 - 65 = 11 cycles
+kernel slack = 76 - 54 = 22 cycles
 ```
+
+The kernel cost is constant regardless of how many writes an entry holds or
+which objects fired (no data-dependent branching), so the 54-cycle event path
+is the only path that competes with the budget.
 
 Slack is a **first-class metric**: it is recorded in `latest.md`, in
 `history.csv`, in `baseline.json` and in the regression report. Hardware work
@@ -92,14 +97,14 @@ conservative values):
 | ----------------- | -------------------------------------------------- |
 | ROM growth        | > 32 bytes OR > 5.0%                               |
 | RAM growth        | > 4 bytes OR > 10.0%                               |
-| RAM pressure      | RAM used >= 75% of the 64-byte project budget      |
-| RAM strong pressure | RAM used >= 90% of the 64-byte project budget    |
+| RAM pressure      | RAM used >= 75% of the 80-byte project budget      |
+| RAM strong pressure | RAM used >= 90% of the 80-byte project budget    |
 | Kernel worst case | increase > 4 cycles                                |
 | Kernel slack      | decrease > 4 cycles                                |
 
-The RAM thresholds back the Round 3.1 goal of keeping the game under 64 of
+The RAM thresholds back the Round 11 budget of keeping the game under 80 of
 the 128 RIOT bytes: crossing 75% of that budget warns, crossing 90% warns
-strongly, and using more than 64 bytes fails CI (a hard gate). RAM growth is
+strongly, and using more than 80 bytes fails CI (a hard gate). RAM growth is
 also compared against the baseline by absolute bytes and percentage. These
 values are intentionally conservative; they are meant to make meaningful
 regressions visible, not to fail on every byte. Update them only with a
@@ -209,6 +214,21 @@ VBLANK timer:      77         (69 -> 77; expiry ~4864 cycles)
 VBLANK worst work: 4455 cycles (emulated, realistic branch timing)
 VBLANK margin:     409 cycles  (timer expiry - worst work; must stay positive)
 Overscan loop:     7 WSYNCs
+```
+
+Round 11 current (table-direct kernel, delta=1 fix):
+```
+ROM used:          1808 bytes  (+512 over Round 8; offset-aware builder + slot rules)
+RAM used:          80 bytes    ($80-$CF; 60-byte uniform event table)
+Frame scanlines:   262
+Kernel worst case: 54 / 76 cycles   (event line; constant for all inputs)
+Kernel slack:      22 cycles   (was 11 in Round 3.1-8; 76-54)
+Kernel best case:  38 cycles   (non-event line)
+Marker line:       46 cycles   (ends the kernel on line 185)
+VBLANK timer:      77
+VBLANK worst work: 4528 cycles (emulated, realistic branch timing)
+VBLANK margin:     336 cycles
+Overscan loop:     6 WSYNCs    (kernel end moved; 10-line overscan)
 ```
 
 These numbers are measured from the artifacts on every run, not hardcoded

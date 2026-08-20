@@ -30,14 +30,19 @@ que o comprimento do quadro depende da entrada e é uma regressão hard.
 
 ## Kernel slack
 
-Uma scanline NTSC tem 76 ciclos de CPU. O kernel da Rodada 3.1 é orientado a
-eventos: uma linha sem evento custa 18 ciclos, uma linha de evento de escrita
-única custa 54 ciclos e uma linha de evento de duas escritas (o pior caso)
-custa 65 ciclos, portanto:
+Uma scanline NTSC tem 76 ciclos de CPU. O kernel da Rodada 11 é orientado a
+eventos e aplica a tabela de eventos diretamente em toda scanline: uma linha
+sem evento custa 38 ciclos, uma linha de evento custa 54 ciclos e a linha do
+marcador (fim) custa 46 ciclos, portanto:
 
 ```text
-kernel slack = 76 - 65 = 11 ciclos
+kernel slack = 76 - 54 = 22 ciclos
 ```
+
+O custo do kernel é constante independentemente de quantas escritas uma
+entrada contém ou de quais objetos dispararam (sem desvios dependentes de
+dados), então o caminho de evento de 54 ciclos é o único que compete com o
+orçamento.
 
 O slack é uma **métrica de primeira classe**: é registrado em `latest.md`,
 em `history.csv`, em `baseline.json` e no relatório de regressão. Trabalho de
@@ -94,14 +99,14 @@ não reprova o CI. Os limites estão centralizados como constantes em
 | ----------------- | -------------------------------------------- |
 | Crescimento de ROM | > 32 bytes OU > 5,0%                        |
 | Crescimento de RAM | > 4 bytes OU > 10,0%                        |
-| Pressão de RAM    | RAM usada >= 75% do orçamento de 64 bytes    |
-| Pressão forte de RAM | RAM usada >= 90% do orçamento de 64 bytes |
+| Pressão de RAM    | RAM usada >= 75% do orçamento de 80 bytes    |
+| Pressão forte de RAM | RAM usada >= 90% do orçamento de 80 bytes |
 | Pior caso do kernel | aumento > 4 ciclos                         |
 | Kernel slack      | redução > 4 ciclos                            |
 
-Os limites de RAM sustentam o objetivo da Rodada 3.1 de manter o jogo abaixo
-de 64 dos 128 bytes do RIOT: cruzar 75% desse orçamento avisa, cruzar 90%
-avisa com força, e usar mais de 64 bytes reprova o CI (um portão hard). O
+Os limites de RAM sustentam o orçamento da Rodada 11 de manter o jogo abaixo
+de 80 dos 128 bytes do RIOT: cruzar 75% desse orçamento avisa, cruzar 90%
+avisa com força, e usar mais de 80 bytes reprova o CI (um portão hard). O
 crescimento de RAM também é comparado com o baseline por bytes absolutos e
 percentual. Esses valores são intencionalmente conservadores; servem para
 tornar regressões significativas visíveis, não para falhar a cada byte.
@@ -212,6 +217,21 @@ Timer do VBLANK:    77         (69 -> 77; expira em ~4864 ciclos)
 Trabalho do VBLANK: 4455 ciclos (emulado, timing de branch realista)
 Folga do VBLANK:    409 ciclos  (expiração do timer - pior trabalho; deve ser positiva)
 Loop do overscan:   7 WSYNCs
+```
+
+Rodada 11 atual (kernel table-direct, correção de delta=1):
+```
+ROM usada:          1808 bytes  (+512 sobre a Rodada 8; builder ciente de offsets + regras de slot)
+RAM usada:          80 bytes    ($80-$CF; tabela de eventos uniforme de 60 bytes)
+Scanlines do quadro: 262
+Pior caso do kernel: 54 / 76 ciclos   (linha de evento; constante para toda entrada)
+Kernel slack:       22 ciclos   (era 11 nas Rodadas 3.1-8; 76-54)
+Melhor caso do kernel: 38 ciclos   (linha sem evento)
+Linha do marcador:  46 ciclos   (encerra o kernel na linha 185)
+Timer do VBLANK:    77
+Trabalho do VBLANK: 4528 ciclos (emulado, timing de branch realista)
+Folga do VBLANK:    336 ciclos
+Loop do overscan:   6 WSYNCs    (fim do kernel movido; overscan de 10 linhas)
 ```
 
 Esses números são medidos a partir dos artefatos a cada execução, não

@@ -210,7 +210,7 @@ class TestKernelSlackMetric(unittest.TestCase):
         m = measure()
         self.assertEqual(m["kernel_slack"],
                          m["kernel_budget"] - m["kernel_worst"])
-        self.assertEqual(m["kernel_slack"], 11)  # 76 - 65 (two-write event line)
+        self.assertEqual(m["kernel_slack"], 22)  # 76 - 54 (event line)
 
     def test_latest_report_documents_slack(self):
         self.assertTrue(LATEST.exists())

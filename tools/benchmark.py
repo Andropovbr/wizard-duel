@@ -60,7 +60,7 @@ def measure():
     c = read_constants()
     kernel = TestKernelCycleBudget()
     kernel.setUpClass()
-    worst = kernel._simulate(event_line=True, two_write=True)  # two-write event line
+    worst = kernel._simulate(event_line=True)   # event line (worst path)
     best = kernel._simulate(event_line=False)   # non-event line
     vblank_work = measure_vblank_work(sym, c)
     timer = c.get("VBLANK_TIMER_VALUE")

@@ -46,7 +46,7 @@ CYC = {
     0xA9: 2, 0xA0: 2, 0xA2: 2, 0x69: 2, 0xE9: 2, 0x29: 2, 0x49: 2, 0x05: 2, 0x09: 2, 0xC9: 2,
     0xE0: 2,
     0xA5: 3, 0xAD: 4, 0xB9: 4, 0xB5: 4, 0xA4: 3, 0xAC: 4, 0xA6: 3, 0xAE: 4,
-    0xB6: 4,
+    0xB6: 4, 0xBE: 4,
     0x85: 3, 0x8D: 4, 0x99: 5, 0x95: 4, 0x84: 3, 0x86: 3,
     0xC6: 5, 0xE6: 5, 0xC5: 3, 0xE5: 3, 0x65: 3, 0xE4: 3, 0x24: 3,
     0xD0: 2, 0xF0: 2, 0xB0: 2, 0x90: 2, 0x30: 2,
@@ -292,13 +292,20 @@ class Cpu:
             addr = self.zp_addr() if op == 0xA4 else self.abs_addr()
             self.y = self.read(addr)
             self.set_nz(self.y)
-        elif op in (0xA6, 0xAE, 0xB6):      # LDX zp / abs / zp,Y
+        elif op in (0xA6, 0xAE, 0xB6, 0xBE):  # LDX zp / abs / zp,Y / abs,Y
             if op == 0xA6:
                 addr = self.zp_addr()
             elif op == 0xAE:
                 addr = self.abs_addr()
-            else:
+            elif op == 0xB6:
                 addr = (self.zp_addr() + self.y) & 0xFF
+            else:
+                base = self.abs_addr()
+                addr = (base + self.y) & 0xFFFF
+                extra = 1 if (base & 0xFF) + self.y > 0xFF else 0
+                self.x = self.read(addr)
+                self.set_nz(self.x)
+                return extra
             self.x = self.read(addr)
             self.set_nz(self.x)
         elif op in (0x85, 0x8D, 0x99):      # STA zp / abs / abs,Y

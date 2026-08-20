@@ -23,7 +23,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 
 from common import ROM_PATH, require_build
 from emu6502 import Cpu, load_rom
-from test_events import EV_TBL_SIZE
+from test_timing import read_constants
+
+C = read_constants()
+EV_MARKER_VAL = C["EV_MARKER_VAL"]
+EV_TBL_SIZE = C["EV_TBL_SIZE"]
+EV_MAX_EVENTS = C["EV_MAX_EVENTS"]
 
 
 class TestFrameStability(unittest.TestCase):
@@ -76,6 +81,8 @@ class TestFrameStability(unittest.TestCase):
     def test_table_never_exceeds_max_with_aggressive_fire(self):
         # Alternate both fire buttons aggressively so M0 and M1 keep spawning
         # and despawning; the builder must keep the table within EV_TBL_SIZE.
+        # tblLen is the NUMBER of real entries (<= EV_MAX_EVENTS); the byte
+        # size is 5*tblLen + 10 (dummy + entries + marker).
         tlen = self._ram("tblLen")
         self.cpu.inpt[4] = 0xFF      # first frame is the boot sync frame
         self.cpu.inpt[5] = 0xFF
@@ -86,9 +93,12 @@ class TestFrameStability(unittest.TestCase):
             self.cpu.inpt[4] = 0x00 if p0 else 0xFF
             self.cpu.inpt[5] = 0x00 if p1 else 0xFF
             self.run_frame()
-            self.assertLessEqual(self.cpu.ram[tlen], EV_TBL_SIZE,
-                                 f"tblLen exceeded EV_TBL_SIZE at frame {i}")
-            self.assertGreaterEqual(self.cpu.ram[tlen], 1,
+            n = self.cpu.ram[tlen]
+            self.assertLessEqual(n, EV_MAX_EVENTS,
+                                 f"tblLen exceeded EV_MAX_EVENTS at frame {i}")
+            self.assertLessEqual(5 * n + 10, EV_TBL_SIZE,
+                                 f"table exceeded EV_TBL_SIZE at frame {i}")
+            self.assertGreaterEqual(n, 1,
                                     f"tblLen empty at frame {i}")
 
     def test_missiles_actually_fire_and_despawn(self):
@@ -148,21 +158,21 @@ class TestFrameStability(unittest.TestCase):
 
     def test_no_stretched_objects_when_missiles_cross_ball(self):
         # Round 7 regression: a third event colliding with a double table row
-        # must be bumped to row+1.  Before the fix .insertSingle stored the
-        # ORIGINAL stacked row, producing two entries at the same absolute row
-        # -> delta 0 -> the kernel's DEC evCnt wrapped 0 -> $FF -> the OFF
-        # event never fired and the object stayed enabled to the bottom edge
-        # (vertical stretch).  The realistic trigger is both players alive at
-        # the same row, both missiles flying, and the ball crossing the
-        # missile rows (ball OFF + player OFF + missile OFF on one row, and
-        # player ON + missile ON + missile ON on another).  Positions are
-        # injected exactly when pc reaches BuildEvents (after VBLANK movement)
-        # so the 3-way rows genuinely coincide, then the full frame - kernel
-        # included - must run 262 scanlines and produce a delta-0-free table.
-        EV_SINGLE_FLAG = 0x80
-        EV_TERMINATOR_DELTA = 0xFF
+        # must be bumped to row+1.  Before the fix the ORIGINAL stacked row
+        # was stored, producing two entries at the same absolute row -> delta 0
+        # -> the kernel's DEC evCnt wrapped 0 -> $FF -> the OFF event never
+        # fired and the object stayed enabled to the bottom edge (vertical
+        # stretch).  The realistic trigger is both players alive at the same
+        # row, both missiles flying, and the ball crossing the missile rows
+        # (ball OFF + player OFF + missile OFF on one row, and player ON +
+        # missile ON + missile ON on another).  Positions are injected exactly
+        # when pc reaches BuildEvents (after VBLANK movement) so the 3-way rows
+        # genuinely coincide, then the full frame - kernel included - must run
+        # 262 scanlines and produce a delta-0-free table.  Real entries start
+        # at table offset 5 (after the 5-byte dummy).
         evTbl = self._ram("evTbl")
         tblLen = self._ram("tblLen")
+        nullDelta = self._ram("nullDelta")
         be = self.sym["BuildEvents"]
         p0_hp = self._ram("p0_hp")
         p1_hp = self._ram("p1_hp")
@@ -179,19 +189,14 @@ class TestFrameStability(unittest.TestCase):
             # The kernel for frame i just rendered this table: it must contain
             # no delta-0 entry (two entries on the same absolute row).
             tlen = self.cpu.ram[tblLen]
-            raw = bytes(self.cpu.ram[evTbl:evTbl + tlen])
-            prev = -1
+            raw = bytes(self.cpu.ram[evTbl + 5:evTbl + 5 + 5 * tlen + 5])
+            row = self.cpu.ram[nullDelta]
             j = 0
             rows_seen = []
-            while j < len(raw) and raw[j] != EV_TERMINATOR_DELTA:
-                d = raw[j]
-                row = prev + d
-                rows_seen.append(row)
-                if raw[j + 1] & EV_SINGLE_FLAG:
-                    j += 3
-                else:
-                    j += 5
-                prev = row
+            while raw[j] != EV_MARKER_VAL:
+                rows_seen.append(row)          # entry j's absolute row
+                row += raw[j]                  # its delta = gap to next
+                j += 5
             self.assertEqual(len(rows_seen), len(set(rows_seen)),
                              f"frame {i}: duplicate absolute row in evTbl "
                              f"(delta 0 -> stretched object): {rows_seen}")

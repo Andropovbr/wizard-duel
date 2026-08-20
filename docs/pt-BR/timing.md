@@ -1,7 +1,7 @@
 # Wizard Duel - Timing
 
 Este documento registra a análise de timing em nível de ciclo do kernel
-orientado a eventos e do quadro da Rodada 3.1. Cada número abaixo foi
+orientado a eventos e do quadro da Rodada 11. Cada número abaixo foi
 derivado manualmente e depois verificado contra o listing montado pela suíte
 de testes automatizada; o comprimento do quadro foi também verificado com um
 emulador 6502 determinístico que modela as paradas de WSYNC e o timer do
@@ -62,126 +62,116 @@ derivar quando eventos disparam.
 ### Estrutura orientada a eventos
 
 O kernel não calcula enables de objetos. `BuildEvents` (executado durante o
-VBLANK) escreve uma tabela (`evTbl`) de entradas de tamanho variável. Cada
-entrada começa com `delta` (scanlines até disparar) e `reg1` (índice da
-primeira escrita; índices 1..5 endereçam GRP0..ENABL, índice 0 é um dummy
-inofensivo em AUDV1). Se o bit 7 de `reg1` estiver setado, a entrada é uma
-simples de 3 bytes `[delta, reg1|$80, val1]`; caso contrário, é uma dupla de
-5 bytes `[delta, reg1, val1, reg2, val2]`.
+VBLANK) escreve uma tabela fixa (`evTbl`, 60 bytes) de entradas uniformes de 5
+bytes `[delta, reg1, val1, reg2, val2]` (reg2 = 0 marca uma escrita única).
+Os índices 1..5 endereçam GRP0..ENABL; o índice 0 é o dummy AUDV0 usado pelos
+primeiros 5 bytes da tabela. A tabela é `[dummy][entrada 0][entrada 1]...
+[entrada N][marcador]`, onde o byte de delta do marcador é `$FF` e encerra o
+kernel. Os deltas são as distâncias até a PRÓXIMA entrada; `nullDelta` inicia
+a primeira contagem.
 
-O kernel despacha no bit de flag com um único `BMI`; o byte de valor de uma
-simples nunca carrega bit 7 porque todo valor de escrita é um registrador de
-enable (`$00`, `PADDLE_BITS`, `BALL_ENABLE` ou `MISSILE_ENABLE`). É isso que
-permite a uma scanline que precisa de apenas uma escrita pular a segunda
-escrita em vez de gastar um dummy inofensivo.
+O kernel é um **apply direto da tabela**: todo scanline começa aplicando as
+duas escritas da última entrada decodificada diretamente da tabela, lendo por
+`Y-5` (Y sempre aponta uma entrada além da última decodificada), e então conta
+`evCnt` até o próximo evento. Como o apply roda incondicionalmente no INÍCIO
+de toda linha - seja linha de evento ou não - dois eventos em linhas
+consecutivas (delta 1) nunca podem colidir como acontecia com o pipeline
+pendente em duas fases da Rodada 10: cada entrada aplica suas escritas no
+início da sua própria linha de exibição. O apply é idempotente, o que torna
+inofensivo reaplicar a mesma entrada nas linhas entre eventos.
 
-O kernel conta suas 185 linhas com uma contagem regressiva em RAM
-(`scanCnt`). Isso é deliberado: o código de evento usa `TAX` como índice de
-registrador, o que corromperia um contador de linhas em X a cada linha de
-evento e esticaria o quadro.
+Os primeiros 5 bytes da tabela são uma entrada dummy (reg1 = reg2 = 0, então
+ambas as escritas vão para AUDV0 - inofensivo com a tela ligada). Nas linhas
+antes de o primeiro evento disparar, Y = 5 faz o apply ler o dummy. As
+entradas reais começam no offset 5 da tabela e o marcador fica no offset
+`5 + 5*N`.
 
 ### Contabilidade de ciclos (verificada no listing)
 
-Existem três caminhos por scanline: sem evento, evento de escrita única,
-evento de duas escritas.
+Existem três caminhos por scanline: sem evento, evento e marcador de fim. O
+corpo do kernel é alinhado a página (`ALIGN 256` antes de `KernelLoop`) para
+que todo desvio tenha tempo determinístico, e todos os acessos à tabela são
+indexados em zero page (`LDX evTbl-4,Y` emite `0xB6` LDX zp,Y) para que
+nenhum acesso indexado cruze uma página.
 
 Linha sem evento (o caso comum):
 
 | Instrução           | Ciclos |
 | ------------------- | ------ |
 | `STA WSYNC`         | 3      |
-| `DEC scanCnt`       | 5      |
-| `BEQ .kernelEnd`    | 2      |
+| `LDX evTbl-4,Y`     | 4      |
+| `LDA evTbl-3,Y`     | 4      |
+| `STA EV_WRITE_BASE,X` | 4    |
+| `LDX evTbl-2,Y`     | 4      |
+| `LDA evTbl-1,Y`     | 4      |
+| `STA EV_WRITE_BASE,X` | 4    |
 | `DEC evCnt`         | 5      |
-| `BNE KernelLoop`    | 3      |
-| **Total**           | **18** |
+| `BNE .applyOnly`    | 3      |
+| `JMP KernelLoop`    | 3      |
+| **Total**           | **38** |
 
-Linha de evento, escrita única (entrada de 3 bytes):
+Linha de evento (leitura do delta + avanço):
 
 | Instrução           | Ciclos |
 | ------------------- | ------ |
-| `STA WSYNC`         | 3      |
-| `DEC scanCnt`       | 5      |
-| `BEQ .kernelEnd`    | 2      |
-| `DEC evCnt`         | 5      |
-| `BNE KernelLoop`    | 2      |
-| `LDY evIdx`         | 3      |
-| `LDA evTbl+1,Y`     | 4      |
-| `TAX`               | 2      |
-| `LDA evTbl+2,Y`     | 4      |
-| `STA EV_WRITE_BASE,X` | 4    |
-| `TYA` / `CLC` / `ADC #3` / `TAY` | 8 |
-| `STY evIdx`         | 3      |
+| (bloco apply, 24) + `DEC evCnt` (5) + `BNE` não tomado | 31 |
 | `LDA evTbl,Y`       | 4      |
 | `STA evCnt`         | 3      |
+| `CMP #EV_MARKER_VAL` | 2     |
+| `BEQ .kernelEnd` não tomado | 2 |
+| `TYA` / `ADC #5` / `TAY` | 6  |
 | `JMP KernelLoop`    | 3      |
 | **Total**           | **54** |
 
-Linha de evento, duas escritas (entrada de 5 bytes):
+Linha do marcador de fim (marcador disparou -> kernel termina):
 
 | Instrução           | Ciclos |
 | ------------------- | ------ |
-| `STA WSYNC`         | 3      |
-| `DEC scanCnt`       | 5      |
-| `BEQ .kernelEnd`    | 2      |
-| `DEC evCnt`         | 5      |
-| `BNE KernelLoop`    | 2      |
-| `LDY evIdx`         | 3      |
-| `LDA evTbl+1,Y`     | 4      |
-| `TAX`               | 2      |
-| `LDA evTbl+2,Y`     | 4      |
-| `STA EV_WRITE_BASE,X` | 4    |
-| `LDA evTbl+3,Y`     | 4      |
-| `TAX`               | 2      |
-| `LDA evTbl+4,Y`     | 4      |
-| `STA EV_WRITE_BASE,X` | 4    |
-| `TYA` / `CLC` / `ADC #5` / `TAY` | 8 |
-| `STY evIdx`         | 3      |
+| (bloco apply, 24) + `DEC evCnt` (5) + `BNE` não tomado | 31 |
 | `LDA evTbl,Y`       | 4      |
 | `STA evCnt`         | 3      |
-| `JMP KernelLoop`    | 3      |
-| **Total**           | **65** |
+| `CMP #EV_MARKER_VAL` | 2     |
+| `BEQ .kernelEnd` tomado | 3   |
+| **Total**           | **46** |
 
 | Caminho                    | Ciclos |
 | -------------------------- | ------ |
-| Linha sem evento           | **18** |
-| Linha de evento (1 escrita)| **54** |
-| Linha de evento (2 escritas)| **65** |
+| Linha sem evento           | **38** |
+| Linha de evento            | **54** |
+| Linha do marcador de fim   | **46** |
 | Orçamento do scanline      | 76     |
-| Folga (linha de 2 escritas)| **11 ciclos** |
+| Folga (linha de evento)    | **22 ciclos** |
 
-O corpo do kernel é alinhado a página (`ALIGN 256` antes de `KernelLoop`)
-para que todo desvio tenha tempo determinístico, e todos os acessos à tabela
-são indexados em zero page (sem penalidades de passagem de página). O kernel
-tem exatamente três desvios condicionais: o `BEQ` do fim da contagem de
-linhas, o `BNE` da contagem de eventos e o `BMI` de despacho simples/dupla.
+A flag de carry é limpa exatamente uma vez, na inicialização (`CLC`); em todo
+caminho do kernel o carry está limpo no `ADC #5`: o `CMP #$FF` do decode de
+evento o limpa para todo delta real (< $FF), e o `CMP` do marcador só seta o
+carry no caminho `BEQ .kernelEnd` (que pula o `ADC`). Não existe `CLC` dentro
+do corpo do kernel.
 
 ### Tempos de escrita dos registradores gráficos
 
 Medidos no emulador determinístico, as escritas de registrador caem nestes
-ciclos de CPU dentro de um scanline de evento:
+ciclos de CPU dentro de um scanline:
 
-* linha de escrita única: a escrita cai no ciclo **33**;
-* linha de duas escritas: a primeira cai no ciclo **30**, a segunda no ciclo
-  **44**.
+* escrita 1 (reg1/val1): termina no ciclo **15**, antes de o feixe chegar ao
+  pixel 0 (cerca do ciclo 23), então é segura para todo objeto, incluindo a
+  bola em x = 0;
+* escrita 2 (reg2/val2): termina no ciclo **27**.
 
 Uma escrita no TIA se aplica ao scanline atual apenas se terminar antes de o
 feixe passar pela posição horizontal do objeto; caso contrário, aplica-se um
 scanline depois. Usando o modelo de feixe documentado (o pixel `p` é atingido
-no ciclo de CPU `~(p + 69) / 3`), as portas são portanto `x >= 21` para a
-primeira escrita, `x >= 30` para uma escrita única e `x >= 63` para a
-segunda. O modelo é conservador: o P0 da Rodada 3 (x=16) renderiza
-corretamente com escritas únicas no ciclo 33, abaixo da porta `x >= 30` do
-modelo, então as portas reais são provavelmente menores.
+no ciclo de CPU `~(p + 69) / 3`), a escrita 2 no ciclo 27 exige `x >= 13`
+(conservador; a porta real é menor). O builder por isso aplica a regra de
+slot: a segunda escrita de uma dupla é sempre GRP0 (x=16), GRP1 (x=136) ou
+ENAM0 (x >= 18) - nunca ENABL ou ENAM1, cujo X pode cair abaixo de 13. A bola
+e o M1 sempre ganham o slot 1 em um empate de linha.
 
 O ciclo de escrita impõe uma restrição de *escalonamento*, não apenas de
 margem: um objeto cujo X pode cair abaixo do limite da segunda escrita nunca
-deve ocupar o segundo slot. P0/P1 têm X fixo (16/136) e a faixa de X de cada
-míssil é limitada, mas a BOLA cobre toda a arena, então a Rodada 8 dá a ENABL
-a primeira escrita sempre que ela se funde a uma entrada dupla (veja
-`docs/en/architecture.md`). O `delta` da próxima entrada é lido até o ciclo
-65 no pior caminho, confortavelmente antes do `WSYNC` que inicia a próxima
-linha.
+deve ocupar o segundo slot (veja `docs/en/architecture.md`). O `delta` da
+próxima entrada é lido até o ciclo 50 no pior caminho, confortavelmente antes
+do `WSYNC` que inicia a próxima linha.
 
 ## Orçamentos de VBLANK e OVERSCAN
 
@@ -227,17 +217,17 @@ Uma espera `TIM64T` só é determinística quando o trabalho executado antes de
 armar o timer é fixo ou fica confortavelmente abaixo da expiração. O OVERSCAN
 também NÃO usa timer pelo mesmo motivo: uma passagem de custo variável
 (`ProcessHitEffects`) roda entre o kernel e a espera do overscan, então o
-overscan escreve exatamente `OVERSCAN_LOOP_COUNT = 7` `WSYNC`s. A partir da
+overscan escreve exatamente `OVERSCAN_LOOP_COUNT = 6` `WSYNC`s. A partir da
 última linha do kernel, um epílogo fixo + o JSR e o corpo sem branches do
-`ProcessCollisions` + o JSR do `ProcessHitEffects` (Rodada 5) colocam o
-primeiro `WSYNC` entre os ciclos 187 e 207 da região (modelo do emulador;
-todo caminho cai na mesma fronteira no ciclo 228 = scanline 3). O loop conta
-então exatamente 10 linhas e o `JMP` + preâmbulo de VSYNC seguintes alinham o
-primeiro `WSYNC` de VSYNC do próximo quadro em 760 ciclos após a última linha
-do kernel. Como a única passagem de custo variável (`ProcessHitEffects`)
-fica confinada a uma janela que nunca escapa da primeira fronteira, a região
-tem exatamente 10 scanlines independentemente de quantos acertos forem
-detectados ou de os jogadores estarem mortos.
+`ProcessCollisions` + o JSR do `ProcessHitEffects` (Rodada 5) + 8 ciclos de
+padding colocam o primeiro `WSYNC` entre os ciclos 236 e 254 da região
+(modelo do emulador; todo caminho cai na mesma fronteira no ciclo 304 =
+scanline 4). O loop conta então exatamente 10 linhas e o `JMP` + preâmbulo de
+VSYNC seguintes alinham o primeiro `WSYNC` de VSYNC do próximo quadro em 760
+ciclos após a última linha do kernel. Como a única passagem de custo variável
+(`ProcessHitEffects`) fica confinada a uma janela que nunca escapa da primeira
+fronteira, a região tem exatamente 10 scanlines independentemente de quantos
+acertos forem detectados ou de os jogadores estarem mortos.
 
 ### Rodada 7: o deslocamento de mesma linha e o estiramento por delta 0
 
@@ -313,7 +303,10 @@ linhas. A Rodada 5 adiciona os caminhos de HP/morte: o quadro permanece em
    permanece em exatamente 19912 ciclos (262 scanlines) para todos os quadros
    da rodada de estresse máximo, provando que o timer do VBLANK (T=77) nunca
    ultrapassa;
-* o kernel visível roda exatamente 185 iterações (a contagem `scanCnt`).
+* o kernel visível roda exatamente 185 iterações: `evCnt` é inicializado com
+  `nullDelta` (ou com o delta da própria entrada 0 quando ela dispara na linha
+  0) e conta até o marcador, cujo delta é lido no topo da linha 184 e encerra
+  o kernel na linha 185.
 
 O primeiro quadro após ligar é alguns ciclos mais curto que o estado estável
 porque os relógios da CPU e do TIA ainda não estão alinhados; todos os
@@ -342,7 +335,7 @@ comportamento, não totais de ciclos exatos.
 "Correção visual não é prova de correção de hardware": um quadro que parece
 certo, mas deriva para 260 ou 263 scanlines, viola o contrato de timing NTSC.
 Os valores do timer acima foram ajustados precisamente para que o quadro seja
-exatamente 262 scanlines, e a contagem `scanCnt` do kernel mantém a região
+exatamente 262 scanlines, e a contagem `evCnt` do kernel mantém a região
 visível em exatamente 185 linhas, independentemente de quantos eventos
 disparam. O tremor de VBLANK da Rodada 6 era exatamente essa classe de bug:
 visualmente correto em um emulador com timing de branch abreviado, ele

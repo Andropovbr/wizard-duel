@@ -3,7 +3,12 @@
 A Rodada 3 adiciona projéteis básicos e substitui o kernel de exibição sem
 desvios da Rodada 2 por um kernel orientado a eventos. A Rodada 3.1 reduz a
 pegada de RAM de 122 para 48 bytes ao usar entradas de tabela de tamanho
-variável e remover os buffers separados de registros/ordem.
+variável e remover os buffers separados de registros/ordem. A Rodada 11
+corrige um bug de delta=1 ao fazer o kernel aplicar a tabela de eventos
+diretamente em toda scanline (entradas uniformes de 5 bytes, apply direto da
+tabela) - veja
+[analise-timing-kernel-eventos.md](analise-timing-kernel-eventos.md) para a
+análise completa do bug.
 
 Funcionalidades:
 
@@ -32,63 +37,72 @@ Com um segundo par de objetos (os mísseis), o kernel sem desvios da Rodada 2
 não cabe mais no orçamento de 76 ciclos por scanline (precisava de ~98 ciclos
 para dois jogadores, a bola e dois mísseis). Em vez de calcular o enable de
 cada objeto em cada scanline, `BuildEvents` roda durante o VBLANK e escreve
-uma pequena tabela (`evTbl`) descrevendo as escritas de registradores que cada
+uma tabela (`evTbl`) descrevendo as escritas de registradores que cada
 scanline deve executar. O kernel então apenas conta os ciclos até a próxima
 entrada e aplica as escritas, mantendo cada scanline bem abaixo de 76 ciclos
-(65 no pior caso, veja [timing.md](timing.md)).
+(54 no pior caso, veja [timing.md](timing.md)).
 
-Cada entrada da tabela tem tamanho variável (Rodada 3.1):
+Cada entrada da tabela tem tamanho fixo de 5 bytes (Rodada 11):
 
 | byte | significado                               |
 | ---- | ----------------------------------------- |
 | 0    | delta: scanlines até esta entrada disparar |
 | 1    | índice do registrador da primeira escrita |
-
-Se a entrada tiver uma segunda escrita, o bit 7 do byte 1 fica limpo e mais
-dois bytes seguem:
-
-| byte | significado                               |
-| ---- | ----------------------------------------- |
 | 2    | valor da primeira escrita                 |
-| 3    | índice do registrador da segunda escrita  |
+| 3    | índice do registrador da segunda escrita (0 = nenhuma) |
 | 4    | valor da segunda escrita                  |
 
-Se o bit 7 do byte 1 estiver setado, a entrada é de escrita única e apenas um
-byte de valor segue (o valor nunca carrega bit 7 porque é sempre uma escrita
-de registrador de enable: `$00`, `PADDLE_BITS`, `BALL_ENABLE` ou
-`MISSILE_ENABLE`, nenhum com bit 7). O kernel despacha nesse bit com um único
-`BMI`:
+A entrada é de **escrita única** quando o byte 3 é 0 (essa segunda escrita é
+um dummy inofensivo em AUDV0) e de **escrita dupla** caso contrário. Não há
+entrada de tamanho variável nem despacho por bit 7: o kernel trata toda
+entrada de forma idêntica, então a temporização é constante independentemente
+de quantas escritas uma entrada contém.
 
-* entrada simples (3 bytes): delta + `reg|$80` + valor
-* entrada dupla (5 bytes): delta + reg + valor + reg + valor
+O kernel aplica a tabela **diretamente em toda scanline** (esta é a correção
+de delta=1 que substitui o pipeline pendente em duas fases da Rodada 10). `Y`
+sempre aponta uma entrada além da última decodificada, então cada linha lê
+suas duas escritas de `evTbl-4,Y` / `evTbl-3,Y` (escrita 1) e `evTbl-2,Y` /
+`evTbl-1,Y` (escrita 2) e então conta `evCnt`:
 
-Ambos os caminhos são lineares, então as linhas de evento mantêm temporização
-determinística (54 ciclos simples, 65 dupla, 11 ciclos de folga no pior
-caminho). Uma linha de evento único não precisa de segunda escrita; quando
-nenhum evento dispara, o kernel gasta apenas 18 ciclos antes do `WSYNC`.
+* se `evCnt > 0` a linha é uma linha comum sem evento: 38 ciclos no total;
+* se `evCnt == 0` um evento dispara: o kernel carrega o delta da próxima
+  entrada em `evCnt`, avança `Y` em 5 e volta ao loop - 54 ciclos;
+* se esse delta for `$FF` (`EV_MARKER_VAL`) o kernel termina nesta linha - 46
+  ciclos.
 
-Os índices de registrador são deslocamentos a partir de
-`EV_WRITE_BASE = AUDV1 ($1A)`: índice 0 escreve AUDV1 (um dummy inofensivo),
-1..5 endereçam GRP0..ENABL.
+Como o bloco de apply roda incondicionalmente no topo de toda linha - antes
+de qualquer contagem - um evento na própria linha seguinte (delta 1) não pode
+colidir com o evento anterior como acontecia com o pipeline pendente antigo:
+cada entrada aplica suas escritas na primeira linha da própria linha de
+exibição. Reaplicar a mesma entrada nas linhas entre eventos é idempotente e
+inofensivo.
+
+Os primeiros cinco bytes da tabela são uma **entrada dummy** (ambos os
+registradores 0, as duas escritas vão para AUDV0), então o apply nas linhas
+antes de o primeiro evento disparar toca apenas o registrador dummy
+inofensivo. As entradas reais começam no offset 5.
 
 Deltas: a primeira entrada dispara na linha `delta - 1`; cada entrada seguinte
 dispara `delta` linhas depois da anterior, então `BuildEvents` calcula
-`delta(primeira) = linha + 1` e `delta(próxima) = linha - linhaAnterior`. O
-kernel conta suas 185 linhas com uma contagem regressiva em RAM (`scanCnt`)
-em vez do registrador X, porque o código de evento usa `TAX` como índice de
-registrador e corromperia um contador de linhas em X a cada linha de evento.
+`delta(primeira) = linha + 1` e `delta(próxima) = linha - linhaAnterior`. A
+contagem `evCnt` cuida da primeira entrada (inicializada com `nullDelta`) e o
+delta do marcador encerra o kernel na linha 185. O kernel não precisa de um
+contador de linhas em registrador: a estrutura contagem + marcador fixa a
+região visível em exatamente 185 linhas.
 
-### Colisões na mesma linha (Rodada 7)
+### Colisões na mesma linha e ordem de slot de escrita (Rodadas 7/8/11)
 
 Até dez eventos podem cair na mesma linha de scanline (dois jogadores + bola
 + dois mísseis, ON e OFF de cada um). `InsertEvent` mantém a tabela ordenada
 por linha e permite no máximo duas escritas por entrada:
 
-* dois eventos na mesma linha se fundem em uma entrada dupla (as duas
-  escritas disparam nessa linha);
+* dois eventos na mesma linha se fundem em uma entrada dupla - como as
+  entradas são registros uniformes de 5 bytes, o merge apenas preenche
+  `reg2/val2` em `+3/+4`; não há deslocamento da cauda (o antigo `ShiftBy2`,
+  que estendia uma simples de 3 bytes em dupla de 5, desapareceu);
 * um terceiro evento em uma linha que já tem uma dupla é **deslocado para a
   linha+1** e a varredura continua - portanto nenhuma scanline precisa de mais
-  de duas escritas, o que protege o orçamento de 76 ciclos do kernel.
+  de duas escritas, o que protege o orçamento do kernel.
 
 A Rodada 7 corrigiu um bug no caminho de deslocamento: `.insertSingle`
 gravava a linha original empilhada do evento mesmo depois do deslocamento. Um
@@ -98,36 +112,28 @@ kernel virava `0 -> $FF`, de modo que esse evento OFF nunca disparava e o
 objeto ficava habilitado até a borda inferior da tela (um estiramento
 vertical). O gatilho realista era os dois jogadores vivos na mesma linha,
 os dois mísseis voando e a bola cruzando as linhas dos mísseis.
-`.insertSingle` agora descarta a linha original empilhada e grava o `evRow`
+`AppendEvent` agora descarta a linha original empilhada e grava o `evRow`
 efetivo (possivelmente deslocado), mantendo a tabela estritamente ordenada
 sem entradas de delta 0 em nenhum estado válido.
 
-### Ordem de slot de escrita da bola (Rodada 8)
+A temporização de escrita de uma dupla também importa (Rodada 8): o kernel
+grava o primeiro registrador no ciclo 15 da CPU e o segundo no ciclo 27
+(medidos no emulador determinístico). Uma escrita no TIA só se aplica ao
+scanline atual se terminar antes de o feixe passar pela posição horizontal do
+objeto. A segunda escrita exige portanto `x >= 13` no modelo conservador de
+feixe. O X da bola cobre toda a arena (0..156) e M1 pode chegar a x = 2,
+então eles nunca devem ocupar o segundo slot. `InsertEvent` impõe a regra de
+slot:
 
-Uma entrada dupla dispara duas escritas no mesmo scanline, mas não ao mesmo
-tempo: o kernel grava o primeiro registrador no ciclo 30 da CPU e o segundo
-no ciclo 44 (medidos no emulador determinístico). Uma escrita no TIA só se
-aplica ao scanline atual se terminar antes de o feixe passar pela posição
-horizontal do objeto. A primeira e a segunda escritas ficam ~42-49 pixels
-afastadas no feixe, então um objeto no segundo slot com um X pequeno pode
-perder o próprio limite e aparecer um scanline atrasado.
+* os eventos da bola e do M1 são inseridos **antes** dos jogadores e do M0,
+  então em um merge de mesma linha eles naturalmente tomam a primeira escrita;
+* a bola nunca é fundida com o M1 (ambos podem cair abaixo da porta da
+  segunda escrita) - o evento posterior é deslocado para a linha+1,
+  reutilizando o mecanismo de três-na-mesma-linha.
 
-Antes da Rodada 8, um merge de mesma linha mantinha a ordem de geração: o
-evento existente virava a primeira escrita e o novo evento a segunda. Como a
-bola é gerada entre os jogadores e os mísseis, um evento da bola se fundindo
-a uma única entrada de jogador ou míssil era escrito em **segundo**, então
-sempre que a bola ficava à esquerda do limite da segunda escrita seu ON/OFF
-disparava um scanline atrasado e toda a bola se deslocava verticalmente. A
-correção faz o `InsertEvent` trocar a bola (ENABL) para a **primeira** escrita
-sempre que um evento de bola se funde a uma única entrada: o X da bola cobre
-toda a arena (0..156), então ela nunca deve ocupar o segundo slot tardio. O
-co-objeto então toma a segunda escrita; seu único membro de X fixo é P0
-(x=16), que fica à esquerda até da primeira porta de escrita no modelo
-documentado, então essas raras linhas compartilhadas deslocam a borda de uma
-raquete em vez da bola. A troca tem ~40 bytes de código em VBLANK (mais 256
-bytes de preenchimento de alinhamento de página porque o código de eventos
-agora cruza o limite `$F500` antes da tabela de ajuste fino); o kernel não é
-alterado.
+Com essas regras, toda segunda escrita tem como alvo GRP0 (x=16), GRP1
+(x=136) ou ENAM0 (x >= 18), então a garantia horizontal vale para todos os
+objetos em todas as posições.
 
 ## Layout do código
 
@@ -140,23 +146,23 @@ endereços de registradores de hardware e constantes de build.
 | `$F000`  | `Reset` (inicialização)                        |
 | `$F055`  | `StartOfFrame` (VSYNC + VBLANK + kernel + OS)  |
 | `$F100`  | `KernelLoop` (kernel de exibição por eventos)  |
-| `$F150`  | `OverscanWait` (colisão + efeitos de acerto + loop de WSYNC) |
-| `$F160`  | `UpdatePlayers` (entrada do joystick + movimento) |
-| `$F199`  | `UpdateBall` (movimento + quique da bola)      |
-| `$F1D0`  | `UpdateMissiles` (botões de fogo, movimento)   |
-| `$F265`  | `ProcessCollisions` (custo fixo, sem branches) |
-| `$F2A0`  | `newActiveTbl` (tabela de atualização do m_active) |
+| `$F134`  | `OverscanWait` (colisão + efeitos de acerto + loop de WSYNC) |
+| `$F148`  | `UpdatePlayers` (entrada do joystick + movimento) |
+| `$F181`  | `UpdateBall` (movimento + quique da bola)      |
+| `$F1B8`  | `UpdateMissiles` (botões de fogo, movimento)   |
+| `$F24D`  | `ProcessCollisions` (custo fixo, sem branches) |
+| `$F290`  | `newActiveTbl` (tabela de atualização do m_active) |
 | `$F300`  | `ProcessHitEffects` (dano de HP + trava de disparo) |
 | `$F338`  | `PositionPlayers` (RESP0/RESP1 + HMP + HMOVE)  |
 | `$F35B`  | `PositionBall` (RESBL + HMBL)                  |
 | `$F36D`  | `PositionMissiles` (RESM0/RESM1 + HMM)         |
 | `$F39C`  | `BuildEvents` (insere eventos em ordem de linha) |
-| `$F424`  | `InsertEvent` (insere/mescla uma entrada)      |
-| `$F49A`  | `ShiftBy2` (estende uma simples em dupla)      |
-| `$F4A8`  | `ShiftBy3` (insere uma nova entrada simples)   |
-| `$F4B6`  | `ConvertDeltas` (linhas -> deltas do kernel)   |
-| `$F4E7`  | `PosObject` (RESPx/HMPx genérico)              |
-| `$F500`  | `fineAdjustBegin` (tabela HMP alinhada a página) |
+| `$F58A`  | `AppendEvent` (insere/mescla/desloca uma entrada) |
+| `$F60F`  | `fineAdjustTable` (tabela HMP alinhada a página) |
+| `$F648`  | `ShiftBy5` (desloca a cauda da tabela em 5)    |
+| `$F65F`  | `ConvertDeltas` (linhas -> deltas do kernel)   |
+| `$F68C`  | `PosObject` (RESPx/HMPx genérico)              |
+| `$F700`  | `fineAdjustBegin` (tabela HMP alinhada a página) |
 | `$FFFA`  | Vetores NMI / RESET / IRQ                      |
 
 Não há tabelas de sprites: os dois jogadores são retângulos sólidos
@@ -325,41 +331,40 @@ bordas da área de jogo.
 
 ## Builder da tabela de eventos
 
-A Rodada 3.1 substitui o pipeline de registros/ordem/emissão por um builder de
-inserção direta: `BuildEvents` reinicia a tabela com um único terminador `$FF`
-e então insere os eventos ON/OFF de cada objeto direto no `evTbl` em ordem de
-linha, então não existem buffers separados de registros ou ordem (os 40 bytes
-que usavam na Rodada 3 sumiram). Como as entradas têm tamanho variável, a
-inserção precisa de um loop de deslocamento explícito em vez de uma ordenação
-estável:
+A Rodada 11 usa um builder de inserção direta: `BuildEvents` escreve uma
+entrada dummy no offset 0 do `evTbl` e então insere os eventos ON/OFF de cada
+objeto direto na tabela em ordem de linha, então não existem buffers
+separados de registros ou ordem. Como as entradas são registros uniformes de
+5 bytes, a inserção é uma inserção ordenada simples com deslocamento fixo de
+5 bytes:
 
-1. `InsertEvent` varre a tabela comparando as linhas das entradas. Em uma
-   linha igual, mescla:
-   * entrada simples -> `ShiftBy2` desloca a cauda em 2 e escreve o segundo
-     valor (a entrada mesclada vira uma dupla de 5 bytes);
-   * entrada já dupla -> a linha é incrementada em 1 e a varredura continua
-     (isso só pode acontecer transitoriamente durante um único build, então a
-     tabela nunca excede seu limite).
-   Caso contrário `ShiftBy3` desloca a cauda em 3 e escreve uma nova simples de
-   3 bytes.
+1. `AppendEvent` varre a tabela comparando as linhas das entradas. Em uma
+   linha igual, mescla: preenche `reg2/val2` em `+3/+4` (sem deslocamento - a
+   entrada já tem 5 bytes de largura). Em uma linha já dupla, desloca o evento
+   para linha+1 e continua a varredura (isso só pode acontecer
+   transitoriamente durante um único build, então a tabela nunca excede seu
+   limite). Caso contrário, desloca a cauda em 5 (`ShiftBy5`) e escreve uma
+   nova entrada de 5 bytes. A ordem de inserção codifica a regra de slot: a
+   bola e o M1 são inseridos primeiro, então em um merge eles tomam a primeira
+   escrita; a bola nunca é fundida com o M1 (deslocada).
 2. Depois que todos os eventos são inseridos, `ConvertDeltas` reescreve as
    linhas in-place como deltas do kernel (primeiro delta = linha+1, próximos
-   deltas = linha - linhaAnterior), deixando o terminador `$FF` no fim da
-   tabela.
+   deltas = linha - linhaAnterior, avançando em 5 incondicionalmente) e anexa
+   a entrada do marcador cujo delta é `$FF` (`EV_MARKER_VAL`).
 
-Como uma simples de 3 bytes pode virar uma dupla de 5 bytes na mescla, o
-tamanho máximo da tabela não é mais 10 x 5 bytes: com 10 fronteiras de objeto
-e no máximo uma dupla por linha, a tabela precisa de no máximo 31 bytes.
-`EV_TBL_SIZE = 31` é um limite rígido; `tblLen` rastreia o comprimento atual
+Todo evento (único ou dupla mesclada) é uma entrada de 5 bytes, então o
+tamanho máximo da tabela é `dummy(5) + 10 * 5 + marcador(5) = 60` bytes.
+`EV_TBL_SIZE = 60` é um limite rígido; `tblLen` rastreia o comprimento atual
 e um teste afirma que ele nunca excede o limite sob entrada de fogo agressiva.
 
-A tabela termina com uma entrada terminadora cujo delta (`$FF`) nunca pode
-disparar dentro do kernel de 185 linhas.
+O delta do marcador (`$FF`) nunca pode disparar dentro do kernel de 185
+linhas: é o valor da contagem lido na linha que encerra o kernel.
 
 ## Alocação de variáveis
 
-51 de 128 bytes de RAM do RIOT são usados (48 na Rodada 3.1, +1 para
-`hit_flags` na Rodada 4, +2 para `p0_hp`/`p1_hp` na Rodada 5):
+80 de 128 bytes de RAM do RIOT são usados (o kernel de delta=1 e a tabela
+uniforme de 60 bytes custam 29 bytes sobre o layout da Rodada 10; documentado
+no changelog):
 
 | Endereço  | Nome        | Propósito                              |
 | --------- | ----------- | -------------------------------------- |
@@ -376,15 +381,18 @@ disparar dentro do kernel de 185 linhas.
 | `$8C`     | `m_active`  | máscara ativa compactada (M0/M1)       |
 | `$8D`     | `hit_flags` | resultado de colisão (bits P0/P1)      |
 | `$8E`     | `fire_prev` | borda de fogo compactada + sync de boot|
-| `$8F-$90` | `evCnt/scanCnt` | estado do kernel                   |
-| `$91-$AF` | `evTbl`     | tabela de eventos (tamanho variável, máx. 31B) |
-| `$B0-$B2` | `evRow/tempCount/tblLen` | temporários do builder |
+| `$8F`     | `evCnt`     | contagem regressiva de eventos do kernel |
+| `$90-$CB` | `evTbl`     | tabela de eventos (dummy + 10 entradas + marcador, 60B) |
+| `$CC`     | `evRow`     | temporário do builder                  |
+| `$CD`     | `tempCount` | temporário do builder                  |
+| `$CE`     | `tblLen`    | temporário do builder                  |
+| `$CF`     | `nullDelta` | valor de inicialização do primeiro delta |
 
-As economias vêm de: entradas de tabela de tamanho variável (31 vs 55 bytes),
-nenhum buffer de registros/ordem (0 vs 40 bytes), nenhum `joystate` (relê o
-`SWCHA`), flags de míssil compactadas (um byte para dois), nenhum `fire_sync`
-separado (bit 7 de `fire_prev`) e nenhum `evIdx` (o kernel varre a tabela
-linearmente).
+As economias vêm de: flags de míssil compactadas (um byte para dois), nenhum
+`fire_sync` separado (bit 7 de `fire_prev`) e nenhum `evIdx` (o kernel lê a
+tabela via `Y`, que sempre aponta uma entrada além da última decodificada). Os
+bytes dos registradores pendentes do kernel da Rodada 10 sumiram porque o
+apply lê direto da tabela.
 
 ## Por que VBLANK para gameplay
 

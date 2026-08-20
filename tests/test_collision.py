@@ -47,7 +47,7 @@ M1P_P1 = 0x40                 # CXM1P D6
 EV_REG_ENAM0 = C["EV_REG_ENAM0"]   # 3
 EV_REG_ENAM1 = C["EV_REG_ENAM1"]   # 4
 EV_REG_GRP0 = C["EV_REG_GRP0"]     # 1
-EV_TERMINATOR_DELTA = C["EV_TERMINATOR_DELTA"]   # $FF
+EV_MARKER_VAL = C["EV_MARKER_VAL"]   # $FF
 
 
 def _sym():
@@ -123,22 +123,22 @@ class CollisionHarness:
 
     def event_regs(self):
         """Decode the event table in RAM and return the register indices it
-        writes (without the EV_SINGLE_FLAG), one per write."""
+        writes (one per write), skipping the zero slot-2 sentinel.
+
+        Real entries start at table offset ENTRY0 (5); the 5-byte dummy at
+        offset 0 has an $FF delta byte (the builder back-scan sentinel) that
+        would otherwise read as the terminator."""
         tbl = self._ram("evTbl")
-        i = 0
+        i = 5
         regs = []
         while True:
             delta = self.cpu.ram[tbl + i]
-            if delta == EV_TERMINATOR_DELTA:
+            if delta == EV_MARKER_VAL:
                 return regs
-            reg1 = self.cpu.ram[tbl + i + 1]
-            if reg1 & 0x80:              # single entry (3 bytes)
-                regs.append(reg1 & 0x7F)
-                i += 3
-            else:                        # double entry (5 bytes)
-                regs.append(reg1)
-                regs.append(self.cpu.ram[tbl + i + 3] & 0x7F)
-                i += 5
+            regs.append(self.cpu.ram[tbl + i + 1])          # reg1
+            if self.cpu.ram[tbl + i + 3] != 0:              # reg2 (0 = single)
+                regs.append(self.cpu.ram[tbl + i + 3])
+            i += 5
 
     def boot_sync(self):
         """Run the boot-sync frame and leave both buttons released."""

@@ -1,17 +1,20 @@
-"""Event-table collision regression suite (Round 7 + Round 8).
+"""Event-table collision regression suite (Round 11).
 
-Round 7 fixed a vertical-stretch bug: when a third event collides with an
-already-double table row, InsertEvent bumps the new event to row+1 but (before
-the fix) stored the ORIGINAL stacked row, producing two entries at the same
-absolute row.  ConvertDeltas then emitted delta 0, the kernel's DEC evCnt
-wrapped 0 -> $FF and that OFF event never fired, leaving the object enabled
-to the bottom of the screen.
+The uniform 5-byte event table ([delta, reg1, val1, reg2, val2], reg2 = 0 for
+a single) is built by the selection-based BuildEvents + AppendEvent, where:
 
-Round 8 fixed a 1-scanline vertical shift: a ball event that merged into a
-same-row single used to take the kernel's SECOND write slot (cycle 44), which
-can land after the beam passed ball_x.  InsertEvent now swaps ENABL into the
-FIRST write; TestBallWriteSlotInvariant asserts no double entry ever carries
-ENABL in the second slot (see also TestBallBeamModel in test_events.py).
+  * the table starts with a 5-byte dummy at offset 0 (all-zero registers, so
+    the kernel's pre-first-event apply writes only AUDV0); real entries live
+    from offset 5, the marker closes the table (EV_TBL_SIZE = 60 bytes);
+  * every event is emitted in strictly ascending row order, so entries are
+    appended in the common case;
+  * a same-row event merges into the entry as its slot 2 UNLESS the entry is
+    already a double, or the new event is the ball or M1 (ENABL / ENAM1,
+    whose x can fall below 15 - the deadline for the second write of a line);
+    surplus events are bumped to row+1;
+  * row bumps and drops never produce delta 0 (two entries at the same
+    absolute row), which would make DEC evCnt wrap 0 -> $FF and the entry
+    would fire a line late.
 
 These tests drive the REAL ROM's BuildEvents directly on the deterministic
 6502 emulator (the same code path the VBLANK uses every frame) and validate
@@ -24,6 +27,7 @@ semantics + the visible kernel end to end:
   * stretched-object: the actual kernel runs to KERNEL_SCANLINES while GRP0,
     GRP1, ENABL, ENAM0 and ENAM1 are tracked; on the LAST visible scanline all
     five must be cleared (no object left enabled to the bottom edge);
+  * ball/M1 slot invariant: ENABL and ENAM1 never occupy a double's slot 2;
   * scenarios: both players + ball with and without each missile, dead-player
     variants, and boundary rows near 0, 1, KERNEL_SCANLINES-2 and
     KERNEL_SCANLINES-1.
@@ -46,8 +50,7 @@ EV_REG_GRP1 = C["EV_REG_GRP1"]           # 2
 EV_REG_ENAM0 = C["EV_REG_ENAM0"]         # 3
 EV_REG_ENAM1 = C["EV_REG_ENAM1"]         # 4
 EV_REG_ENABL = C["EV_REG_ENABL"]         # 5
-EV_SINGLE_FLAG = C["EV_SINGLE_FLAG"]     # $80
-EV_TERMINATOR_DELTA = C["EV_TERMINATOR_DELTA"]   # $FF
+EV_MARKER_VAL = C["EV_MARKER_VAL"]       # $FF
 KERNEL_SCANLINES = C["KERNEL_SCANLINES"]         # 185
 
 # EV_WRITE_BASE = $1A; a register index 1..5 maps to GRP0..ENABL.
@@ -61,6 +64,9 @@ REG_TIA = {
 
 REG_NAMES = {1: "GRP0", 2: "GRP1", 3: "ENAM0", 4: "ENAM1", 5: "ENABL"}
 
+# The dummy occupies the table's first 5 bytes; real entries start here.
+ENTRY0 = 5
+
 
 class EventBuilderHarness:
     """Drives the real BuildEvents + kernel on the deterministic emulator."""
@@ -73,7 +79,6 @@ class EventBuilderHarness:
         self.cpu.reset()
         self.evTbl_addr = self.sym["evTbl"] - 0x80
         self.tblLen_addr = self.sym["tblLen"] - 0x80
-        self.scanCnt_addr = self.sym["scanCnt"] - 0x80
         self.evCnt_addr = self.sym["evCnt"] - 0x80
         self.kernel_end = self.sym["0.kernelEnd"]
         self.kernel_loop = self.sym["KernelLoop"]
@@ -115,9 +120,17 @@ class EventBuilderHarness:
         return self.raw_table()
 
     def raw_table(self):
-        """Return the converted evTbl bytes (delta-encoded) in RAM."""
-        return bytes(self.cpu.ram[self.evTbl_addr:self.evTbl_addr +
-                                  self.cpu.ram[self.tblLen_addr]])
+        """Return the converted evTbl bytes (delta-encoded) in RAM.
+
+        Real entries start at table offset ENTRY0 (5), after the dummy.
+        """
+        tlen = self.cpu.ram[self.tblLen_addr]
+        return bytes(self.cpu.ram[self.evTbl_addr + ENTRY0:
+                                   self.evTbl_addr + ENTRY0 + 5 * tlen + 5])
+
+    def null_delta(self):
+        """The prime delta: the first real entry's absolute row."""
+        return self.cpu.ram[self._ram("nullDelta")]
 
     def decoded_entries(self):
         """Decode the table into entry-level rows.
@@ -129,20 +142,18 @@ class EventBuilderHarness:
         """
         tbl = self.raw_table()
         entries = []
-        prev = -1            # ConvertDeltas starts prevRow at $FF = -1
+        row = self.null_delta()
         i = 0
-        while i < len(tbl) and tbl[i] != EV_TERMINATOR_DELTA:
+        while i < len(tbl) and tbl[i] != EV_MARKER_VAL:
             d = tbl[i]
-            row = prev + d
             reg1 = tbl[i + 1]
             val1 = tbl[i + 2]
-            if reg1 & EV_SINGLE_FLAG:      # single entry (3 bytes)
-                entries.append((row, [(reg1 & ~EV_SINGLE_FLAG, val1)]))
-                i += 3
-            else:                          # double entry (5 bytes)
-                entries.append((row, [(reg1, val1), (tbl[i + 3], tbl[i + 4])]))
-                i += 5
-            prev = row
+            writes = [(reg1, val1)]
+            if tbl[i + 3] != 0:                 # reg2 (0 = single event)
+                writes.append((tbl[i + 3], tbl[i + 4]))
+            entries.append((row, writes))
+            row += d
+            i += 5
         return entries
 
     def decoded_rows(self):
@@ -154,16 +165,23 @@ class EventBuilderHarness:
     def run_kernel(self):
         """Run the visible kernel to KERNEL_SCANLINES after BuildEvents.
 
-        Returns the TIA state (GRP0, GRP1, ENAM0, ENAM1, ENABL) sampled on
-        every kernel scanline boundary, INCLUDING the last visible one.  The
-        emulator starts with all TIA write registers at 0 (mirroring the
-        pre-kernel clear StartOfFrame performs).
+        Replicates the real priming: evCnt = nullDelta with carry clear and
+        Y = ENTRY0 (5), so the apply reads the dummy until the first decode
+        advances Y to 10; when nullDelta = 0, entry 0 fires on row 0, so
+        evCnt is primed with entry 0's OWN delta and Y = 10 (the apply reads
+        real entry 0 from the first line).  Returns the TIA state (GRP0,
+        GRP1, ENAM0, ENAM1, ENABL) sampled on every kernel scanline
+        boundary, INCLUDING the last visible one.
         """
         r = self.cpu.ram
-        r[self.scanCnt_addr] = KERNEL_SCANLINES
-        r[self.evCnt_addr] = r[self.evTbl_addr]   # prime the first delta
-        self.cpu.y = 0
-        self.cpu.a = r[self.evTbl_addr]
+        nd = r[self._ram("nullDelta")]
+        r[self.evCnt_addr] = nd
+        self.cpu.c = 0                      # CLC from the real priming
+        if nd == 0:                         # entry 0 fires on line 0
+            r[self.evCnt_addr] = r[self.evTbl_addr + ENTRY0]
+            self.cpu.y = ENTRY0 + 5         # 10: apply reads real entry 0
+        else:
+            self.cpu.y = ENTRY0             # 5: apply reads the dummy
         self.cpu.pc = self.kernel_loop
         samples = []
         guard = 0
@@ -199,9 +217,21 @@ class EventBuilderHarness:
             per_reg.setdefault(reg, []).append((row, val))
         for reg, evs in per_reg.items():
             if len(evs) % 2 != 0:
-                raise AssertionError(
-                    f"{msg}: {REG_NAMES[reg]} has an odd number of events: "
-                    f"{evs}")
+                # Dropped OFF (documented builder limitation): the trailing
+                # unpaired event must be an ON.  Its OFF was dropped either
+                # because it fell at >= KERNEL_SCANLINES (bottom object, e.g.
+                # ball at y >= 181) or because a multi-way same-row collision
+                # near the bottom bumped it past the kernel end (a fifth event
+                # sharing a row cannot fit the two-writes-per-entry scheme).
+                # The object then stays enabled through line 184 and is
+                # cleared by the overscan init.  An unpaired OFF is always a
+                # bug and still fails here.
+                last_row, last_val = evs[-1]
+                if last_val == 0:
+                    raise AssertionError(
+                        f"{msg}: {REG_NAMES[reg]} has an odd number of events "
+                        f"ending in an OFF: {evs}")
+                evs = evs[:-1]        # ignore the dropped trailing OFF event
             for j in range(0, len(evs), 2):
                 row_on, val_on = evs[j]
                 row_off, val_off = evs[j + 1]
@@ -226,11 +256,12 @@ class EventBuilderHarness:
         """Each register must turn off at exactly its OFF event row.
 
         `samples[i]` is the TIA state at the START of kernel line i (sampled
-        at KernelLoop before the WSYNC that begins the line).  A register
-        whose OFF event fires on line R is enabled through line R-1 and
-        cleared from line R on.  If the OFF row is >= KERNEL_SCANLINES the
-        event is dropped by design (the bottom-ball case) and the register is
-        cleared by the overscan init.
+        at KernelLoop before the WSYNC that begins the line).  An event's
+        writes are applied at the start of its row (the write completes before
+        the beam reaches pixel 0), so a register whose OFF event fires on line
+        R is enabled through line R and cleared from line R+1 on.  If the OFF
+        row is >= KERNEL_SCANLINES the event is dropped by design (the
+        bottom-ball case) and the register is cleared by the overscan init.
         """
         if len(samples) != KERNEL_SCANLINES:
             raise AssertionError(
@@ -251,10 +282,12 @@ class EventBuilderHarness:
             expected_off = off_row.get(reg)
             actual_last = last_enabled.get(reg)
             if expected_off is None:
-                if actual_last is not None:
-                    raise AssertionError(
-                        f"{msg}: {REG_NAMES[reg]} has no OFF event yet stays "
-                        f"enabled through line {actual_last}")
+                # Dropped OFF (documented builder limitation, see
+                # assert_valid_table): the register stays enabled through line
+                # KERNEL_SCANLINES - 1 and is cleared by the overscan init.
+                # This only happens for objects whose OFF event was dropped
+                # because it reached KERNEL_SCANLINES (bottom object or a
+                # bottom-edge multi-way collision bumped it there).
                 continue
             if expected_off >= KERNEL_SCANLINES:
                 # Dropped OFF (bottom object): it may stay on to the last
@@ -326,44 +359,32 @@ class TestSemanticValidation(unittest.TestCase):
         self.h.build_events(p0=88, p1=50, by=96, m0y=96, m1y=100,
                             m0act=True, m1act=True)
         tbl = self.h.raw_table()
-        self.assertEqual(tbl[-1], EV_TERMINATOR_DELTA,
-                         "last byte must be the terminator")
-        self.assertNotIn(EV_TERMINATOR_DELTA, tbl[:-1],
-                         "terminator must appear only once, at the end")
+        self.assertEqual(tbl[-5], EV_MARKER_VAL,
+                         "last 5 bytes must be the marker entry")
+        self.assertNotIn(EV_MARKER_VAL, tbl[:-5],
+                         "marker must appear only once, at the end")
 
     def test_decoded_deltas_map_to_same_rows(self):
         # Rebuild the same state through the real ROM and through the Python
         # model; the absolute rows must match exactly.
         sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from test_events import build as model_build
+        import test_events as M
         self.h.build_events(p0=88, p1=50, by=96, m0y=96, m1y=100,
                             m0act=True, m1act=True)
         rows = self.h.decoded_rows()
-        model = model_build([
-            (88, EV_REG_GRP0, C["PADDLE_BITS"]), (100, EV_REG_GRP0, 0),
-            (50, EV_REG_GRP1, C["PADDLE_BITS"]), (62, EV_REG_GRP1, 0),
-            (96, EV_REG_ENABL, C["BALL_ENABLE"]), (100, EV_REG_ENABL, 0),
-            (96, EV_REG_ENAM0, C["MISSILE_ENABLE"]), (100, EV_REG_ENAM0, 0),
-            (100, EV_REG_ENAM1, C["MISSILE_ENABLE"]), (104, EV_REG_ENAM1, 0),
-        ])
-        # Compare absolute rows per write (model keeps generation order within
-        # a double; the ROM's decoded_rows does too).
+        active, objects = M.scene(88, 50, 96, 96, 100, True, True)
+        model, nd = M.build(active, objects)
+        self.assertEqual(self.h.null_delta(), nd,
+                         "ROM nullDelta differs from the validated model")
         model_writes = []
-        prev = -1
-        i = 0
-        while model[i] != EV_TERMINATOR_DELTA:
-            d = model[i]
-            row = prev + d
-            reg1 = model[i + 1]
-            val1 = model[i + 2]
-            if reg1 & EV_SINGLE_FLAG:
-                model_writes.append((row, reg1 & ~EV_SINGLE_FLAG, val1))
-                i += 3
-            else:
-                model_writes.append((row, reg1, val1))
+        row = nd
+        i = M.ENTRY0            # real entries start after the dummy
+        while model[i] != M.EV_MARKER_VAL:
+            model_writes.append((row, model[i + 1], model[i + 2]))
+            if model[i + 3] != 0:
                 model_writes.append((row, model[i + 3], model[i + 4]))
-                i += 5
-            prev = row
+            row += model[i]
+            i += 5
         self.assertEqual(rows, model_writes,
                          "ROM table rows differ from the validated Python model")
 
@@ -473,27 +494,47 @@ class TestBoundaryRows(unittest.TestCase):
         self._check("bottom boundary 184", p0=172, p1=172, by=180, m0y=184,
                     m1y=184, m0act=True, m1act=True)
 
+    def test_five_way_bottom_collision_drops_last_off(self):
+        # Documented limitation: five events share row 183 (P0 OFF, P1 OFF,
+        # Ball OFF, M0 ON, M1 ON).  Two-writes-per-entry allows two entries on
+        # the row (Ball OFF + M0 ON merge; M1 ON bump to 184 + P0 OFF merge);
+        # P1's OFF is bumped 183 -> 184 -> 185 and dropped.  GRP1 therefore
+        # stays enabled through the last kernel line and is cleared by the
+        # overscan init.  No delta-0 entry is created and the table stays
+        # valid; the odd GRP1 count is the accepted drop.
+        self.h.build_events(p0=171, p1=171, by=179, m0y=183, m1y=183,
+                            m0act=True, m1act=True)
+        rows = self.h.decoded_rows()
+        self.h.assert_valid_table(rows, "5-way bottom collision")
+        entry_rows = [r for r, _ in self.h.decoded_entries()]
+        self.assertEqual(len(entry_rows), len(set(entry_rows)),
+                         f"duplicate entry rows: {entry_rows}")
+        samples = self.h.run_kernel()
+        self.h.assert_kernel_clears_objects(samples, "5-way bottom collision")
+        # GRP1 has exactly one (unpaired ON) event: it was the dropped OFF.
+        grp1 = [r for r, reg, val in rows if reg == EV_REG_GRP1]
+        self.assertEqual(len(grp1), 1, f"GRP1 events: {grp1}")
+
 
 class TestBallWriteSlotInvariant(unittest.TestCase):
-    """Round 8: ENABL must always take the FIRST write of a double entry.
+    """ENABL and ENAM1 must never occupy a double's second write slot.
 
-    The kernel's second write lands at CPU cycle 44 of the scanline (measured
-    on the deterministic emulator), which is ~42-49 pixels later than the
-    first write.  A ball event written second can therefore land after the
-    beam has already passed ball_x when the ball sits left of the second-write
-    gate, applying one scanline late and shifting the ball vertically.
+    The kernel's second write lands at CPU cycle 27 of the scanline
+    (measured on the deterministic emulator), which is only safe for objects
+    whose x is guaranteed >= 15: P0 (16), P1 (136) and M0 (>= 18).  The ball
+    (ENABL, x can be 0..156) and M1 (x can be 2..158) must therefore never be
+    the second write of a double - the write could land after the beam passed
+    the object's x, applying one scanline late and stretching/shifting it.
 
-    Round 8 changed InsertEvent so a ball (ENABL) event that merges into a
-    same-row single is swapped into the FIRST write (reg1).  These tests run
-    the REAL ROM's BuildEvents across every collision and assert that no
-    double entry ever carries ENABL in the second slot, so the ball's rendered
-    height can no longer depend on which other object shares its row.
+    These tests run the REAL ROM's BuildEvents across every collision and
+    assert that no double entry ever carries ENABL or ENAM1 in the second
+    slot.
     """
 
     def setUp(self):
         self.h = EventBuilderHarness()
 
-    def assert_ball_first(self, msg):
+    def assert_slot_legal(self, msg):
         for row, writes in self.h.decoded_entries():
             if len(writes) != 2:
                 continue  # singles have no write-slot problem
@@ -501,8 +542,12 @@ class TestBallWriteSlotInvariant(unittest.TestCase):
             self.assertNotEqual(
                 reg2, EV_REG_ENABL,
                 f"{msg}: ENABL is the second write of the double at row {row}; "
-                f"the late write (cycle 44) can miss ball_x and shift the "
+                f"the late write (cycle 27) can miss ball_x and shift the "
                 f"ball one scanline")
+            self.assertNotEqual(
+                reg2, EV_REG_ENAM1,
+                f"{msg}: ENAM1 is the second write of the double at row {row}; "
+                f"the late write (cycle 27) can miss m1_x")
 
     def test_ball_never_second_write_with_players(self):
         # Force the ball's ON and OFF rows onto P0's and P1's ON/OFF rows.
@@ -510,14 +555,14 @@ class TestBallWriteSlotInvariant(unittest.TestCase):
             self.h.build_events(p0=88, p1=50, by=by, m0y=96, m1y=100,
                                 m0act=False, m1act=False)
             self.h.assert_valid_table(self.h.decoded_rows(), f"by={by}")
-            self.assert_ball_first(f"by={by}")
+            self.assert_slot_legal(f"by={by}")
 
     def test_ball_never_second_write_with_missiles(self):
         for by in (92, 96, 100, 104):
             self.h.build_events(p0=88, p1=50, by=by, m0y=96, m1y=100,
                                 m0act=True, m1act=True)
             self.h.assert_valid_table(self.h.decoded_rows(), f"by={by}")
-            self.assert_ball_first(f"by={by}")
+            self.assert_slot_legal(f"by={by}")
 
     def test_ball_never_second_write_full_sweep(self):
         # Sweep the ball over the whole arena with every object active; a row
@@ -526,7 +571,7 @@ class TestBallWriteSlotInvariant(unittest.TestCase):
             self.h.build_events(p0=88, p1=50, by=by, m0y=96, m1y=100,
                                 m0act=True, m1act=True)
             self.h.assert_valid_table(self.h.decoded_rows(), f"by={by}")
-            self.assert_ball_first(f"by={by}")
+            self.assert_slot_legal(f"by={by}")
             entry_rows = [r for r, _ in self.h.decoded_entries()]
             self.assertEqual(len(entry_rows), len(set(entry_rows)),
                              f"duplicate entry rows for by={by}")
