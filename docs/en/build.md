@@ -49,11 +49,31 @@ by `check_env.py`, the build and the test suite.
 
 `stella -help` is a real option that works without a video device and prints
 `Stella <version>` plus `Usage: stella ...`. It is used as the Stella probe.
+`tools/common.py` runs the executable with `-help`, captures both streams and
+requires both markers; an executable found on `PATH` that is not actually
+Stella is rejected.
+
+**Windows / Stella 7.x note.** On Windows, Stella 7.x is a GUI-subsystem
+executable. For `-help` (and `-rominfo`, `-listrominfo`) it calls
+`AttachConsole(ATTACH_PARENT_PROCESS)` followed by
+`freopen("CONOUT$", "w", stdout)`, which re-points `stdout` at the console
+screen buffer *regardless of the handle the parent process provided*. The help
+text is therefore printed straight to the user's terminal and **cannot be
+captured through a pipe or a redirect to a file** while a parent console
+exists — `capture_output` comes back empty even though the emulator works. To
+avoid a false "not Stella" verdict, when the captured output is empty on
+Windows the probe inspects the executable itself: it must be a genuine PE
+file, exit 0 on `-help`, and contain the distinctive usage markers
+("Usage: stella", "Stella version") that the help text would print. This
+deliberately rejects random executables that merely share the name
+`stella.exe`. No `cmd.exe` redirection or temporary file is used for this.
 
 Note that `stella -rominfo` is **different**: it initializes SDL and therefore
 requires a video device even though it never opens a window. On headless Linux
 `tools/common.py` automatically retries `-rominfo` through `xvfb-run -a` when
-no `DISPLAY` is available. CI installs `xvfb` for this reason.
+no `DISPLAY` is available. CI installs `xvfb` for this reason. (On Windows the
+same CONOUT$ behavior applies to `-rominfo`, so its console output is not
+capturable either; the ROM metadata checks are CI/Linux-only.)
 
 ## Output artifacts
 

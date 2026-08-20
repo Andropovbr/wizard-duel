@@ -58,23 +58,31 @@ def probe_dasm(path):
 def probe_stella(path):
     """Deterministically verify that `path` is a functional Stella executable.
 
-    Stella supports a real `-help` option that works without a video device.
+    Stella supports a real `-help` option that works without a video device
+    and prints `Stella <version>` plus `Usage: stella ...`.
 
     Windows note: Stella 7.x is a GUI-subsystem executable.  On Windows its
-    help text is written to the console the process inherits (WriteConsole)
-    rather than to the pipe Python captures, so `capture_output` can come back
-    EMPTY even though the emulator is fully functional and its help was shown
-    on the user's terminal.  To avoid a false "not Stella" verdict we:
+    `-help` path calls attachConsole(), which does
+    `AttachConsole(ATTACH_PARENT_PROCESS)` and then
+    `freopen("CONOUT$", "w", stdout)`.  That re-points stdout at the console
+    screen buffer regardless of the handle the parent process provided, so
+    the help text is written straight to the user's terminal and can never
+    be captured through a pipe OR a redirect to a file while a parent console
+    exists: `capture_output` comes back EMPTY even though the emulator is
+    fully functional.  To avoid a false "not Stella" verdict on Windows we:
 
       1. decode both streams with an explicit UTF-8/replace so the string
          check can never be defeated by a decode error;
-      2. on Windows, when the direct capture is empty, retry through
-         `cmd.exe /c` with both streams redirected to a temp file (a real
-         file handle makes the CRT fall back to WriteFile);
-      3. only if that file is ALSO empty, accept a genuine PE executable that
-         exits 0 on `-help` as a best-effort functional check (the output is
-         genuinely uncapturable for that build; the strict text check still
-         runs on Linux/macOS and in CI).
+      2. when the direct capture is empty, fall back to inspecting the
+         executable itself: it must be a genuine Windows PE, exit 0 on
+         `-help` (the return code of the run above is reused, so no second
+         subprocess is spawned) and its bytes must contain the distinctive
+         usage markers "Usage: stella" and "Stella version" that `stella
+         -help` would print.
+
+    The strict text check still runs on Linux/macOS and in CI, and the
+    Windows fallback deliberately rejects random executables that merely
+    share the name stella.exe.
     """
     try:
         result = subprocess.run([path, "-help"], capture_output=True, text=True,
@@ -85,37 +93,62 @@ def probe_stella(path):
     if "Stella" in out and "Usage: stella" in out:
         return True, "ok"
     if os.name == "nt" and not out.strip():
-        return _probe_stella_windows_redirect(path)
+        return _probe_stella_windows(path, result.returncode)
     return False, f"did not behave like Stella (output: {out.strip()[:200]})"
 
 
-def _probe_stella_windows_redirect(path):
+def _probe_stella_windows(path, returncode):
     """Windows fallback probe for Stella builds whose -help output cannot be
-    captured through a pipe (see probe_stella)."""
-    import tempfile
-    try:
-        with tempfile.TemporaryDirectory() as td:
-            outfile = Path(td) / "stella-help.txt"
-            cmd = f'""{path}" -help > "{outfile}" 2>&1"'
-            result = subprocess.run(cmd, shell=True, timeout=30)
-            text = outfile.read_text(encoding="utf-8", errors="replace")
-            if "Stella" in text and "Usage: stella" in text:
-                return True, "ok"
-            # Some GUI builds still print nothing anywhere.  Accept a real
-            # Windows PE that exits cleanly on -help as a best-effort check.
-            if result.returncode == 0 and _is_pe_executable(path):
-                return True, "ok (console output not capturable; verified PE + exit 0)"
-            return False, (f"did not behave like Stella (redirected output: "
-                           f"{text.strip()[:200]})")
-    except (OSError, subprocess.TimeoutExpired, PermissionError) as exc:
-        return False, f"could not execute stella: {exc}"
+    captured (see probe_stella).  `returncode` is the exit code of the
+    `-help` run already performed by probe_stella.
+
+    A `cmd.exe` redirection (or any temp-file redirect) is deliberately NOT
+    used: Stella 7.x GUI builds reopen stdout on CONOUT$ in attachConsole(),
+    so redirecting to a file captures nothing and only makes the help text
+    print a second time.  The only reliable evidence left is the executable
+    itself (see _looks_like_stella).
+    """
+    if returncode == 0 and _looks_like_stella(path):
+        return True, "ok (console output not capturable; verified PE + exit 0)"
+    return False, ("did not behave like Stella (console output is not "
+                   "capturable and executable verification failed)")
 
 
-def _is_pe_executable(path):
-    """True if `path` is a Windows PE file (starts with the 'MZ' magic)."""
+def _looks_like_stella(path):
+    """Best-effort identity check for a Windows Stella executable.
+
+    Requires a real PE file whose bytes contain the distinctive usage
+    markers that `stella -help` would print ("Usage: stella" and
+    "Stella version").  The file is scanned in chunks so large executables
+    are not loaded entirely into memory.
+    """
+    markers = (b"Usage: stella", b"Stella version")
     try:
         with open(path, "rb") as fh:
-            return fh.read(2) == b"MZ"
+            head = fh.read(0x40)
+            if len(head) < 0x40 or head[:2] != b"MZ":
+                return False
+            pe_offset = int.from_bytes(head[0x3C:0x40], "little")
+            fh.seek(pe_offset)
+            if fh.read(4) != b"PE\x00\x00":
+                return False
+            fh.seek(0)
+            found = set()
+            chunk_size = 1 << 20
+            overlap = max(len(m) for m in markers) - 1
+            prev = b""
+            while True:
+                chunk = fh.read(chunk_size)
+                if not chunk:
+                    break
+                data = prev + chunk
+                for marker in markers:
+                    if marker in data:
+                        found.add(marker)
+                if all(m in found for m in markers):
+                    return True
+                prev = data[-overlap:]
+            return all(m in found for m in markers)
     except OSError:
         return False
 
