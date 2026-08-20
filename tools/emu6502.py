@@ -13,11 +13,12 @@ enough to let the frame loop advance and to validate game state and timing:
   * INPT4/INPT5 reads are exposed via `cpu.inpt[4]` / `cpu.inpt[5]` (bit 7
     clear = button pressed); tests set them to simulate the fire buttons.
   * TIA collision latches are modeled at the REGISTER level: `cpu.cxm0p`
-    / `cpu.cxm1p` hold the CXM0P/CXM1P read values, they persist until a
-    CXCLR write clears them, and reads have no side effects - exactly the
-    real latch contract.  Tests inject latch bits to represent an overlap
-    rendered by the visible kernel (the emulator does not simulate pixel
-    geometry; see docs/en/timing.md for the Stella-based pixel validation).
+    / `cpu.cxm1p` / `cpu.cxp0fb` / `cpu.cxp1fb` hold the CXM0P/CXM1P/
+    CXP0FB/CXP1FB read values, they persist until a CXCLR write clears them,
+    and reads have no side effects - exactly the real latch contract.  Tests
+    inject latch bits to represent an overlap rendered by the visible kernel
+    (the emulator does not simulate pixel geometry; see docs/en/timing.md for
+    the Stella-based pixel validation).
   * Game RAM is RIOT $80-$FF plus a separate $0100-$01FF stack page.
 
 This is a functional model with realistic 6502 branch timing: a branch
@@ -62,6 +63,8 @@ class Cpu:
         self.inpt = [0xFF] * 6                  # INPT0-5 reads (buttons released)
         self.cxm0p = 0                          # CXM0P read latch (D7 M0-P1, D6 M0-P0)
         self.cxm1p = 0                          # CXM1P read latch (D7 M1-P0, D6 M1-P1)
+        self.cxp0fb = 0                         # CXP0FB read latch (D7 P0-PF, D6 P0-BL)
+        self.cxp1fb = 0                         # CXP1FB read latch (D7 P1-PF, D6 P1-BL)
         self.riot = [0] * 32                    # $0280-$029F
         self.a = 0
         self.x = 0
@@ -89,6 +92,10 @@ class Cpu:
                 return self.cxm0p
             if addr == 0x01:            # CXM1P read (M1 vs P0/P1 latches)
                 return self.cxm1p
+            if addr == 0x02:            # CXP0FB read (P0 vs Ball/playfield)
+                return self.cxp0fb
+            if addr == 0x03:            # CXP1FB read (P1 vs Ball/playfield)
+                return self.cxp1fb
             return self.tia[addr]
         if addr < 0x80:
             m = addr & 0x3F
@@ -98,6 +105,10 @@ class Cpu:
                 return self.cxm0p
             if m == 0x01:               # mirrored CXM1P read
                 return self.cxm1p
+            if m == 0x02:               # mirrored CXP0FB read
+                return self.cxp0fb
+            if m == 0x03:               # mirrored CXP1FB read
+                return self.cxp1fb
             return self.tia[m]
         if 0x280 <= addr <= 0x29F:
             if addr == 0x284:                   # INTIM
@@ -126,6 +137,8 @@ class Cpu:
             elif addr == 0x2C:                  # CXCLR: clear collision latches
                 self.cxm0p = 0
                 self.cxm1p = 0
+                self.cxp0fb = 0
+                self.cxp1fb = 0
             return
         if addr < 0x80:
             m = addr & 0x3F
@@ -135,6 +148,8 @@ class Cpu:
             if m == 0x2C:                       # CXCLR (mirrored): clear latches
                 self.cxm0p = 0
                 self.cxm1p = 0
+                self.cxp0fb = 0
+                self.cxp1fb = 0
             return
         if 0x280 <= addr <= 0x29F:
             if addr == 0x296:                   # TIM64T: 64 cycles/tick

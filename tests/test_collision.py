@@ -11,9 +11,11 @@ itself is validated in Stella; see docs/en/timing.md).
 TIA latch layout (verified against the Stella source, the reference
 emulator):
 
-    CXM0P  ($00, read): D7 = M0 x P1,  D6 = M0 x P0
-    CXM1P  ($01, read): D7 = M1 x P0,  D6 = M1 x P1
-    CXCLR  ($2C, write): clears every latch
+    CXM0P   ($00, read): D7 = M0 x P1,  D6 = M0 x P0
+    CXM1P   ($01, read): D7 = M1 x P0,  D6 = M1 x P1
+    CXP0FB  ($02, read): D7 = P0 x PF,  D6 = P0 x BL
+    CXP1FB  ($03, read): D7 = P1 x PF,  D6 = P1 x BL
+    CXCLR   ($2C, write): clears every latch
 
 Expected semantics (Round 4):
 
@@ -44,6 +46,8 @@ M0P_P1 = 0x80                 # CXM0P D7
 M0P_P0 = 0x40                 # CXM0P D6
 M1P_P0 = 0x80                 # CXM1P D7
 M1P_P1 = 0x40                 # CXM1P D6
+BALLP_P0 = 0x40               # CXP0FB D6 (Ball x P0)
+BALLP_P1 = 0x40               # CXP1FB D6 (Ball x P1)
 EV_REG_ENAM0 = C["EV_REG_ENAM0"]   # 3
 EV_REG_ENAM1 = C["EV_REG_ENAM1"]   # 4
 EV_REG_GRP0 = C["EV_REG_GRP0"]     # 1
@@ -81,7 +85,7 @@ class CollisionHarness:
         self.cpu.inpt[5] = 0x00 if p1 else 0xFF
 
     def set_collisions(self, m0_p1=False, m0_p0=False, m1_p0=False,
-                       m1_p1=False):
+                       m1_p1=False, ball_p0=False, ball_p1=False):
         """Set the TIA collision latches as if the visible kernel just
         rendered these overlaps.  Bits OR-accumulate and persist until the
         ROM writes CXCLR (which ProcessCollisions does every frame)."""
@@ -93,6 +97,10 @@ class CollisionHarness:
             self.cpu.cxm1p |= M1P_P0
         if m1_p1:
             self.cpu.cxm1p |= M1P_P1
+        if ball_p0:
+            self.cpu.cxp0fb |= BALLP_P0
+        if ball_p1:
+            self.cpu.cxp1fb |= BALLP_P1
 
     def run_frame(self):
         """Run exactly one frame (the one currently being entered)."""
@@ -113,12 +121,15 @@ class CollisionHarness:
             "m0": m[self._ram("m_active")] & 0x01,
             "m1": (m[self._ram("m_active")] >> 1) & 0x01,
             "hit_flags": m[self._ram("hit_flags")],
+            "ball_contact_flags": m[self._ram("ball_contact_flags")],
             "m0_x": m[self._ram("m0_x")],
             "m1_x": m[self._ram("m1_x")],
             "ball_x": m[self._ram("ball_x")],
             "ball_y": m[self._ram("ball_y")],
             "cxm0p": self.cpu.cxm0p,
             "cxm1p": self.cpu.cxm1p,
+            "cxp0fb": self.cpu.cxp0fb,
+            "cxp1fb": self.cpu.cxp1fb,
         }
 
     def event_regs(self):

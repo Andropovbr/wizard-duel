@@ -66,10 +66,16 @@ RAM_PRESSURE_STRONG_PCT = 90.0
 
 # Current round's RAM target.  Exceeding it is a hard regression even though
 # the hardware limit is 128 bytes, so budget pressure is caught early.
-# Round 11: 80 bytes ($80-$CF) - the event table grew to 60 bytes (5-byte
-# dummy + 10 entries + marker) so the table-direct kernel can apply every
-# entry from the table without pending registers (the delta=1 fix).
-PROJECT_RAM_BUDGET = 80
+# Round 6 (ball contact): 81 bytes ($80-$D0) - Round 11's 80 bytes plus the
+# new ball_contact_flags byte.  The +1 byte is deliberate and documented (see
+# the VARS comment in main.asm and the Round 6 change log): ball contact is a
+# distinct per-frame record that must survive the whole frame, so it cannot
+# share a VBLANK scratch byte or an existing bit-pack.  The alternative
+# packings (aliasing nullDelta/evRow, packing p0_hp/p1_hp, reusing spare
+# fire_prev/m_active/hit_flags bits) were rejected because they clobber the
+# value in VBLANK, break the hit_flags contract, or risk the tested Round 5
+# HP logic for a single byte.
+PROJECT_RAM_BUDGET = 81
 
 # (key, label, unit) -- the labels/order used in the report.
 METRICS = [

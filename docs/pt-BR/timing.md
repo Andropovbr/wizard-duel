@@ -41,11 +41,19 @@ quadro:
   colisão de custo variável fez a saída de `INTIM < 64` cair em fronteiras de
   76 ciclos diferentes e o quadro ocasionalmente escorregou para 263
   scanlines. Em vez disso, o overscan escreve exatamente `OVERSCAN_LOOP_COUNT
-  = 7` `WSYNC`s. A partir da última linha do kernel, um epílogo fixo + o JSR e
-  o corpo sem branches do `ProcessCollisions` + o JSR do `ProcessHitEffects`
-  (Rodada 5) colocam o primeiro `WSYNC` entre os ciclos 187 e 207 da região
-  (modelo do emulador; todo caminho cai na mesma fronteira no ciclo 228 =
-  scanline 3). O loop conta então exatamente 10 linhas e o `JMP` + preâmbulo
+  = 5` `WSYNC`s. A partir da última linha do kernel, um epílogo fixo + o JSR e
+  o corpo sem branches do `ProcessCollisions` (incluindo a passagem de contato
+  com a bola de custo fixo) + o JSR e o corpo sem branches do
+  `ApplyBallRebound` (Rodada 7) + o JSR do `ProcessHitEffects` (Rodada 5) + 8
+  ciclos de padding levam a primeira escrita de `WSYNC` do overscan à mesma
+  fronteira em todos os caminhos. Medido no emulador em cinco estados (sem
+  colisão, acertos dos dois mísseis, contatos da bola, todas as colisões,
+  ambos os jogadores mortos): o primeiro `WSYNC` do overscan sempre cai no
+  ciclo 380 da região = scanline 5 do overscan. A Rodada 7 adicionou 39 ciclos
+  fixos (JSR + corpo sem branches + RTS), deslocando a queda do ciclo 304 da
+  região (scanline 4) para 380 (scanline 5); por isso `OVERSCAN_LOOP_COUNT`
+  caiu de 6 para 5, mantendo a região com exatamente 10 linhas. O loop conta
+  então exatamente 10 linhas e o `JMP` + preâmbulo
   de VSYNC seguintes alinham o primeiro `WSYNC` de VSYNC do próximo quadro em
   760 ciclos após a última linha do kernel. Como a única passagem de custo
   variável (`ProcessHitEffects`) fica confinada a uma janela que nunca escapa
@@ -217,12 +225,18 @@ Uma espera `TIM64T` só é determinística quando o trabalho executado antes de
 armar o timer é fixo ou fica confortavelmente abaixo da expiração. O OVERSCAN
 também NÃO usa timer pelo mesmo motivo: uma passagem de custo variável
 (`ProcessHitEffects`) roda entre o kernel e a espera do overscan, então o
-overscan escreve exatamente `OVERSCAN_LOOP_COUNT = 6` `WSYNC`s. A partir da
+overscan escreve exatamente `OVERSCAN_LOOP_COUNT = 5` `WSYNC`s. A partir da
 última linha do kernel, um epílogo fixo + o JSR e o corpo sem branches do
-`ProcessCollisions` + o JSR do `ProcessHitEffects` (Rodada 5) + 8 ciclos de
-padding colocam o primeiro `WSYNC` entre os ciclos 236 e 254 da região
-(modelo do emulador; todo caminho cai na mesma fronteira no ciclo 304 =
-scanline 4). O loop conta então exatamente 10 linhas e o `JMP` + preâmbulo de
+`ProcessCollisions` (incluindo a passagem de contato com a bola de custo fixo)
++ o JSR e o corpo sem branches do `ApplyBallRebound` (Rodada 7) + o JSR do
+`ProcessHitEffects` (Rodada 5) + 8 ciclos de
+padding levam a primeira escrita de `WSYNC` do overscan à mesma fronteira em
+todos os caminhos (medido no emulador: ciclo 380 da região = scanline 5 do
+overscan para todos os estados de colisão). A Rodada 7 adicionou 39 ciclos
+fixos e deslocou a queda da scanline 4 (ciclo 304) para a scanline 5 (380);
+`OVERSCAN_LOOP_COUNT` caiu de 6 para 5 para que a região continue somando
+exatamente 10 linhas. O loop conta então exatamente 10
+linhas e o `JMP` + preâmbulo de
 VSYNC seguintes alinham o primeiro `WSYNC` de VSYNC do próximo quadro em 760
 ciclos após a última linha do kernel. Como a única passagem de custo variável
 (`ProcessHitEffects`) fica confinada a uma janela que nunca escapa da primeira
@@ -312,6 +326,11 @@ linhas. A Rodada 5 adiciona os caminhos de HP/morte: o quadro permanece em
    table-direct: 80 quadros estressados consecutivos medem todos 19912 ciclos
    = 262 scanlines, e a caminhada de inicialização/delta-0 pela tabela de
    eventos real confirma que a contagem nunca envolve;
+* a Rodada de contato com a bola revalida o mesmo estresse máximo com os
+   latches da bola assertados em todo quadro, além dos latches dos mísseis:
+   500 quadros consecutivos medem todos 19912 ciclos = 262 scanlines, e o
+   registro de contato permanece coerente ao longo da execução
+   (`tests/test_ball_contact.py`);
 * o kernel visível roda exatamente 185 iterações: `evCnt` é inicializado com
   `nullDelta` (ou com o delta da própria entrada 0 quando ela dispara na linha
   0) e conta até o marcador, cujo delta é lido no topo da linha 184 e encerra
@@ -334,7 +353,13 @@ da tabela nunca excede `EV_TBL_SIZE` sob entrada de fogo agressiva e que os
 mísseis de fato aparecem e desaparecem pelo pipeline de eventos. A Rodada 5
 adiciona `tests/test_hp.py`, que dirige o assembly real de
 `ProcessHitEffects` e afirma as semânticas de dano/morte, e mantém a regressão
-de estresse máximo viva repondo o HP todo quadro. O contador de ciclos do
+de estresse máximo viva repondo o HP todo quadro. A Rodada de contato com a
+bola adiciona `tests/test_ball_contact.py`, que dirige o assembly real de
+`ProcessCollisions` pelos latches modelados `CXP0FB`/`CXP1FB` e afirma o
+contrato de contato (bits por jogador, sem efeitos colaterais, jogadores
+mortos nunca contatam, ciclo de vida dos latches, sequências de contato) além
+de uma rodada de estresse máximo de 500 quadros que mantém todos os quadros em
+exatamente 262 scanlines. O contador de ciclos do
 emulador é aproximado (os totais de quadro único variam alguns ciclos), então
 o teste de tempo de execução afirma a contagem de scanlines e o
 comportamento, não totais de ciclos exatos.

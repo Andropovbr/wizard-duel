@@ -17,7 +17,9 @@ I/O/timer do RIOT (`$0280-$02FF`).
 | `$F181`  | `UpdateBall` (movimento + quique)          |
 | `$F1B8`  | `UpdateMissiles` (disparo, movimento, remoção) |
 | `$F24D`  | `ProcessCollisions` (custo fixo, sem branches) |
-| `$F290`  | `newActiveTbl` (tabela de atualização do m_active) |
+| `$F2A0`  | `newActiveTbl` (tabela de atualização do m_active) |
+| `$F2B0`  | `ApplyBallRebound` (condução da bola, custo fixo, sem branches) |
+| `$F2D0`  | `reboundTbl` (tabela do ball_dx, alinhada a 16 bytes) |
 | `$F300`  | `ProcessHitEffects` (dano de HP + trava de disparo, alinhado a página) |
 | `$F338`  | `PositionPlayers` (RESP0/1 + HMP0/1)       |
 | `$F35B`  | `PositionBall` (RESBL + HMBL)              |
@@ -42,16 +44,21 @@ Não existem tabelas de gráficos de sprites: os dois jogadores são retângulos
 sólidos desenhados pela tabela de eventos (veja [timing.md](timing.md)). O uso
 de ROM é medido pelo maior endereço emitido abaixo do bloco de vetores; o
 preenchimento com `$FF` conta como espaço disponível. O build reporta ambos
-os números. A Rodada 11 usa 1808 dos 4096 bytes.
+os números. A Rodada 6 usa 1808 dos 4096 bytes; o código de contato com a
+bola adicionado na rodada (24 bytes) foi absorvido pela folga dos `ALIGN`
+existentes, então o maior endereço emitido não mudou.
 
 ## Layout da RAM (RAM RIOT `$80-$FF`, 128 bytes)
 
-A Rodada 11 usa 80 bytes ($80-$CF). A tabela de eventos é um bloco fixo de 60
+A Rodada 6 usa 81 bytes ($80-$D0). A tabela de eventos é um bloco fixo de 60
 bytes: um dummy de 5 bytes no offset 0, até 10 entradas reais de 5 bytes e o
 marcador de fim de 5 bytes. O kernel lê as entradas diretamente (apply direto
 da tabela), então os registradores pendentes da Rodada 10 e os buffers de
 registros/ordem, `evIdx`, `joystate`, `scanCnt` e as flags separadas de
-míssil foram removidos.
+míssil foram removidos. O +1 byte em relação à Rodada 11 é
+`ball_contact_flags`: a informação de contato bola x jogador é deliberadamente
+um byte separado de `hit_flags` (um contato da bola não é um acerto de míssil)
+e de `m_active`/`fire_prev` (cujos bits livres são reescritos a cada quadro).
 
 | Endereço | Nome        | Tam. | Finalidade                            |
 | -------- | ----------- | ---- | ------------------------------------- |
@@ -68,22 +75,23 @@ míssil foram removidos.
 | `$8A`    | `m1_x`      | 1    | posição horizontal do míssil 1        |
 | `$8B`    | `m1_y`      | 1    | linha do míssil 1 (fixa em voo)       |
 | `$8C`    | `m_active`  | 1    | máscara ativa compactada (bit0 M0, bit1 M1) |
-| `$8D`    | `hit_flags` | 1    | resultado de colisão (bit0 P0, bit1 P1) |
-| `$8E`    | `fire_prev` | 1    | borda de fogo compactada (bit7 = sync)|
-| `$8F`    | `evCnt`     | 1    | kernel: scanlines até o próximo evento|
-| `$90-$CB`| `evTbl`     | 60   | dummy (5B) + entradas (máx. 10 x 5B) + marcador (5B) |
-| `$CC`    | `evRow`     | 1    | builder: linha atual do evento        |
-| `$CD`    | `tempCount` | 1    | builder: ponto de deslocamento / prevRow |
-| `$CE`    | `tblLen`    | 1    | builder: número de entradas reais     |
-| `$CF`    | `nullDelta` | 1    | delta da primeira entrada (185 se vazia) |
-| `$D0-$FF`| -           | 48   | não alocado                          |
+| `$8D`    | `hit_flags` | 1    | resultado de acerto de míssil (bit0 P0, bit1 P1) |
+| `$8E`    | `ball_contact_flags` | 1 | registro de contato da bola (bit0 P0, bit1 P1) |
+| `$8F`    | `fire_prev` | 1    | borda de fogo compactada (bit7 = sync)|
+| `$90`    | `evCnt`     | 1    | kernel: scanlines até o próximo evento|
+| `$91-$CC`| `evTbl`     | 60   | dummy (5B) + entradas (máx. 10 x 5B) + marcador (5B) |
+| `$CD`    | `evRow`     | 1    | builder: linha atual do evento        |
+| `$CE`    | `tempCount` | 1    | builder: ponto de deslocamento / prevRow |
+| `$CF`    | `tblLen`    | 1    | builder: número de entradas reais     |
+| `$D0`    | `nullDelta` | 1    | delta da primeira entrada (185 se vazia) |
+| `$D1-$FF`| -           | 47   | não alocado                          |
 
 As variáveis ficam na zero page para que todos os acessos usem os modos de
 endereçamento curtos e rápidos de zero page. A tabela de eventos (60 bytes) é
 o maior bloco único e fica deliberadamente na página 0: o kernel indexa
 `evTbl-4,Y` (base de zero page) com Y de até 55, então nenhum acesso indexado
 pode cruzar uma fronteira de página e cada escrita do kernel tem tempo
-determinístico. Os 48 bytes livres extras são a margem para as próximas
+determinístico. Os 47 bytes livres extras são a margem para as próximas
 rodadas.
 
 ## Uso de registradores de hardware

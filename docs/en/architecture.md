@@ -26,9 +26,12 @@ Features:
 
 There is intentionally no magic system, AI, scoring or HUD yet; the gameplay
 rules are expected to evolve in later rounds without requiring architectural
-changes. The ball does not interact with the players or missiles in this
-round. A dead player keeps occupying the arena but is not rendered and
-cannot fire; there is no victory/game-over transition yet.
+changes. The ball does not interact with the missiles. Ball x player contact is
+detected via the TIA latches (Round 6) and the ball is steered horizontally on
+contact (Round 7): P0 sends it right, P1 sends it left, vertical motion
+unchanged; the rebound is a fixed-cost, branchless pass in overscan. A dead
+player keeps occupying the arena but is not rendered and cannot fire; there is
+no victory/game-over transition yet.
 
 ## Event-driven kernel
 
@@ -256,8 +259,22 @@ in the overscan, keeping the visible kernel purely render-focused:
   `hit_flags` bitfield (bit 0 = P0, bit 1 = P1; simultaneous hits both
   count), clears the scoring missile's bit in `m_active`, and writes `CXCLR`
   so a hit is never counted twice. Own-player bits (M0 x P0, M1 x P1) are
-  ignored. The pass is branchless and fixed-cost (84 cycles) so the fixed
-  WSYNC-counted overscan stays exact.
+  ignored. The pass is branchless and fixed-cost (117 cycles: 84 for the
+  missile hit path, +33 for the ball contact path) so the fixed WSYNC-counted
+  overscan stays exact.
+* **Ball contact** (same `ProcessCollisions` pass, before `CXCLR`): reads
+  `CXP0FB`/`CXP1FB` and records Ball x P0 / Ball x P1 (D6 of each latch,
+  `BALL_HIT_P0`/`BALL_HIT_P1`) in the separate byte `ball_contact_flags`
+  (CONTACT_P0 bit 0, CONTACT_P1 bit 1; simultaneous contacts both count).
+  The D7 player x playfield bits are ignored (the playfield is never
+  displayed). Contact is information only: no damage, no missile change, no
+  ball rebound, no `hit_flags`/`m_active` change. It is deliberately a
+  separate byte because a ball contact is not a missile hit and the spare
+  bits of `m_active`/`fire_prev` are rewritten every frame. The record is
+  overwritten every overscan, so a contact rendered in frame N is visible
+  for frame N+1 and never repeats. A dead player is not rendered
+  (`BuildEvents` skips its events), so the TIA never latches a
+  ball x dead-player overlap and no HP check is needed.
 * **Damage** (`ProcessHitEffects`, same overscan, after collisions): removes
   one HP from the hit player (no underflow below 0; `hit_flags` is read but
   not cleared here - `ProcessCollisions` overwrites it next frame, so each
@@ -352,9 +369,10 @@ it is the countdown value read on the line that ends the kernel.
 
 ## Variable allocation
 
-80 of 128 bytes of RIOT RAM are used (the delta=1 kernel and the uniform
+81 of 128 bytes of RIOT RAM are used (the delta=1 kernel and the uniform
 60-byte table cost 29 bytes over the Round 10 layout; documented in the
-change log):
+change log). The +1 byte over Round 11 is `ball_contact_flags`, the Round 6
+ball x player contact record, deliberately separate from `hit_flags`:
 
 | Address    | Name        | Purpose                              |
 | ---------- | ----------- | ------------------------------------ |
@@ -369,14 +387,15 @@ change log):
 | `$88-$89`  | `m0_x/m0_y` | missile 0 position                   |
 | `$8A-$8B`  | `m1_x/m1_y` | missile 1 position                   |
 | `$8C`      | `m_active`  | packed missile active mask (M0/M1)   |
-| `$8D`      | `hit_flags` | collision results (P0/P1 hit bits)   |
-| `$8E`      | `fire_prev` | packed fire edge + boot-sync state   |
-| `$8F`      | `evCnt`     | kernel event countdown               |
-| `$90-$CB`  | `evTbl`     | event table (dummy + 10 entries + marker, 60B) |
-| `$CC`      | `evRow`     | builder working storage              |
-| `$CD`      | `tempCount` | builder working storage              |
-| `$CE`      | `tblLen`    | builder working storage              |
-| `$CF`      | `nullDelta` | first-delta prime value for `evCnt`  |
+| `$8D`      | `hit_flags` | missile hit results (P0/P1 hit bits) |
+| `$8E`      | `ball_contact_flags` | ball contact record (P0/P1 bits) |
+| `$8F`      | `fire_prev` | packed fire edge + boot-sync state   |
+| `$90`      | `evCnt`     | kernel event countdown               |
+| `$91-$CC`  | `evTbl`     | event table (dummy + 10 entries + marker, 60B) |
+| `$CD`      | `evRow`     | builder working storage              |
+| `$CE`      | `tempCount` | builder working storage              |
+| `$CF`      | `tblLen`    | builder working storage              |
+| `$D0`      | `nullDelta` | first-delta prime value for `evCnt`  |
 
 The savings come from: packed missile flags (one byte for two), no separate
 `fire_sync` (bit 7 of `fire_prev`), and no `evIdx` (the kernel reads the
