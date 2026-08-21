@@ -76,11 +76,11 @@ jogo (`game_state`, `game_mode`, `select_prev`, `reset_prev`).
 | `$8D`    | `hit_flags` | 1    | resultado de acerto de míssil (bit0 P0, bit1 P1) |
 | `$8E`    | `ball_contact_flags` | 1 | registro de contato da bola (bit0 P0, bit1 P1) |
 | `$8F`    | `fire_prev` | 1    | borda de fogo compactada (bit7 = sync)|
-| `$90`    | `game_state`| 1    | STATE_MENU (0) ou STATE_PLAYING (1)   |
-| `$91`    | `game_mode` | 1    | MODE_DUEL (0) ou MODE_SCORE (1)      |
-| `$92`    | `select_prev`| 1   | bit SELECT do quadro anterior (bit 3) |
-| `$93`    | `reset_prev`| 1    | bit RESET do quadro anterior (bit 2)  |
-| `$94`    | `evCnt`     | 1    | kernel: scanlines até o próximo evento|
+| `$90`    | `evCnt`     | 1    | kernel: scanlines até o próximo evento|
+| `$91`    | `game_state`| 1    | STATE_MENU (0) ou STATE_PLAYING (1)   |
+| `$92`    | `game_mode` | 1    | MODE_DUEL (0) ou MODE_SCORE (1)      |
+| `$93`    | `select_prev`| 1   | bit SELECT do quadro anterior (bit 3) |
+| `$94`    | `reset_prev`| 1    | bit RESET do quadro anterior (bit 2)  |
 | `$95-$D0`| `evTbl`     | 60   | dummy (5B) + entradas (máx. 10 x 5B) + marcador (5B) |
 | `$D1`    | `evRow`     | 1    | builder: linha atual do evento        |
 | `$D2`    | `tempCount` | 1    | builder: ponto de deslocamento / prevRow |

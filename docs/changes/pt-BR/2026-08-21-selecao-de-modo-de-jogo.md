@@ -13,14 +13,20 @@ de baixo custo mostra o modo selecionado na tela de seleção.
 - Constantes `MODE_DUEL` (0) e `MODE_SCORE` (1) em `constants.inc`
 - Definições `SELECT_BIT` e `RESET_BIT` dos switches em `constants.inc`
 - Variáveis de RAM `game_state`, `game_mode`, `select_prev`, `reset_prev`
-  (4 bytes, $81-$84)
+  (4 bytes, $91-$94)
 - Rotina `HandleInput`: detecta borda do SELECT (alterna modo no menu) e
   RESET (menu → jogo, jogo → menu)
-- Rotina `InitGame`: reinicializa todo o estado do jogo, restaura HP,
-  limpa mísseis/flags, transiciona para STATE_PLAYING
+- Rotina `InitGame`: reinicializa todo o estado do jogo, restaura todas
+  as cores (COLUP0, COLUP1, COLUPF), HP, posições, limpa mísseis/flags,
+  transiciona para STATE_PLAYING
 - Gate de game_state no VBLANK: modo menu pula UpdatePlayers/UpdateBall/
-  UpdateMissiles, define cor do indicador P0, define p1_hp=0 para ocultar P1
-- Visual do menu: P0 colorido vermelho (DUEL) ou azul (SCORE), P1 oculto
+  UpdateMissiles
+- Visual do menu: ambas as raquetes visíveis e imóveis, bola oculta
+  (COLUPF definido como BACKGR_COLOR), P0 colorido vermelho (DUEL) ou
+  azul (SCORE)
+- Inicialização explícita de `select_prev` e `reset_prev` para estado
+  released (SELECT_BIT|RESET_BIT) no handler Reset para garantir
+  detecção de borda correta no primeiro pressionamento
 - `fire_prev` limpo em InitGame para evitar lock de fire de jogador morto
 - Boot_sync nos harnesses de teste: simula borda de subida do RESET via
   InitGame para entrar corretamente no STATE_PLAYING com HP completo
@@ -44,29 +50,36 @@ de baixo custo mostra o modo selecionado na tela de seleção.
 
 - Escritas diretas `game_state=1` nos setUp dos testes (substituídas
   por simulação adequada do RESET via InitGame)
+- Hack `p1_hp=0` no visual do menu (HP não é mais usado como mecanismo
+  visual)
 
 ## Raciocínio Técnico
 
-### RESET do Atari 2600 É um Switch Legível
+### Correção da Detecção de Borda dos Switches
 
-No Atari 2600, RESET NÃO é um reset de hardware — é um switch legível
-(SWCHB bit 2). Apenas o ligamento da limpa a RAM via o vetor Reset.
-Isso significa que `game_state` começa em 0 (STATE_MENU) a partir da
-limpeza da RAM, e RESET deve ser detectado por borda para transitar
-entre estados.
+Bits do SWCHB são active-low: 0 = pressionado, 1 = liberado. Após a
+limpeza da RAM, `select_prev` e `reset_prev` eram 0, que o código
+interpretava como "já pressionado". O primeiro pressionamento real
+portanto nunca produzia uma borda de subida (0 AND mask = 0 →
+"ainda segurado").
 
-### Interação com o Lock de Fire de Jogador Morto
+Correção: inicializar ambos com `SELECT_BIT|RESET_BIT` (= 0x0C,
+ambos liberados) no handler Reset após o loop de limpeza da RAM.
 
-`ProcessHitEffects` é executado incondicionalmente durante o overscan.
-Quando `p1_hp=0` (definido pelo visual do menu para ocultar P1), ele
-OR `FIRE_P1` em `fire_prev`, bloqueando permanentemente o input de
-fire do P1. Esse é o comportamento correto para jogadores mortos durante
-o jogo, mas no modo menu fazia com que P1 nunca atirasse após a
-transição para STATE_PLAYING.
+### Visual do Menu
 
-Correção: `InitGame` limpa `fire_prev` ao entrar no estado de jogo, e
-os harnesses de teste simulam a borda de subida do RESET para acionar
-`InitGame` em vez de definir `game_state` diretamente.
+A implementação anterior ocultava P1 definindo `p1_hp=0`, que fazia
+`ProcessHitEffects` bloquear permanentemente o input de fire do P1
+via o lock de fire de jogador morto. A nova abordagem mantém ambas
+as raquetes visíveis (ambos HP em 3), oculta a bola combinando COLUPF
+com a cor de fundo, e muda a cor de P0 para indicar o modo selecionado.
+
+### Restauração pelo InitGame
+
+`InitGame` agora restaura todos os registradores visuais: COLUP0
+(PLAYER1_COLOR), COLUP1 (PLAYER2_COLOR), COLUPF (BALL_COLOR). Após
+RESET, o jogo parece e funciona exatamente como antes da introdução
+do menu.
 
 ### Gate de Estado do Jogo
 
@@ -108,14 +121,11 @@ Depois:
 
 ## Limitações Conhecidas
 
-- SELECT só funciona no STATE_MOUSE (por design)
-- Sem feedback visual ainda para seleção de modo além da cor do P0
+- SELECT só funciona no STATE_MENU (por design)
 - Modo do jogo é preservado nas transições menu ↔ jogo
 
 ## Próximos Passos Lógicos
 
-- Adicionar indicação visual para DUEL vs SCORE (ex: cor de fundo
-  diferente, texto ou ícone)
 - Implementar diferenças de gameplay no modo SCORE
 - Adicionar texto ou animação na tela de seleção
 - Considerar efeitos sonoros para feedback de SELECT/RESET

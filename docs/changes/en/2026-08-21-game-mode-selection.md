@@ -13,14 +13,19 @@ selected mode on the title screen.
 - `MODE_DUEL` (0) and `MODE_SCORE` (1) constants in `constants.inc`
 - `SELECT_BIT` and `RESET_BIT` switch definitions in `constants.inc`
 - `game_state`, `game_mode`, `select_prev`, `reset_prev` RAM variables
-  (4 bytes, $81-$84)
+  (4 bytes, $91-$94)
 - `HandleInput` routine: edge-detects SELECT (toggles mode in menu) and
   RESET (menu → playing, playing → menu)
-- `InitGame` routine: reinitializes all gameplay state, restores HP,
-  clears missiles/flags, transitions to STATE_PLAYING
+- `InitGame` routine: reinitializes all gameplay state, restores all
+  colors (COLUP0, COLUP1, COLUPF), HP, positions, clears missiles/flags,
+  transitions to STATE_PLAYING
 - VBLANK game_state gate: menu mode skips UpdatePlayers/UpdateBall/
-  UpdateMissiles, sets P0 color indicator, sets p1_hp=0 to hide P1
-- Menu visual: P0 colored red (DUEL) or blue (SCORE), P1 hidden
+  UpdateMissiles
+- Menu visual: both paddles visible and frozen, ball hidden (COLUPF set
+  to BACKGR_COLOR), P0 colored red (DUEL) or blue (SCORE)
+- Explicit initialization of `select_prev` and `reset_prev` to released
+  state (SELECT_BIT|RESET_BIT) in Reset handler to ensure correct
+  edge detection on first press
 - `fire_prev` cleared in InitGame to prevent stale dead-player fire lock
 - Test harness boot_sync: simulates RESET rising edge via InitGame
   to properly enter STATE_PLAYING with full HP
@@ -44,27 +49,34 @@ selected mode on the title screen.
 
 - Redundant `game_state=1` direct writes in test setUp methods
   (replaced by proper RESET simulation via InitGame)
+- `p1_hp=0` hack in menu visual (HP is no longer used as a visual
+  mechanism)
 
 ## Technical Reasoning
 
-### Atari 2600 RESET Is a Readable Switch
+### Switch Edge Detection Fix
 
-On the Atari 2600, RESET is NOT a hardware reset — it is a readable
-switch (SWCHB bit 2). Only power-on clears RAM via the Reset vector.
-This means `game_state` defaults to 0 (STATE_MENU) from the RAM clear,
-and RESET must be edge-detected to transition between states.
+SWCHB bits are active-low: 0 = pressed, 1 = released. After RAM clear,
+`select_prev` and `reset_prev` were 0, which the code interpreted as
+"already pressed". The first real press therefore never produced a
+rising edge (0 AND mask = 0 → "still held").
 
-### Dead-Player Fire Lock Interaction
+Fix: initialize both to `SELECT_BIT|RESET_BIT` (= 0x0C, both released)
+in the Reset handler after the RAM clear loop.
 
-`ProcessHitEffects` runs unconditionally during overscan. When `p1_hp=0`
-(set by menu visual to hide P1), it ORs `FIRE_P1` into `fire_prev`,
-permanently locking P1's fire input. This is correct behavior for dead
-players during gameplay, but in menu mode it caused P1 to never fire
-after transitioning to STATE_PLAYING.
+### Menu Visual
 
-Fix: `InitGame` clears `fire_prev` when entering playing state, and
-test harnesses simulate the RESET rising edge to trigger `InitGame`
-rather than setting `game_state` directly.
+The previous implementation hid P1 by setting `p1_hp=0`, which caused
+`ProcessHitEffects` to permanently lock P1's fire input via the
+dead-player fire lock. The new approach keeps both paddles visible
+(both HP at 3), hides the ball by matching COLUPF to the background
+color, and changes P0's color to indicate the selected mode.
+
+### InitGame Restoration
+
+`InitGame` now restores all visual registers: COLUP0 (PLAYER1_COLOR),
+COLUP1 (PLAYER2_COLOR), COLUPF (BALL_COLOR). After RESET, the game
+looks and behaves exactly as it did before the menu was introduced.
 
 ### Game State Gate
 
@@ -107,13 +119,10 @@ After:
 ## Known Limitations
 
 - SELECT only works in STATE_MENU (by design)
-- No visual feedback yet for mode selection beyond P0 color
 - Game mode is preserved across menu ↔ playing transitions
 
 ## Next Logical Steps
 
-- Add visual indication for DUEL vs SCORE (e.g., different background
-  color, text, or icon)
 - Implement SCORE mode gameplay differences
 - Add title screen text or animation
 - Consider sound effects for SELECT/RESET feedback

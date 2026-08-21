@@ -198,7 +198,15 @@ Reset:
     ; (which reads the fire lines as pressed) as a fresh rising edge.
 
     ; game_state defaults to STATE_MENU (0) from the RAM clearing above.
-    ; game_mode defaults to MODE_DUEL (0).  No explicit initialization needed.
+    ; game_mode defaults to MODE_DUEL (0).
+
+    ; Initialize switch edge-detection state to "released" (active-low: bit=1
+    ; means released).  If these remained 0 (from RAM clear), the code would
+    ; treat the initial released state as "already pressed" and the first
+    ; real press would never produce a rising edge.
+    LDA #(SELECT_BIT|RESET_BIT)
+    STA select_prev
+    STA reset_prev
 
 ; =============================================================================
 ; StartOfFrame - one complete frame
@@ -225,18 +233,21 @@ StartOfFrame:
     JSR UpdateBall          ; move the ball and bounce it off the arena edges
     JSR UpdateMissiles      ; fire, move and despawn both missiles
     JMP .positionAndBuild   ; 3
-    ; ---- Menu state: set indicator colors, skip P1 so only P0 renders ----
+    ; ---- Menu state: set indicator colors, hide ball, show both paddles ---
 .menuState:
     LDA game_mode            ; 3
     BEQ .menuDuel            ; 2/3  MODE_DUEL -> keep default PLAYER1_COLOR
-    LDA #PLAYER2_COLOR       ; 2   MODE_SCORE -> blue indicator
+    LDA #PLAYER2_COLOR       ; 2   MODE_SCORE -> blue indicator on P0
     JMP .menuColorSet        ; 3
 .menuDuel:
-    LDA #PLAYER1_COLOR       ; 2   MODE_DUEL -> red indicator
+    LDA #PLAYER1_COLOR       ; 2   MODE_DUEL -> red indicator on P0
 .menuColorSet:
     STA COLUP0               ; 3   set P0 color to indicate the mode
-    LDA #0                   ; 2
-    STA p1_hp                ; 3   dead P1 -> BuildEvents skips its events
+    ; Hide the ball by matching its color to the background.
+    ; Do NOT touch p0_hp or p1_hp: both paddles must remain visible.
+    LDA #BACKGR_COLOR        ; 2
+    STA COLUPF               ; 3   ball + missiles color = background -> invisible
+    JMP .positionAndBuild    ; 3
 .positionAndBuild:
     JSR PositionPlayers     ; fixed horizontal placement (RESP + HMP)
     JSR PositionBall        ; ball horizontal placement (RESBL + HMBL)
@@ -565,12 +576,18 @@ HandleInput:
 ; this routine handles the software transition to gameplay.
 ; =============================================================================
 InitGame:
-    ; Restore P1 color (menu may have changed P0 color for the indicator)
+    ; Restore all colors to gameplay defaults (menu may have changed
+    ; COLUP0 for the mode indicator and COLUPF to hide the ball).
+    LDA #PLAYER1_COLOR
+    STA COLUP0
     LDA #PLAYER2_COLOR
     STA COLUP1
+    LDA #BALL_COLOR
+    STA COLUPF               ; ball + missiles share this color
 
-    ; Restore P1 HP (menu set it to 0 to skip rendering)
+    ; Restore HP (menu must not have touched it, but be safe)
     LDA #PLAYER_START_HP
+    STA p0_hp
     STA p1_hp
 
     ; Initialize player positions
@@ -589,16 +606,11 @@ InitGame:
     LDA #DIR_DOWN
     STA ball_dy
 
-    ; Initialize P0 HP
-    LDA #PLAYER_START_HP
-    STA p0_hp
-
     ; Clear missile state
     LDA #0
     STA m_active
 
-    ; Clear fire input state (menu may have set fire_prev bits via dead-player
-    ; fire lock when p1_hp was 0 for the visual indicator)
+    ; Clear fire input state (first frame sync handles the real button state)
     STA fire_prev
 
     ; Clear collision flags

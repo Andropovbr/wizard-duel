@@ -74,11 +74,11 @@ game state and mode (`game_state`, `game_mode`, `select_prev`, `reset_prev`).
 | `$8D`     | `hit_flags` | 1    | missile hit results (bit0 P0, bit1 P1) |
 | `$8E`     | `ball_contact_flags` | 1 | ball contact record (bit0 P0, bit1 P1) |
 | `$8F`     | `fire_prev` | 1    | packed fire edge state (bit7 = sync) |
-| `$90`     | `game_state`| 1    | STATE_MENU (0) or STATE_PLAYING (1)  |
-| `$91`     | `game_mode` | 1    | MODE_DUEL (0) or MODE_SCORE (1)     |
-| `$92`     | `select_prev`| 1   | previous frame SELECT bit (bit 3)    |
-| `$93`     | `reset_prev`| 1    | previous frame RESET bit (bit 2)     |
-| `$94`     | `evCnt`     | 1    | kernel: scanlines to next event      |
+| `$90`     | `evCnt`     | 1    | kernel: scanlines to next event      |
+| `$91`     | `game_state`| 1    | STATE_MENU (0) or STATE_PLAYING (1)  |
+| `$92`     | `game_mode` | 1    | MODE_DUEL (0) or MODE_SCORE (1)     |
+| `$93`     | `select_prev`| 1   | previous frame SELECT bit (bit 3)    |
+| `$94`     | `reset_prev`| 1    | previous frame RESET bit (bit 2)     |
 | `$95-$D0` | `evTbl`     | 60   | dummy (5B) + entries (max 10 x 5B) + marker (5B) |
 | `$D1`     | `evRow`     | 1    | builder: current event row           |
 | `$D2`     | `tempCount` | 1    | builder: shift point / prevRow       |
