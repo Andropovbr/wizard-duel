@@ -528,14 +528,36 @@ HandleInput:
     RTS                      ; 6
 
 .playingInput:
-    ; ---- Playing state: RESET returns to menu ----
+    ; ---- Playing state: SELECT or RESET returns to menu ----
+    LDA swchb_cur            ; 3   read ONCE, reuse for both checks
+    ; SELECT rising edge -> return to menu
+    PHA                      ; 3   save for RESET check
+    AND #SELECT_BIT          ; 2
+    BNE .selectNotPressedP   ; 2/3
+    LDA select_prev          ; 3
+    AND #SELECT_BIT          ; 2
+    BEQ .selectUpdateP       ; 2/3  no edge
+    LDA #STATE_MENU
+    STA game_state
+.selectUpdateP:
+    LDA swchb_cur            ; 3
+    AND #SELECT_BIT          ; 2
+    STA select_prev          ; 3
+    PLA                      ; 4   restore SWCHB snapshot
+    JMP .resetCheckP         ; 3
+.selectNotPressedP:
+    LDA swchb_cur            ; 3
+    AND #SELECT_BIT          ; 2
+    STA select_prev          ; 3
+    PLA                      ; 4   discard saved SWCHB
+    ; RESET rising edge -> return to menu
+.resetCheckP:
     LDA swchb_cur            ; 3
     AND #RESET_BIT           ; 2
     BNE .resetNotPressedP    ; 2/3
     LDA reset_prev           ; 3
     AND #RESET_BIT           ; 2
-    BEQ .resetDoneP          ; 2/3  no edge (already pressed)
-    ; Rising edge: RESET pressed during gameplay -> return to menu
+    BEQ .resetDoneP          ; 2/3  no edge
     LDA #STATE_MENU
     STA game_state
     JMP .resetDoneP          ; 3
