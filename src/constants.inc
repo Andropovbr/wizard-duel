@@ -178,7 +178,7 @@ OVERSCAN_LOOP_COUNT  = 5
 ; character art. See the kernel comment in main.asm for the cycle cost of
 ; the branchless "draw or blank" computation.
 ; ---------------------------------------------------------------------------
-PLAYER_HEIGHT      = 12
+PLAYER_HEIGHT      = 18      ; +50% from 12: taller paddles
 PLAYER_Y_MIN       = 0
 PLAYER_Y_MAX       = KERNEL_SCANLINES - PLAYER_HEIGHT - 1
 PADDLE_BITS        = %00111100
@@ -269,7 +269,7 @@ MISSILE_HEIGHT       = 4      ; scanlines tall
 MISSILE_WIDTH        = 2      ; pixels wide (NUSIZ D5:D4 = %01)
 MISSILE_NUSIZ        = %00010000
 MISSILE_SPEED        = 2      ; pixels per frame
-MISSILE_SPAWN_OFFSET = 4      ; spawn row = player row + 4 (paddle center)
+MISSILE_SPAWN_OFFSET = 7      ; spawn row = player row + 7 (paddle center for 18-line height)
 MISSILE_ENABLE       = %00000010  ; ENAM0/ENAM1 value while visible (bit 1)
 
 M0_X_INIT            = 18     ; left player's missile spawn x

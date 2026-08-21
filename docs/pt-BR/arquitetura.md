@@ -303,7 +303,7 @@ resolvidas no overscan, mantendo o kernel visível puramente de renderização:
 O kernel visível é orientado a eventos (veja acima). Os dois jogadores são
 sprites TIA de cópia única com cores diferentes: P0 é vermelho
 (`COLUP0 = $46`) e P1 é azul (`COLUP1 = $84`). Cada sprite é um retângulo
-sólido de `%00111100` (raquete de 4 pixels de largura) com `PLAYER_HEIGHT = 12`
+sólido de `%00111100` (raquete de 4 pixels de largura) com `PLAYER_HEIGHT = 18`
 linhas. A bola é o objeto Ball do TIA, 4 pixels de largura (CTRLPF D5:D4 =
 `%10`) e 4 linhas de altura. Os mísseis são os objetos Missile do TIA, 2
 pixels de largura e 4 linhas de altura.
@@ -313,8 +313,8 @@ OFF (desliga) nas linhas de exibição de cada objeto:
 
 | objeto | evento ON                              | evento OFF                       |
 | ------ | ------------------------------------- | ------------------------------- |
-| P0     | `(P0Y, GRP0, PADDLE_BITS)`            | `(P0Y+12, GRP0, 0)`             |
-| P1     | `(P1Y, GRP1, PADDLE_BITS)`            | `(P1Y+12, GRP1, 0)`             |
+| P0     | `(P0Y, GRP0, PADDLE_BITS)`            | `(P0Y+18, GRP0, 0)`             |
+| P1     | `(P1Y, GRP1, PADDLE_BITS)`            | `(P1Y+18, GRP1, 0)`             |
 | Bola   | `(ball_y, ENABL, BALL_ENABLE)`        | `(ball_y+4, ENABL, 0)`          |
 | M0     | `(m0_y, ENAM0, MISSILE_ENABLE)`       | `(m0_y+4, ENAM0, 0)`            |
 | M1     | `(m1_y, ENAM1, MISSILE_ENABLE)`       | `(m1_y+4, ENAM1, 0)`            |

@@ -1118,8 +1118,8 @@ PositionMissiles:
 ; Every object contributes an ON event (turn the register on) and an OFF
 ; event (turn it off) at its display rows:
 ;
-;     P0   ON (P0Y, GRP0, PADDLE_BITS)          OFF (P0Y+12, GRP0, 0)
-;     P1   ON (P1Y, GRP1, PADDLE_BITS)          OFF (P1Y+12, GRP1, 0)
+;     P0   ON (P0Y, GRP0, PADDLE_BITS)          OFF (P0Y+18, GRP0, 0)
+;     P1   ON (P1Y, GRP1, PADDLE_BITS)          OFF (P1Y+18, GRP1, 0)
 ;     Ball ON (ball_y, ENABL, BALL_ENABLE)      OFF (ball_y+4, ENABL, 0)
 ;     M0   ON (m0_y, ENAM0, MISSILE_ENABLE)     OFF (m0_y+4, ENAM0, 0)
 ;     M1   ON (m1_y, ENAM1, MISSILE_ENABLE)     OFF (m1_y+4, ENAM1, 0)

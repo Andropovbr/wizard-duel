@@ -62,8 +62,8 @@ e de `m_active`/`fire_prev` (cujos bits livres são reescritos a cada quadro).
 
 | Endereço | Nome        | Tam. | Finalidade                            |
 | -------- | ----------- | ---- | ------------------------------------- |
-| `$80`    | `P0Y`       | 1    | posição vertical do jogador 0 (0..172)|
-| `$81`    | `P1Y`       | 1    | posição vertical do jogador 1 (0..172)|
+| `$80`    | `P0Y`       | 1    | posição vertical do jogador 0 (0..166)|
+| `$81`    | `P1Y`       | 1    | posição vertical do jogador 1 (0..166)|
 | `$82`    | `p0_hp`     | 1    | pontos de vida do jogador 0 (0..3)    |
 | `$83`    | `p1_hp`     | 1    | pontos de vida do jogador 1 (0..3)    |
 | `$84`    | `ball_x`    | 1    | pixel visível mais à esquerda (0..156)|

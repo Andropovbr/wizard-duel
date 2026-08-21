@@ -11,7 +11,7 @@ from common import (ROM_ORIGIN, ROM_PATH, parse_listing, parse_symbols,
                     require_build)
 from test_timing import read_constants
 
-PLAYER_HEIGHT = 12
+PLAYER_HEIGHT = 18
 
 
 class TestSymbols(unittest.TestCase):
