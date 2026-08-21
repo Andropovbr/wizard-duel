@@ -142,10 +142,13 @@ class TestKernelCycleBudget(unittest.TestCase):
 
     OPC_CYCLES = {
         0x85: 3,   # STA zp
+        0x8D: 4,   # STA abs
         0xC6: 5,   # DEC zp
         0xB9: 4,   # LDA abs,Y
+        0xBD: 4,   # LDA abs,X
         0xB6: 4,   # LDX zp,Y (DASM emits zp,Y for a zero-page base)
         0xA6: 3,   # LDX zp
+        0xA9: 2,   # LDA #imm
         0xA5: 3,   # LDA zp
         0x95: 4,   # STA zp,X
         0x98: 2,   # TYA
@@ -153,6 +156,10 @@ class TestKernelCycleBudget(unittest.TestCase):
         0xA8: 2,   # TAY
         0xC9: 2,   # CMP #imm
         0x4C: 3,   # JMP abs
+        0x18: 2,   # CLC
+        0x8A: 2,   # TXA
+        0xAA: 2,   # TAX
+        0xEA: 2,   # NOP
     }
 
     @classmethod
@@ -194,6 +201,9 @@ class TestKernelCycleBudget(unittest.TestCase):
         pc = self.sym["KernelLoop"]
         total = 0
         steps = 0
+        apply_only_addr = self.sym.get("0.applyOnly", 0)
+        event_apply_addr = self.sym.get("0.eventApply", 0)
+        no_restore_addr = self.sym.get("0.noRestore", 0)
         while steps < 64:
             steps += 1
             addr, bts = self._at(pc)
@@ -201,21 +211,39 @@ class TestKernelCycleBudget(unittest.TestCase):
             if op == 0x4C:  # JMP KernelLoop: closes the event/apply path
                 total += self.OPC_CYCLES[0x4C]
                 return total
-            if op == 0xD0:  # BNE .applyPending
-                # Taken = non-event line (apply pending); not taken = event
-                # line (decode the entry).
-                if event_line:
+            if op == 0xD0:  # BNE
+                target = self._target(addr, bts)
+                if target == apply_only_addr:
+                    # BNE .applyOnly: the main event/non-event dispatch
+                    if event_line:
+                        total += 2  # not taken: event line
+                        pc = addr + len(bts)
+                    else:
+                        total += 3  # taken: non-event line
+                        pc = target
+                elif target == no_restore_addr:
+                    # BNE .noRestore: orb CTRLPF restore check
+                    # Always not-taken on non-orb rows
                     total += 2
                     pc = addr + len(bts)
                 else:
+                    # Unknown BNE: conservative estimate
                     total += 3
-                    pc = self._target(addr, bts)
-            elif op == 0xF0:  # BEQ .kernelEnd: taken only on the marker
-                if marker:
+                    pc = target
+            elif op == 0xF0:  # BEQ
+                target = self._target(addr, bts)
+                if target == event_apply_addr:
+                    # BEQ .noOrbWrite: always taken on non-orb rows
+                    total += 3
+                    pc = target
+                elif marker:
+                    # BEQ .kernelEnd: taken on marker line
                     total += 3
                     return total
-                total += 2
-                pc = addr + len(bts)
+                else:
+                    # BEQ .kernelEnd: not taken on non-marker lines
+                    total += 2
+                    pc = addr + len(bts)
             else:
                 total += self.OPC_CYCLES[op]
                 pc = addr + len(bts)
@@ -228,25 +256,28 @@ class TestKernelCycleBudget(unittest.TestCase):
         cost = self._simulate(event_line=True)   # event line
         self.assertLessEqual(cost, SCANLINE_BUDGET,
                              f"event path is {cost} > 76 cycles")
-        self.assertEqual(cost, 54)  # documented worst case
+        self.assertEqual(cost, 70)  # documented worst case (with orb check)
 
     def test_best_case_within_budget(self):
         cost = self._simulate(event_line=False)   # non-event line
         self.assertLessEqual(cost, SCANLINE_BUDGET)
-        self.assertEqual(cost, 38)  # documented best case
+        self.assertEqual(cost, 54)  # documented best case (with orb check)
 
     def test_marker_line_within_budget(self):
         cost = self._simulate(event_line=True, marker=True)   # end-marker
         self.assertLessEqual(cost, SCANLINE_BUDGET)
-        self.assertEqual(cost, 46)  # documented end-marker case
+        self.assertEqual(cost, 62)  # documented end-marker case (with orb check)
 
     def test_event_code_is_straight_line(self):
-        # The kernel has exactly two conditional branches: the BNE that picks
-        # the non-event path and the BEQ that ends the kernel on the marker.
+        # The kernel has four conditional branches:
+        #   BNE .noRestore  (orb CTRLPF restore check)
+        #   BEQ .noOrbWrite (orb write check)
+        #   BNE .applyOnly  (event/non-event line dispatch)
+        #   BEQ .kernelEnd  (end-marker detection)
         body = self.insts
         branches = [(a, b) for a, b in body if b[0] in (0xF0, 0xD0, 0x30)]
-        self.assertEqual(len(branches), 2,
-                         "kernel must contain exactly two conditional branches")
+        self.assertEqual(len(branches), 4,
+                         "kernel must contain exactly four conditional branches")
 
     def test_event_and_non_event_paths_within_budget(self):
         for event in (True, False):

@@ -48,12 +48,11 @@ class TestRamLimit(unittest.TestCase):
         # Round 6 (ball contact) RAM: players/ball/missiles/hp/flags (15,
         # now including ball_contact_flags) + fire_prev/evCnt (2) + event
         # table (60: dummy + 10 entries + marker) + builder temps (3) +
-        # nullDelta (1) = 81 bytes ($80-$D0).  The +1 byte over Round 11 is
-        # ball_contact_flags, a deliberate separate byte for the ball x
-        # player contact record (see main.asm VARS comment).  The four
-        # pending kernel registers from Round 10 are gone (the table-direct
-        # apply reads the entries directly).
-        self.assertEqual(self.used, 81)
+        # nullDelta (1) + orb_row_idx (1, rounded ball) = 82 bytes
+        # ($80-$D1).  The +2 bytes over Round 11 are ball_contact_flags and
+        # orb_row_idx.  The four pending kernel registers from Round 10 are
+        # gone (the table-direct apply reads the entries directly).
+        self.assertEqual(self.used, 82)
 
 
 if __name__ == "__main__":

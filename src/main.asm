@@ -255,6 +255,23 @@ WaitVBlank:
     STA ENAM1               ; 3
     STA ENABL               ; 3
     CLC                     ; 2   carry-clear invariant for the kernel
+
+    ; ---- Initialize orb state (rounded ball) ----
+    ; If the ball is active and within the visible kernel, set orb_row_idx
+    ; to BALL_HEIGHT so the kernel applies CTRLPF + ENABL per orb row.
+    ; The orb mini-loop handles ball rendering; BuildEvents skips ball events.
+    LDA #BALL_HEIGHT        ; 2   assume ball is active
+    LDX ball_y              ; 3
+    CPX #KERNEL_SCANLINES   ; 2   ball_y >= KERNEL_SCANLINES?
+    BCS .orbInactive        ; 2/3 -> ball off-screen, skip orb
+    CPX #KERNEL_SCANLINES - BALL_HEIGHT  ; 2   ball_y > BALL_Y_MAX?
+    BCS .orbInactive        ; 2/3 -> ball would bleed past kernel end
+    JMP .orbSet             ; 3
+.orbInactive:
+    LDA #0                  ; 2   orb not active
+.orbSet:
+    STA orb_row_idx         ; 3
+
     LDA nullDelta           ; 3   first delta (row_1, or 185 when empty)
     BEQ .primeRow0          ; 2/3 first entry fires on row 0
     STA evCnt               ; 3
@@ -350,7 +367,36 @@ WaitVBlank:
     ALIGN 256
 KernelLoop:
     STA WSYNC               ; 3   start of scanline
+
+    ; ---- CTRLPF restoration: restore default width after orb rows ----
+    ; After the orb mini-loop completes (orb_row_idx == 0), CTRLPF is left
+    ; at the last orb row's value (ORB_CTRLPF_NARROW).  Restore the default
+    ; BALL_SIZE_CTRLPF so subsequent scanlines render other objects correctly.
+    ; Cost: 10 cycles on non-orb scanlines (3+2+2+3).
+    LDA orb_row_idx         ; 3   orb active?
+    BNE .noRestore          ; 2/3  yes -> skip restore (orb handles CTRLPF)
+    LDA #BALL_SIZE_CTRLPF  ; 2   restore default ball width
+    STA CTRLPF              ; 3   write at cycle 10 (well before beam at ball)
+.noRestore:
+
+    ; ---- Orb writes: CTRLPF + ENABL for diamond-shaped ball ----
+    ; On orb rows, write CTRLPF (ball width) and ENABL (ball on) before
+    ; the beam reaches the ball's x position.  These writes happen BEFORE
+    ; the event apply block.  The event apply block writes to AUDV0 (dummy
+    ; entry reg2=0) and to specific TIA registers for P0/P1/M0/M1 events;
+    ; it never targets ENABL, so the orb's ENABL is safe.
+    LDX orb_row_idx         ; 3   orb rows remaining?
+    BEQ .noOrbWrite         ; 2/3  0 -> not an orb row
+    LDA orb_width_tbl-1,X   ; 4   CTRLPF for this row (1-indexed: X=1..4)
+    STA CTRLPF              ; 3   write at cycle 16 (before beam at ball_x)
+    LDA #BALL_ENABLE        ; 2   enable ball on orb rows
+    STA ENABL               ; 3   write at cycle 21
+    DEC orb_row_idx         ; 5   count down
+    JMP .eventApply         ; 3   go to event apply (orb row done)
+.noOrbWrite:
+
     ; ---- apply the last-decoded entry's writes directly from the table ----
+.eventApply:
     LDX evTbl-4,Y           ; 4   reg1 (Y-5 is the last-decoded entry)
     LDA evTbl-3,Y           ; 4   val1
     STA EV_WRITE_BASE,X     ; 4   write 1, before the beam reaches pixel 0
@@ -912,6 +958,28 @@ reboundTbl:
     DC.B DIR_LEFT,  DIR_RIGHT, DIR_LEFT, DIR_LEFT   ; old dx left  (slot 1)
 
 ; =============================================================================
+; Orb width table (rounded ball rendering)
+;
+; CTRLPF values for each orb row, indexed by orb_row_idx (1..BALL_HEIGHT).
+; The kernel loads with abs,X: LDA orb_width_tbl-1,X, so:
+;   X=1 (last row, bottom tip): reads orb_width_tbl+0 -> narrow
+;   X=2 (body):                 reads orb_width_tbl+1 -> wide
+;   X=3 (body):                 reads orb_width_tbl+2 -> wide
+;   X=4 (first row, top tip):  reads orb_width_tbl+3 -> narrow
+;
+; Shape:
+;   row 4 (X=4): narrow (top tip)
+;   row 3 (X=3): wide   (body)
+;   row 2 (X=2): wide   (body)
+;   row 1 (X=1): narrow (bottom tip)
+; =============================================================================
+orb_width_tbl:
+    DC.B ORB_CTRLPF_NARROW         ; X=1: bottom tip (narrow)
+    DC.B ORB_CTRLPF_WIDE           ; X=2: body (wide)
+    DC.B ORB_CTRLPF_WIDE           ; X=3: body (wide)
+    DC.B ORB_CTRLPF_NARROW         ; X=4: top tip (narrow)
+
+; =============================================================================
 ; ProcessHitEffects (Round 5)
 ;
 ; Consumes the hit_flags record written by ProcessCollisions (same overscan)
@@ -1190,7 +1258,12 @@ BuildEvents:
     ; so it wins row ties and is inserted before the tied object: at a shared
     ; row the ball keeps slot 1 and the other object takes slot 2 (legal for
     ; P0/P1/M0; AppendEvent bumps M1 to row+1).
-    LDA #OBJ_BALL_BIT         ; 2   the ball is always rendered
+    ;
+    ; Orb integration: the ball is rendered exclusively by the orb mini-loop
+    ; (CTRLPF + ENABL per row in the kernel).  Ball events are never
+    ; generated; the orb mini-loop handles all on-screen ball rendering.
+    ; The active mask starts at 0 (no ball events).
+    LDA #0                    ; 2   ball handled by orb mini-loop, no events
     STA nullDelta             ; 3   activeMask
     LDA m_active              ; 3
     AND #M1_BIT               ; 2
@@ -1228,24 +1301,8 @@ BuildEvents:
 .doSelection:
     LDA #$FF                  ; 2
     STA evRow                 ; 3   running minimum row = $FF
-    ; ---- Ball (bit 4): scanned first so it wins row ties (keeps slot 1) ----
-    LDA nullDelta             ; 3
-    AND #OBJ_BALL_BIT         ; 2
-    BEQ .scanM1               ; 2/3
-    LDA evCnt                 ; 3   ON still pending?
-    AND #OBJ_BALL_BIT         ; 2
-    BNE .ballOnCand           ; 2/3
-    LDA ball_y                ; 3   OFF candidate
-    CLC                       ; 2
-    ADC #BALL_HEIGHT          ; 2
-    JMP .ballCand             ; 3
-.ballOnCand:
-    LDA ball_y                ; 3   ON candidate
-.ballCand:
-    CMP evRow                 ; 3
-    BCS .scanM1               ; 2/3
-    STA evRow                 ; 3
-    LDX #4                    ; 2   candidate: Ball
+    ; ---- Ball: handled by orb mini-loop, no events generated ----
+    ; (OBJ_BALL_BIT is never set in nullDelta; ball scanning is skipped)
 .scanM1:
     LDA nullDelta             ; 3
     AND #OBJ_M1_BIT           ; 2
@@ -1823,6 +1880,11 @@ tempCount   DS 1            ; InsertEvent: shift point / ConvertDeltas: prevRow
 tblLen      DS 1            ; number of real entries in the table
 
 nullDelta   DS 1            ; first event's delta (row_1, or 185 when empty)
+
+; Orb state (rounded ball rendering). orb_row_idx counts down from BALL_HEIGHT
+; to 0 during the orb mini-loop; 0 means the orb is not active on this frame.
+; Set once per frame in the kernel entry; decremented by the kernel on orb rows.
+orb_row_idx DS 1            ; remaining orb rows (0 = orb inactive)
 
 ; =============================================================================
 ; 6502 vectors

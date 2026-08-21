@@ -196,12 +196,16 @@ class Cpu:
     def absy_addr(self):
         return (self.abs_addr() + self.y) & 0xFFFF
 
+    def absx_addr(self):
+        base = self.abs_addr()
+        return (base + self.x) & 0xFFFF
+
     # ---- run ----
     def step(self):
         start = self.cycles
         op = self.fetch()
         self.steps += 1
-        if self.steps > 2_000_000:
+        if self.steps > 4_000_000:
             raise RuntimeError("step limit exceeded (possible hang)")
         self.cycles += CYC.get(op, 0)
         extra = self.execute(op)
@@ -286,13 +290,20 @@ class Cpu:
             self._cmp(self.a, self.imm())
         elif op == 0xE0:                    # CPX #imm
             self._cmp(self.x, self.imm())
-        elif op in (0xA5, 0xAD, 0xB9):      # LDA zp / abs / abs,Y
+        elif op in (0xA5, 0xAD, 0xB5, 0xB9, 0xBD):  # LDA zp / abs / zp,X / abs,Y / abs,X
             if op == 0xA5:
                 addr = self.zp_addr()
                 extra = 0
             elif op == 0xAD:
                 addr = self.abs_addr()
                 extra = 0
+            elif op == 0xB5:
+                addr = self.zpx_addr()
+                extra = 0
+            elif op == 0xBD:
+                base = self.abs_addr()
+                addr = (base + self.x) & 0xFFFF
+                extra = 1 if (base & 0xFF) + self.x > 0xFF else 0
             else:
                 base = self.abs_addr()
                 addr = (base + self.y) & 0xFFFF
@@ -300,9 +311,6 @@ class Cpu:
             self.a = self.read(addr)
             self.set_nz(self.a)
             return extra
-        elif op == 0xB5:                    # LDA zp,X
-            self.a = self.read(self.zpx_addr())
-            self.set_nz(self.a)
         elif op in (0xA4, 0xAC):            # LDY zp / abs
             addr = self.zp_addr() if op == 0xA4 else self.abs_addr()
             self.y = self.read(addr)

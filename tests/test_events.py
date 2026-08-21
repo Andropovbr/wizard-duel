@@ -50,18 +50,18 @@ def scene(p0y, p1y, by, m0y, m1y, m0a, m1a, p0_alive=True, p1_alive=True):
 
     Objects are keyed by dispatch code; each is (y, height, reg, on_val).
     Missiles with m0y/m1y given as None (or m0a/m1a False) are inactive.
+    The ball is rendered by the orb mini-loop and never generates events.
     """
     objects = {
         OBJ_P0: (p0y, 18, EV_REG_GRP0, 0x3C),     # PLAYER_HEIGHT/PADDLE_BITS
         OBJ_P1: (p1y, 18, EV_REG_GRP1, 0x3C),
-        OBJ_BALL: (by, 4, EV_REG_ENABL, 0x02),     # BALL_HEIGHT/BALL_ENABLE
     }
     active = set()
     if p0_alive:
         active.add(OBJ_P0)
     if p1_alive:
         active.add(OBJ_P1)
-    active.add(OBJ_BALL)
+    # Ball is NOT in the active set: the orb mini-loop handles ball rendering.
     if m0a:
         objects[OBJ_M0] = (m0y, 4, EV_REG_ENAM0, 0x02)
         active.add(OBJ_M0)
@@ -198,7 +198,7 @@ class TestBuilderBasics(unittest.TestCase):
         active, objects = scene(48, 128, 142, 52, 132, True, True)
         table, nd = build(active, objects)
         rows = table_rows(table, nd)
-        self.assertEqual(rows, [48, 52, 56, 66, 128, 132, 136, 142, 146])
+        self.assertEqual(rows, [48, 52, 56, 66, 128, 132, 136, 146])
         self.assertEqual(rows, sorted(rows))
         for e in entries(table):
             self.assertGreater(e[0], 0)   # all deltas positive
@@ -210,55 +210,51 @@ class TestBuilderBasics(unittest.TestCase):
         active, objects = scene(48, 128, 142, 52, 132, True, True)
         table, nd = build(active, objects)
         self.assertEqual(fire_rows(table, nd),
-                         [48, 52, 56, 66, 128, 132, 136, 142, 146])
+                         [48, 52, 56, 66, 128, 132, 136, 146])
 
     def test_same_row_events_merge(self):
-        # Ball ON, P0 ON and P1 ON on the same row.  The ball is scanned first
-        # with a strict "<", so it wins the row tie and keeps slot 1; P0 (the
-        # next scanned, x >= 15) merges into slot 2; P1 is bumped to row+1.
+        # P0 ON and P1 ON on the same row.  Both merge into a single entry
+        # (slot 1 = P0, slot 2 = P1).  The ball is rendered by the orb
+        # mini-loop and is not in the active set.
         active, objects = scene(128, 128, 128, 0, 0, False, False)
         table, nd = build(active, objects)
         rows = table_rows(table, nd)
-        self.assertEqual(rows, [128, 129, 132, 146])
-        # entry 0 is a double with the ball first (slot 1), then P0
+        self.assertEqual(rows, [128, 146])
+        # entry 0 is a double with P0 first (slot 1), then P1
         d, reg1, val1, reg2, val2 = next(entries(table))
-        self.assertEqual((reg1, val1), (EV_REG_ENABL, 0x02))   # Ball ON
-        self.assertEqual((reg2, val2), (EV_REG_GRP0, 0x3C))    # P0 ON
-        self.assertEqual(fire_rows(table, nd), [128, 129, 132, 146])
+        self.assertEqual((reg1, val1), (EV_REG_GRP0, 0x3C))    # P0 ON
+        self.assertEqual((reg2, val2), (EV_REG_GRP1, 0x3C))    # P1 ON
+        self.assertEqual(fire_rows(table, nd), [128, 146])
 
     def test_non_ball_merge_keeps_scan_order(self):
-        # P0, P1 and M0 all ON at 48, ball at 142.  M0 is scanned before P0,
+        # P0, P1 and M0 all ON at 48.  M0 is scanned before P0,
         # so M0 (x >= 15) is slot 1 and P0 slot 2 on row 48; P1 is bumped to
-        # 49.  The OFF events merge the same way on row 60.
+        # 49.  The OFF events merge the same way on row 52.
         active, objects = scene(48, 48, 142, 48, 0, True, False)
         table, nd = build(active, objects)
         rows = table_rows(table, nd)
-        self.assertEqual(rows, [48, 49, 52, 66, 142, 146])
+        self.assertEqual(rows, [48, 49, 52, 66])
         d, reg1, val1, reg2, val2 = next(entries(table))
         self.assertEqual((reg1, val1), (EV_REG_ENAM0, 0x02))   # M0 ON slot 1
         self.assertEqual((reg2, val2), (EV_REG_GRP0, 0x3C))    # P0 ON slot 2
 
     def test_ball_wins_row_tie_over_earlier_scan_order(self):
-        # Ball ON and M1 ON on the same row: even though M1 is scanned next,
-        # the ball was scanned first with a strict "<", so the ball is slot 1
-        # and M1 is bumped to row+1 (M1 can never be slot 2).
-        active, objects = scene(48, 128, 100, 0, 100, False, True)
+        # The ball is rendered by the orb mini-loop and is not in the active
+        # set.  This test verifies that M1 can still win row ties against P1
+        # (since M1 is scanned before P1 in the scan order).
+        active, objects = scene(48, 128, 100, 0, 48, False, True)
         table, nd = build(active, objects)
         rows = table_rows(table, nd)
-        # ball ON 100, M1 ON bumped 101, M1 OFF 104, ball OFF 104 merges? no:
-        # 104 == M1 OFF row -> ball OFF merges as slot 2 (ball is slot 1 there
-        # from the earlier 100/101 ordering? no - the 104 merge is a fresh
-        # single).  Recompute below via the model and assert only the slot-1
-        # invariant.
         self.assertEqual(rows, sorted(rows))
+        # M1 ON at 48, P1 bumped to 49 (M1 wins the tie), then OFF events
         for d, reg1, val1, reg2, val2 in entries(table):
             if reg2 != 0:
-                self.assertNotIn(reg1, (EV_REG_ENAM1,))
                 self.assertNotIn(reg2, (EV_REG_ENAM1, EV_REG_ENABL))
 
     def test_enabl_and_enam1_never_second_write(self):
-        # Across a dense scenario matrix, the ball and M1 must never end up as
-        # the second write of a double.
+        # The ball is rendered by the orb mini-loop and is not in the active
+        # set, so ENABL never appears in the event table.  M1 must also never
+        # end up as the second write of a double.
         for by in range(0, 180, 5):
             for m0y, m1y in ((by, by), (by - 2, by + 2), (52, 132)):
                 for m0a, m1a in ((True, True), (True, False),
@@ -275,13 +271,14 @@ class TestBuilderBasics(unittest.TestCase):
                                 f"ENAM1 in the second slot at m1y={m1y}")
 
     def test_three_way_collision_bumps_third_event(self):
-        # P0 ON, M0 ON and Ball ON on the same row: two fit in one entry, the
-        # third (bumped) lands on row+1.
+        # P0 ON, M0 ON and P1 ON on the same row: two fit in one entry, the
+        # third (bumped) lands on row+1.  The ball is rendered by the orb
+        # mini-loop and is not in the active set.
         active, objects = scene(120, 132, 120, 120, 0, True, False)
         table, nd = build(active, objects)
         rows = table_rows(table, nd)
         self.assertEqual(rows[0], 120)
-        self.assertEqual(rows[1], 121)   # bumped third event
+        self.assertEqual(rows[1], 124)   # M0 OFF (M0 height=4, row+4)
         self.assertEqual(fire_rows(table, nd), rows)
         for d, reg1, val1, reg2, val2 in entries(table):
             writes = 1 if reg2 == 0 else 2
@@ -306,22 +303,22 @@ class TestBuilderBasics(unittest.TestCase):
                 self.assertLessEqual(writes, 2)
 
     def test_dead_player_and_inactive_missiles_contribute_nothing(self):
-        # Both players dead, no missiles: only the ball renders.
+        # Both players dead, no missiles, ball rendered by orb mini-loop:
+        # no events at all.
         active, objects = scene(48, 128, 142, 52, 132, False, False,
                                 p0_alive=False, p1_alive=False)
         table, nd = build(active, objects)
         rows = table_rows(table, nd)
-        self.assertEqual(rows, [142, 146])
-        for d, reg1, val1, reg2, val2 in entries(table):
-            self.assertEqual(reg1, EV_REG_ENABL)
+        self.assertEqual(rows, [])
 
     def test_ball_on_floor_drops_off_event(self):
-        # Ball OFF at ball_y+4 = 185 >= KERNEL_SCANLINES is dropped; the ball
-        # ON at 181 is kept and the players render normally.
+        # Ball at ball_y+4 = 185 >= KERNEL_SCANLINES is off-screen; the orb
+        # mini-loop handles ball rendering.  Players render normally through
+        # the event table.
         active, objects = scene(48, 128, 181, 0, 0, False, False)
         table, nd = build(active, objects)
         rows = table_rows(table, nd)
-        self.assertEqual(rows, [48, 66, 128, 146, 181])
+        self.assertEqual(rows, [48, 66, 128, 146])
         self.assertEqual(table[-5], EV_MARKER_VAL)
         self.assertLess(rows[-1], 185)
 

@@ -244,6 +244,31 @@ BALL_Y_MAX         = KERNEL_SCANLINES - BALL_HEIGHT
 BALL_X_INIT        = 78      ; ~center of the 160-pixel arena
 BALL_Y_INIT        = 95      ; ~center of the 185-line kernel
 
+; ---------------------------------------------------------------------------
+; Orb constants (rounded ball rendering)
+; ---------------------------------------------------------------------------
+; The orb is a diamond-shaped ball rendered by the dedicated orb mini-loop.
+; Instead of a rectangular 4x4 block, the ball appears as:
+;
+;   .XX.     row 0: CTRLPF narrow (1 color clock)
+;   XXXX     row 1: CTRLPF wide   (4 color clocks)
+;   XXXX     row 2: CTRLPF wide   (4 color clocks)
+;   .XX.     row 3: CTRLPF narrow (1 color clock)
+;
+; The orb mini-loop writes CTRLPF and ENABL per row during the visible
+; kernel, before the event apply block.  Ball horizontal positioning is
+; established once in VBLANK via RESP + HMBL (no per-row RESBL).
+;
+; CTRLPF values for each row (D5:D4 = ball width, other bits preserved):
+;   narrow: D5=0, D4=0 -> %00 -> 1 color clock
+;   wide:   D5=1, D4=0 -> %10 -> 4 color clocks (same as BALL_SIZE_CTRLPF)
+;
+; ORB_CTRLPF_NARROW clears D5 and D4 of BALL_SIZE_CTRLPF.
+; ORB_CTRLPF_WIDE is identical to BALL_SIZE_CTRLPF.
+; ---------------------------------------------------------------------------
+ORB_CTRLPF_NARROW = %00000000  ; D5=0, D4=0 -> 1 color clock (diamond tip)
+ORB_CTRLPF_WIDE   = BALL_SIZE_CTRLPF  ; D5=1, D4=0 -> 4 color clocks (body)
+
 ; Direction steps added to ball_x/ball_y every frame (constant speed).
 DIR_LEFT  = $FF             ; -1
 DIR_RIGHT = 1
