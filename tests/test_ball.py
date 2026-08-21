@@ -152,8 +152,9 @@ class TestUpdateBallMovement(unittest.TestCase):
         self.assertEqual((x, y), (79, 89))
 
     def test_bounces_at_right_edge(self):
-        x, y, dx, dy = self.step(156, 95, 1, 1)
-        self.assertEqual((x, y), (155, 96))
+        xmax = self.c["BALL_X_MAX"]
+        x, y, dx, dy = self.step(xmax, 95, 1, 1)
+        self.assertEqual((x, y), (xmax - 1, 96))
         self.assertEqual(dx, 0xFF)  # reversed to left
 
     def test_bounces_at_left_edge(self):
@@ -173,8 +174,9 @@ class TestUpdateBallMovement(unittest.TestCase):
 
     def test_bounce_at_bottom_right_corner(self):
         # Both bounces fire on the same frame and must stay in bounds.
-        x, y, dx, dy = self.step(156, self.c["BALL_Y_MAX"], 1, 1)
-        self.assertEqual((x, y), (155, self.c["BALL_Y_MAX"] - 1))
+        xmax = self.c["BALL_X_MAX"]
+        x, y, dx, dy = self.step(xmax, self.c["BALL_Y_MAX"], 1, 1)
+        self.assertEqual((x, y), (xmax - 1, self.c["BALL_Y_MAX"] - 1))
         self.assertEqual((dx, dy), (0xFF, 0xFF))
 
     def test_ball_stays_in_bounds_over_many_frames(self):
@@ -215,18 +217,17 @@ class TestBallConstants(unittest.TestCase):
     def setUpClass(cls):
         cls.c = read_constants()
 
-    def test_ball_is_square_4_by_4(self):
-        self.assertEqual(self.c.get("BALL_WIDTH"), 4)
-        self.assertEqual(self.c.get("BALL_HEIGHT"), 4)
-        # CTRLPF D5:D4 = %10 -> 4 color clocks wide ($20, not $10 which is
-        # only 2 clocks wide).
-        self.assertEqual(self.c.get("BALL_SIZE_CTRLPF"), 0b00100000)
+    def test_ball_is_small_2_by_2(self):
+        self.assertEqual(self.c.get("BALL_WIDTH"), 2)
+        self.assertEqual(self.c.get("BALL_HEIGHT"), 2)
+        # CTRLPF D5:D4 = %01 -> 2 color clocks wide ($10).
+        self.assertEqual(self.c.get("BALL_SIZE_CTRLPF"), 0b00010000)
 
     def test_ball_bounds_within_visible_area(self):
         height = self.c.get("BALL_HEIGHT")
         kernel = self.c.get("KERNEL_SCANLINES")
         self.assertEqual(self.c.get("BALL_X_MIN"), 0)
-        self.assertEqual(self.c.get("BALL_X_MAX"), 160 - 4)
+        self.assertEqual(self.c.get("BALL_X_MAX"), 160 - 2)
         self.assertEqual(self.c.get("BALL_Y_MIN"), 0)
         # ball_y is the FIRST display row; the ball occupies rows
         # ball_y .. ball_y + BALL_HEIGHT - 1.  BALL_Y_MAX keeps the last row
@@ -323,7 +324,7 @@ class TestEventKernel(unittest.TestCase):
     def test_ball_events_are_height_apart(self):
         # The builder emits the ball ON event at ball_y and OFF at ball_y +
         # BALL_HEIGHT, so the ball is visible for exactly BALL_HEIGHT rows.
-        self.assertEqual(self.c["BALL_HEIGHT"], 4)
+        self.assertEqual(self.c["BALL_HEIGHT"], 2)
 
     def test_no_ball_bleed_into_overscan(self):
         # BALL_Y_MAX = KERNEL_SCANLINES - BALL_HEIGHT keeps the ball's last
