@@ -51,10 +51,11 @@ def scene(p0y, p1y, by, m0y, m1y, m0a, m1a, p0_alive=True, p1_alive=True):
     Objects are keyed by dispatch code; each is (y, height, reg, on_val).
     Missiles with m0y/m1y given as None (or m0a/m1a False) are inactive.
     """
+    ball_h = read_constants().get("BALL_HEIGHT", 4)
     objects = {
         OBJ_P0: (p0y, 18, EV_REG_GRP0, 0x3C),     # PLAYER_HEIGHT/PADDLE_BITS
         OBJ_P1: (p1y, 18, EV_REG_GRP1, 0x3C),
-        OBJ_BALL: (by, 4, EV_REG_ENABL, 0x02),     # BALL_HEIGHT/BALL_ENABLE
+        OBJ_BALL: (by, ball_h, EV_REG_ENABL, 0x02),  # BALL_HEIGHT/BALL_ENABLE
     }
     active = set()
     if p0_alive:
@@ -198,7 +199,7 @@ class TestBuilderBasics(unittest.TestCase):
         active, objects = scene(48, 128, 142, 52, 132, True, True)
         table, nd = build(active, objects)
         rows = table_rows(table, nd)
-        self.assertEqual(rows, [48, 52, 56, 66, 128, 132, 136, 142, 146])
+        self.assertEqual(rows, [48, 52, 56, 66, 128, 132, 136, 142, 144, 146])
         self.assertEqual(rows, sorted(rows))
         for e in entries(table):
             self.assertGreater(e[0], 0)   # all deltas positive
@@ -210,7 +211,7 @@ class TestBuilderBasics(unittest.TestCase):
         active, objects = scene(48, 128, 142, 52, 132, True, True)
         table, nd = build(active, objects)
         self.assertEqual(fire_rows(table, nd),
-                         [48, 52, 56, 66, 128, 132, 136, 142, 146])
+                         [48, 52, 56, 66, 128, 132, 136, 142, 144, 146])
 
     def test_same_row_events_merge(self):
         # Ball ON, P0 ON and P1 ON on the same row.  The ball is scanned first
@@ -219,12 +220,12 @@ class TestBuilderBasics(unittest.TestCase):
         active, objects = scene(128, 128, 128, 0, 0, False, False)
         table, nd = build(active, objects)
         rows = table_rows(table, nd)
-        self.assertEqual(rows, [128, 129, 132, 146])
+        self.assertEqual(rows, [128, 129, 130, 146])
         # entry 0 is a double with the ball first (slot 1), then P0
         d, reg1, val1, reg2, val2 = next(entries(table))
         self.assertEqual((reg1, val1), (EV_REG_ENABL, 0x02))   # Ball ON
         self.assertEqual((reg2, val2), (EV_REG_GRP0, 0x3C))    # P0 ON
-        self.assertEqual(fire_rows(table, nd), [128, 129, 132, 146])
+        self.assertEqual(fire_rows(table, nd), [128, 129, 130, 146])
 
     def test_non_ball_merge_keeps_scan_order(self):
         # P0, P1 and M0 all ON at 48, ball at 142.  M0 is scanned before P0,
@@ -233,7 +234,7 @@ class TestBuilderBasics(unittest.TestCase):
         active, objects = scene(48, 48, 142, 48, 0, True, False)
         table, nd = build(active, objects)
         rows = table_rows(table, nd)
-        self.assertEqual(rows, [48, 49, 52, 66, 142, 146])
+        self.assertEqual(rows, [48, 49, 52, 66, 142, 144])
         d, reg1, val1, reg2, val2 = next(entries(table))
         self.assertEqual((reg1, val1), (EV_REG_ENAM0, 0x02))   # M0 ON slot 1
         self.assertEqual((reg2, val2), (EV_REG_GRP0, 0x3C))    # P0 ON slot 2
@@ -311,17 +312,17 @@ class TestBuilderBasics(unittest.TestCase):
                                 p0_alive=False, p1_alive=False)
         table, nd = build(active, objects)
         rows = table_rows(table, nd)
-        self.assertEqual(rows, [142, 146])
+        self.assertEqual(rows, [142, 144])
         for d, reg1, val1, reg2, val2 in entries(table):
             self.assertEqual(reg1, EV_REG_ENABL)
 
     def test_ball_on_floor_drops_off_event(self):
-        # Ball OFF at ball_y+4 = 185 >= KERNEL_SCANLINES is dropped; the ball
-        # ON at 181 is kept and the players render normally.
+        # Ball OFF at ball_y+BALL_HEIGHT = 183 < KERNEL_SCANLINES is kept; both
+        # ON and OFF events are present.
         active, objects = scene(48, 128, 181, 0, 0, False, False)
         table, nd = build(active, objects)
         rows = table_rows(table, nd)
-        self.assertEqual(rows, [48, 66, 128, 146, 181])
+        self.assertEqual(rows, [48, 66, 128, 146, 181, 183])
         self.assertEqual(table[-5], EV_MARKER_VAL)
         self.assertLess(rows[-1], 185)
 

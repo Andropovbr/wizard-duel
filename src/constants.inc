@@ -195,19 +195,16 @@ BACKGR_COLOR       = $00     ; black
 ; ---------------------------------------------------------------------------
 ; Ball constants
 ; ---------------------------------------------------------------------------
-; The ball is a TIA Ball object: BALL_WIDTH pixels wide (CTRLPF D5:D4 = %10)
-; and BALL_HEIGHT scanlines tall. It is kept approximately square (4 x 4)
-; because a 4-pixel-wide, 1-scanline-tall ball renders as a thin horizontal
-; dash and, being only 1 scanline tall, has no vertical overlap between
-; consecutive frames, which makes its 1 px/frame motion look stroboscopic.
-; It moves at a constant 1 pixel per frame per axis and bounces off the four
-; arena edges. It does NOT interact with the players this round (no
-; collision, no collection, no power-up).
+; The ball is a TIA Ball object: BALL_WIDTH pixels wide (CTRLPF D5:D4 = %01
+; for 2 color clocks) and BALL_HEIGHT scanlines tall.  A small 2x2 ball
+; (inspired by classic Pong/Video Olympics) is clearly visible while keeping
+; the collision area proportional.  It moves at a constant 1 pixel per frame
+; per axis and bounces off the four arena edges.
 ;
 ; ball_x / ball_y are the ball's visual position:
 ;   - ball_x: leftmost visible pixel of the ball (0..159)
 ;   - ball_y: first kernel scanline on which the ball is displayed; it is
-;     displayed on the BALL_HEIGHT consecutive rows ball_y .. ball_y + 3.
+;     displayed on the BALL_HEIGHT consecutive rows ball_y .. ball_y + 1.
 ;     In the event kernel an event written at the top of a scanline applies
 ;     on that scanline (verified on the target), so ball_y is the display row
 ;     directly (no TIA latch offset).
@@ -219,9 +216,9 @@ BACKGR_COLOR       = $00     ; black
 ; bounds below are expressed in the visible pixel coordinate (ball_x), so the
 ; ball stays fully inside the 160-pixel visible width.
 ; ---------------------------------------------------------------------------
-BALL_WIDTH         = 4       ; ball size in pixels (CTRLPF D5:D4 = %10)
-BALL_HEIGHT        = 4       ; ball size in scanlines (ENABL = 1 for 4 rows)
-BALL_SIZE_CTRLPF   = %00100000   ; CTRLPF D5=1, D4=0 -> 4 color clocks
+BALL_WIDTH         = 1       ; ball size in pixels (CTRLPF D5:D4 = %00)
+BALL_HEIGHT        = 2       ; ball size in scanlines (ENABL = 1 for 2 rows)
+BALL_SIZE_CTRLPF   = %00000000   ; CTRLPF D5=0, D4=0 -> 1 color clock
 BALL_COLOR         = $0E     ; white (NTSC)
 BALL_ENABLE        = %00000010   ; ENABL value on a ball row. The TIA only
                                  ; samples bit 1 of the ball enable register
@@ -230,16 +227,16 @@ BALL_ENABLE        = %00000010   ; ENABL value on a ball row. The TIA only
                                  ; is %00000010 rather than $FF.
 
 BALL_X_MIN         = 0                     ; left edge of the visible area
-BALL_X_MAX         = 160 - BALL_WIDTH      ; keep the 4-px ball fully visible
+BALL_X_MAX         = 160 - BALL_WIDTH      ; keep the ball fully visible
 BALL_Y_MIN         = 0                     ; drawn on the first kernel line
 BALL_Y_MAX         = KERNEL_SCANLINES - BALL_HEIGHT
-                                           ; last first-draw row = 181; the
-                                           ; ball occupies rows 181..184. The
-                                           ; ball OFF event at row 185 is
-                                           ; dropped by the event builder and
-                                           ; ENABL is cleared explicitly during
-                                           ; overscan init, so the ball can
-                                           ; never bleed into overscan.
+                                            ; ball occupies rows ball_y ..
+                                            ; ball_y + BALL_HEIGHT - 1. The
+                                            ; ball OFF event at row 185 is
+                                            ; dropped by the event builder and
+                                            ; ENABL is cleared explicitly during
+                                            ; overscan init, so the ball can
+                                            ; never bleed into overscan.
 
 BALL_X_INIT        = 78      ; ~center of the 160-pixel arena
 BALL_Y_INIT        = 95      ; ~center of the 185-line kernel
