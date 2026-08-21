@@ -49,13 +49,13 @@ was absorbed by existing `ALIGN` slack, so the high-water mark did not move.
 
 ## RAM layout (RIOT RAM `$80-$FF`, 128 bytes)
 
-Round 12 uses 86 bytes ($80-$D5). The event table is a fixed 60-byte block:
+Round 12 uses 87 bytes ($80-$D6). The event table is a fixed 60-byte block:
 a 5-byte dummy at offset 0, up to 10 real 5-byte entries and the 5-byte
 end-marker. The kernel reads the entries directly (table-direct apply), so
 the Round 10 pending registers and the Round 5 scratch buffers/`scanCnt`/
-`joystate`/separate missile flags are all gone. Round 12 adds 5 bytes for
-game state, mode, and switch input (`game_state`, `game_mode`,
-`select_prev`, `reset_prev`, `swchb_cur`).
+`joystate`/separate missile flags are all gone. Round 12 adds 6 bytes for
+game state, mode, switch input, and reset tracking (`game_state`,
+`game_mode`, `select_prev`, `reset_prev`, `swchb_cur`, `reset_held`).
 
 | Address   | Name        | Size | Purpose                              |
 | --------- | ----------- | ---- | ------------------------------------ |
@@ -81,12 +81,13 @@ game state, mode, and switch input (`game_state`, `game_mode`,
 | `$93`     | `select_prev`| 1   | previous frame SELECT bit (bit 1)    |
 | `$94`     | `reset_prev`| 1    | previous frame RESET bit (bit 0)     |
 | `$95`     | `swchb_cur` | 1    | current frame SWCHB snapshot         |
-| `$96-$D1` | `evTbl`     | 60   | dummy (5B) + entries (max 10 x 5B) + marker (5B) |
-| `$D2`     | `evRow`     | 1    | builder: current event row           |
-| `$D3`     | `tempCount` | 1    | builder: shift point / prevRow       |
-| `$D4`     | `tblLen`    | 1    | builder: number of real entries      |
-| `$D5`     | `nullDelta` | 1    | first entry's delta (185 when empty) |
-| `$D6-$FF` | -           | 42   | unallocated                          |
+| `$96`     | `reset_held`| 1    | nonzero while RESET is held in menu  |
+| `$97-$D2` | `evTbl`     | 60   | dummy (5B) + entries (max 10 x 5B) + marker (5B) |
+| `$D3`     | `evRow`     | 1    | builder: current event row           |
+| `$D4`     | `tempCount` | 1    | builder: shift point / prevRow       |
+| `$D5`     | `tblLen`    | 1    | builder: number of real entries      |
+| `$D6`     | `nullDelta` | 1    | first entry's delta (185 when empty) |
+| `$D7-$FF` | -           | 41   | unallocated                          |
 
 Variables live in zero page so all accesses use the short, fast zero-page
 addressing modes. The event table (60 bytes) is the largest single block and

@@ -80,13 +80,26 @@ portanto nunca produzia uma borda de subida (0 AND mask = 0 →
 Correção: inicializar ambos com `SELECT_BIT|RESET_BIT` (= 0x03,
 ambos liberados) no handler Reset após o loop de limpeza da RAM.
 
-### Reescrita do HandleInput
+### Reescrita do HandleInput (v3: RESET com Falling Edge)
 
 Versão anterior com múltiplas leituras e PHA/PLA substituída por
 design simples com leitura única: SWCHB é lido uma vez por frame
-em `swchb_cur`, depois SELECT e RESET são comparados com seus
-valores anteriores em `select_prev`/`reset_prev`. Sem re-leituras,
-sem manipulação de stack.
+em `swchb_cur`.
+
+SELECT usa detecção de borda de subida (released -> pressed) para
+alternar game_mode, sem alteração.
+
+RESET agora usa semântica de borda de descida (comportamento clássico
+do Atari 2600):
+- Enquanto RESET é segurado no menu: flag `reset_held` é ativada,
+  jogo permanece congelado, sem atualizações de gameplay.
+- Na soltura de RESET (pressed -> released): `InitGame` roda uma vez,
+  jogo entra em STATE_PLAYING e começa normalmente.
+- Durante gameplay: RESET (borda de subida) retorna ao STATE_MENU.
+
+Isso elimina o comportamento inconsistente onde pressionamentos
+rápidos/lentos/longos produziam resultados diferentes. A duração
+da pressão não importa mais.
 
 ### Visual do Menu
 
@@ -132,16 +145,16 @@ Antes:
 
 Depois:
 - ROM: 2064 bytes
-- RAM: 86 bytes (+5: game_state, game_mode, select_prev, reset_prev, swchb_cur)
+- RAM: 87 bytes (+6: game_state, game_mode, select_prev, reset_prev, swchb_cur, reset_held)
 
 ## Testes
 
 - 261 testes passam
 - Todos os gates de qualidade passam (ROM ≤ 4096, RAM ≤ 128, 262 scanlines)
-- Novos padrões de teste: simulação de RESET via borda de subida para
-  transição adequada do InitGame nos harnesses de teste
-- Todos os harnesses atualizados com masks SWCHB corretos (riot[2] = 0x03
-  para liberado, riot[2] & 0x01 para verificação do bit RESET)
+- Harnesses de teste atualizados: simulação de RESET agora usa falling-edge
+  (pressionar → rodar frame → soltar → rodar frame) para acionar InitGame
+- Todos os harnesses usam masks SWCHB corretos (riot[2] = 0x03 para
+  liberado, riot[2] & 0x01 para verificação do bit RESET)
 
 ## Limitações Conhecidas
 

@@ -78,12 +78,23 @@ rising edge (0 AND mask = 0 → "still held").
 Fix: initialize both to `SELECT_BIT|RESET_BIT` (= 0x03, both released)
 in the Reset handler after the RAM clear loop.
 
-### HandleInput Rewrite
+### HandleInput Rewrite (v3: Falling-Edge RESET)
 
 Replaced the multi-read PHA/PLA version with a simple single-read
-design: SWCHB is read once per frame into `swchb_cur`, then both
-SELECT and RESET are checked against their previous values from
-`select_prev`/`reset_prev`.  No re-reads, no stack manipulation.
+design: SWCHB is read once per frame into `swchb_cur`.
+
+SELECT uses rising-edge detection (released -> pressed) to toggle
+game_mode, unchanged.
+
+RESET now uses falling-edge semantics (classic Atari 2600 behavior):
+- While RESET is held in the menu: `reset_held` flag is set, game
+  stays frozen, no gameplay updates run.
+- On RESET release (pressed -> released): `InitGame` runs once,
+  game enters STATE_PLAYING and starts normally.
+- During gameplay: RESET (rising edge) returns to STATE_MENU.
+
+This eliminates the inconsistent behavior where fast/slow/long presses
+produced different results. The duration of the press no longer matters.
 
 ### Menu Visual
 
@@ -128,16 +139,16 @@ Before:
 
 After:
 - ROM: 2064 bytes
-- RAM: 86 bytes (+5: game_state, game_mode, select_prev, reset_prev, swchb_cur)
+- RAM: 87 bytes (+6: game_state, game_mode, select_prev, reset_prev, swchb_cur, reset_held)
 
 ## Tests
 
 - 261 tests pass
 - All quality gates pass (ROM ≤ 4096, RAM ≤ 128, 262 scanlines)
-- New test patterns: RESET simulation via rising edge for proper
-  InitGame transition in test harnesses
-- All test harnesses updated to use correct SWCHB masks (riot[2] = 0x03
-  for released, riot[2] & 0x01 for RESET bit check)
+- Test harnesses updated: RESET simulation now uses falling-edge
+  (press → run frame → release → run frame) to trigger InitGame
+- All test harnesses use correct SWCHB masks (riot[2] = 0x03 for
+  released, riot[2] & 0x01 for RESET bit check)
 
 ## Known Limitations
 

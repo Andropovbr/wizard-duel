@@ -89,30 +89,27 @@ class MissileFireHarness:
 
         Frame 0: Reset handler runs (clears RAM, game_state=0), frame runs
         in menu mode (UpdateMissiles skipped).
-        Then simulates a RESET rising edge which triggers InitGame:
-        restores p1_hp, clears fire_prev, sets game_state=1.
-        Frame 1: first full playing frame; UpdateMissiles syncs fire_prev
-        with the released button state (FIRE_SYNC set, no spawn).
+        Then simulates a RESET press+release (falling edge) which triggers
+        InitGame: restores p1_hp, clears fire_prev, sets game_state=1.
+        Frame 1: RESET pressed (reset_held set), stays in menu.
+        Frame 2: RESET released, InitGame runs, first playing frame.
         """
         self.set_buttons(False, False)
         self.run_frame()                        # frame 0: menu mode
-        # Simulate RESET rising edge to trigger InitGame (which sets
-        # p1_hp, clears fire_prev, and transitions to STATE_PLAYING).
-        reset_bit = self.cpu.riot[2] & 0x01     # current RESET state (bit 0)
-        self.cpu.ram[self._ram("reset_prev")] = reset_bit
-        self.cpu.riot[2] = 0x00                  # press RESET
-        self.run_frame()                        # frame 1: InitGame + sync
-        self.cpu.riot[2] = 0x03                  # release RESET
+        # Simulate RESET falling edge: press then release.
+        self.cpu.riot[2] = 0x00                 # press RESET
+        self.run_frame()                        # frame 1: reset_held set, still menu
+        self.cpu.riot[2] = 0x03                 # release RESET
+        self.run_frame()                        # frame 2: InitGame + first playing frame
 
 
 class TestBoot(unittest.TestCase):
     def _enter_playing(self, h):
-        """Simulate a RESET rising edge to trigger InitGame after the boot frame."""
-        reset_bit = h.cpu.riot[2] & 0x01  # bit 0 = RESET
-        h.cpu.ram[h._ram("reset_prev")] = reset_bit
-        h.cpu.riot[2] = 0x00
-        h.run_frame()
-        h.cpu.riot[2] = 0x03
+        """Simulate a RESET press+release (falling edge) to trigger InitGame."""
+        h.cpu.riot[2] = 0x00     # press RESET
+        h.run_frame()            # reset_held set, still menu
+        h.cpu.riot[2] = 0x03     # release RESET
+        h.run_frame()            # InitGame + first playing frame
 
     def test_boot_with_released_buttons_no_missiles(self):
         # Real boot: the latches read pressed on frame 1, then released.  The

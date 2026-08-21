@@ -113,12 +113,11 @@ class TestFrameStability(unittest.TestCase):
         self.cpu.inpt[4] = 0xFF          # boot sync frame first (buttons released)
         self.cpu.inpt[5] = 0xFF
         self.run_frame()                 # frame 0: menu mode
-        # Simulate RESET rising edge to trigger InitGame
-        reset_prev = self._ram("reset_prev")
-        self.cpu.ram[reset_prev] = 0x01  # prev state = released (RESET_BIT)
+        # Simulate RESET falling edge (press then release) to trigger InitGame
         self.cpu.riot[2] = 0x00          # press RESET
-        self.run_frame()                 # frame 1: InitGame + first playing frame
+        self.run_frame()                 # frame 1: reset_held set, still menu
         self.cpu.riot[2] = 0x03          # release RESET
+        self.run_frame()                 # frame 2: InitGame + first playing frame
         self.cpu.inpt[4] = 0x00          # now a real press
         self.cpu.inpt[5] = 0xFF
         self.run_frame()

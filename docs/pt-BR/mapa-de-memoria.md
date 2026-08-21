@@ -50,14 +50,14 @@ existentes, então o maior endereço emitido não mudou.
 
 ## Layout da RAM (RAM RIOT `$80-$FF`, 128 bytes)
 
-A Rodada 12 usa 86 bytes ($80-$D5). A tabela de eventos é um bloco fixo de 60
+A Rodada 12 usa 87 bytes ($80-$D6). A tabela de eventos é um bloco fixo de 60
 bytes: um dummy de 5 bytes no offset 0, até 10 entradas reais de 5 bytes e o
 marcador de fim de 5 bytes. O kernel lê as entradas diretamente (apply direto
 da tabela), então os registradores pendentes da Rodada 10 e os buffers de
 registros/ordem, `evIdx`, `joystate`, `scanCnt` e as flags separadas de
-míssil foram removidos. A Rodada 12 adiciona 5 bytes para estado, modo do
-jogo e leitura de switches (`game_state`, `game_mode`, `select_prev`,
-`reset_prev`, `swchb_cur`).
+míssil foram removidos. A Rodada 12 adiciona 6 bytes para estado, modo do
+jogo, leitura de switches e controle de reset (`game_state`, `game_mode`,
+`select_prev`, `reset_prev`, `swchb_cur`, `reset_held`).
 
 | Endereço | Nome        | Tam. | Finalidade                            |
 | -------- | ----------- | ---- | ------------------------------------- |
@@ -83,12 +83,13 @@ jogo e leitura de switches (`game_state`, `game_mode`, `select_prev`,
 | `$93`    | `select_prev`| 1   | bit SELECT do quadro anterior (bit 1) |
 | `$94`    | `reset_prev`| 1    | bit RESET do quadro anterior (bit 0)  |
 | `$95`    | `swchb_cur` | 1    | snapshot SWCHB do quadro atual       |
-| `$96-$D1`| `evTbl`     | 60   | dummy (5B) + entradas (máx. 10 x 5B) + marcador (5B) |
-| `$D2`    | `evRow`     | 1    | builder: linha atual do evento        |
-| `$D3`    | `tempCount` | 1    | builder: ponto de deslocamento / prevRow |
-| `$D4`    | `tblLen`    | 1    | builder: número de entradas reais     |
-| `$D5`    | `nullDelta` | 1    | delta da primeira entrada (185 se vazia) |
-| `$D6-$FF`| -           | 42   | não alocado                          |
+| `$96`    | `reset_held`| 1    | nonzero enquanto RESET é segurado no menu |
+| `$97-$D2`| `evTbl`     | 60   | dummy (5B) + entradas (máx. 10 x 5B) + marcador (5B) |
+| `$D3`    | `evRow`     | 1    | builder: linha atual do evento        |
+| `$D4`    | `tempCount` | 1    | builder: ponto de deslocamento / prevRow |
+| `$D5`    | `tblLen`    | 1    | builder: número de entradas reais     |
+| `$D6`    | `nullDelta` | 1    | delta da primeira entrada (185 se vazia) |
+| `$D7-$FF`| -           | 41   | não alocado                          |
 
 As variáveis ficam na zero page para que todos os acessos usem os modos de
 endereçamento curtos e rápidos de zero page. A tabela de eventos (60 bytes) é

@@ -200,13 +200,13 @@ Reset:
     ; game_state defaults to STATE_MENU (0) from the RAM clearing above.
     ; game_mode defaults to MODE_DUEL (0).
 
-    ; Initialize switch edge-detection state to "released" (active-low: bit=1
-    ; means released).  If these remained 0 (from RAM clear), the code would
-    ; treat the initial released state as "already pressed" and the first
-    ; real press would never produce a rising edge.
+    ; Initialize switch state to "released" (active-low: bit=1 means released)
+    ; and reset_held to 0 (not being held).
     LDA #(SELECT_BIT|RESET_BIT)
     STA select_prev
     STA reset_prev
+    LDA #0
+    STA reset_held
 
 ; =============================================================================
 ; StartOfFrame - one complete frame
@@ -225,7 +225,7 @@ StartOfFrame:
     STA VSYNC               ; 3   release vertical sync
 
     ; ---- VBLANK: game logic (input + movement + placement) --------------
-    JSR HandleInput          ; SELECT/RESET input (menu state only)
+    JSR HandleInput          ; SELECT/RESET input handling
     LDA game_state           ; 3
     BEQ .menuState           ; 2/3  STATE_MENU -> skip gameplay, setup visuals
     ; ---- Playing state: full gameplay update ----
@@ -469,29 +469,29 @@ OverscanWait:
     JMP StartOfFrame        ; 3   next frame
 
 ; =============================================================================
-; HandleInput (Round 12, v2)
+; HandleInput (Round 12, v3)
 ;
 ; Reads SWCHB once per frame into swchb_cur.  SELECT and RESET bits are
-; active-low (0 = pressed).  Edge detection: released -> pressed only.
+; active-low (0 = pressed).
 ;
 ; SWCHB bit layout (Atari 2600 spec):
 ;   bit 0 = RESET, bit 1 = SELECT
 ;
-; When game_state == STATE_MENU:
-;   SELECT toggles game_mode (DUEL/SCORE).
-;   RESET calls InitGame and transitions to STATE_PLAYING.
+; SELECT: rising-edge detection (released -> pressed) toggles game_mode.
+; Only active in STATE_MENU; ignored during gameplay.
 ;
-; When game_state == STATE_PLAYING:
-;   SELECT is ignored.
-;   RESET returns to STATE_MENU (preserves game_mode).
+; RESET semantics (falling-edge, classic Atari 2600):
+;   While RESET is held in the menu: game stays frozen, no gameplay.
+;   On RESET release (pressed -> released): InitGame runs, game starts.
+;   During gameplay: RESET returns to STATE_MENU.
 ; =============================================================================
 HandleInput:
     LDA SWCHB                ; 4   read console switches ONCE
     STA swchb_cur            ; 3   snapshot for this frame
     LDA game_state           ; 3
     BNE .playingInput        ; 2/3
-    ; ---- Menu state: SELECT toggles mode, RESET starts game ----
-    ; SELECT edge detection
+    ; ---- Menu state ----
+    ; SELECT: rising edge -> toggle mode
     LDA swchb_cur            ; 3
     AND #SELECT_BIT          ; 2
     BNE .selectNotPressed    ; 2/3
@@ -505,41 +505,37 @@ HandleInput:
     LDA swchb_cur            ; 3
     AND #SELECT_BIT          ; 2
     STA select_prev          ; 3
-    JMP .resetCheck          ; 3
+    JMP .resetMenu           ; 3
 .selectNotPressed:
     LDA swchb_cur            ; 3
     AND #SELECT_BIT          ; 2
     STA select_prev          ; 3
-    ; RESET edge detection
-.resetCheck:
+    ; RESET in menu: while held -> stay frozen; on release -> start game
+.resetMenu:
     LDA swchb_cur            ; 3
     AND #RESET_BIT           ; 2
-    BNE .resetNotPressedM    ; 2/3
-    LDA reset_prev           ; 3
-    AND #RESET_BIT           ; 2
-    BEQ .resetUpdateM        ; 2/3  no edge
-    JSR InitGame             ; 6   start the game
-    JMP .resetDone           ; 3
-.resetUpdateM:
-    LDA swchb_cur            ; 3
-    AND #RESET_BIT           ; 2
-    STA reset_prev           ; 3
-    RTS                      ; 6
-.resetNotPressedM:
-    LDA swchb_cur            ; 3
-    AND #RESET_BIT           ; 2
-    STA reset_prev           ; 3
-.resetDone:
+    BEQ .resetIsPressed      ; 2/3  RESET pressed (bit = 0)
+    ; RESET released this frame
+    LDA reset_held           ; 3
+    BEQ .resetMenuDone       ; 2/3  was not held -> nothing to do
+    ; Falling edge: was held, now released -> start the game
+    JSR InitGame             ; 6
+    JMP .resetMenuDone       ; 3
+.resetIsPressed:
+    LDA #1                   ; 2
+    STA reset_held           ; 3   mark that RESET is being held
+.resetMenuDone:
     RTS                      ; 6
 
 .playingInput:
-    ; ---- Playing state: only RESET (back to menu) ----
+    ; ---- Playing state: RESET returns to menu ----
     LDA swchb_cur            ; 3
     AND #RESET_BIT           ; 2
     BNE .resetNotPressedP    ; 2/3
     LDA reset_prev           ; 3
     AND #RESET_BIT           ; 2
-    BEQ .resetDoneP          ; 2/3  no edge
+    BEQ .resetDoneP          ; 2/3  no edge (already pressed)
+    ; Rising edge: RESET pressed during gameplay -> return to menu
     LDA #STATE_MENU
     STA game_state
     JMP .resetDoneP          ; 3
@@ -1993,6 +1989,7 @@ game_mode   DS 1            ; MODE_DUEL or MODE_SCORE
 select_prev DS 1            ; previous SELECT switch bit for edge detection
 reset_prev  DS 1            ; previous RESET switch bit for edge detection
 swchb_cur   DS 1            ; current frame SWCHB snapshot (HandleInput)
+reset_held  DS 1            ; nonzero while RESET is held in menu
 
 ; Event table: 5-byte dummy at offset 0 (all-zero regs so the kernel's
 ; pre-first-event apply writes only AUDV0), then up to EV_MAX_EVENTS real

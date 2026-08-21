@@ -158,17 +158,15 @@ class CollisionHarness:
             i += 5
 
     def boot_sync(self):
-        """Run the boot-sync frame, then simulate a RESET press to enter
-        STATE_PLAYING with full HP (InitGame restores both players)."""
+        """Run the boot-sync frame, then simulate a RESET press+release
+        (falling edge) to enter STATE_PLAYING with full HP."""
         self.set_buttons(False, False)
         self.run_frame()
-        # Simulate RESET rising edge: set reset_prev with RESET bit (was
-        # released), then clear SWCHB bit 0 (RESET pressed).  HandleInput
-        # detects the edge and calls InitGame.
-        self.cpu.ram[self._ram("reset_prev")] = 0x01  # RESET was released
-        self.cpu.riot[2] = 0x00                        # RESET now pressed
-        self.run_frame()
+        # Simulate RESET falling edge: press then release.
+        self.cpu.riot[2] = 0x00                        # press RESET
+        self.run_frame()                                # reset_held set, still menu
         self.cpu.riot[2] = 0x03                        # release RESET
+        self.run_frame()                                # InitGame + playing
 
     def fire_m0(self):
         self.set_buttons(True, False)
