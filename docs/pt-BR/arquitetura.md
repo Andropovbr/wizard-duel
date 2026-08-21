@@ -8,7 +8,10 @@ corrige um bug de delta=1 ao fazer o kernel aplicar a tabela de eventos
 diretamente em toda scanline (entradas uniformes de 5 bytes, apply direto da
 tabela) - veja
 [analise-timing-kernel-eventos.md](analise-timing-kernel-eventos.md) para a
-análise completa do bug.
+análise completa do bug. A Rodada 8 analisa a viabilidade de uma bola
+visualmente "arredondada" e documenta por que o hardware Ball do TIA não
+pode produzir uma forma não retangular com segurança - veja
+[changes/pt-BR/2026-08-20-analise-bola-arredondada.md](../changes/pt-BR/2026-08-20-analise-bola-arredondada.md).
 
 Funcionalidades:
 
@@ -305,7 +308,13 @@ sprites TIA de cópia única com cores diferentes: P0 é vermelho
 (`COLUP0 = $46`) e P1 é azul (`COLUP1 = $84`). Cada sprite é um retângulo
 sólido de `%00111100` (raquete de 4 pixels de largura) com `PLAYER_HEIGHT = 18`
 linhas. A bola é o objeto Ball do TIA, 4 pixels de largura (CTRLPF D5:D4 =
-`%10`) e 4 linhas de altura. Os mísseis são os objetos Missile do TIA, 2
+`%10`) e 4 linhas de altura. A bola é retangular por limitação do hardware
+do TIA: o objeto Ball é uma linha horizontal cuja largura é fixa por frame
+via CTRLPF, sem suporte a variação de largura por scanline. Uma bola
+"arredondada" foi investigada na Rodada 8, mas considerada inviável dentro
+da arquitetura table-direct do kernel (veja
+[changes/pt-BR/2026-08-20-analise-bola-arredondada.md](../changes/pt-BR/2026-08-20-analise-bola-arredondada.md)).
+Os mísseis são os objetos Missile do TIA, 2
 pixels de largura e 4 linhas de altura.
 
 A tabela de eventos registra um evento ON (liga o registrador) e um evento

@@ -7,7 +7,10 @@ removing the separate record/order scratch buffers. Round 11 fixes a
 delta=1 kernel bug by making the kernel apply the event table directly on
 every scanline (uniform 5-byte entries, table-direct apply) - see
 [event-kernel-timing-analysis.md](event-kernel-timing-analysis.md) for the
-full bug analysis.
+full bug analysis. Round 8 analyzes the feasibility of a visually "rounded"
+ball and documents why the TIA Ball hardware cannot produce a non-rectangular
+shape safely - see
+[changes/en/2026-08-20-rounded-ball-analysis.md](../changes/en/2026-08-20-rounded-ball-analysis.md).
 
 Features:
 
@@ -295,8 +298,13 @@ The visible kernel is event-driven (see above). Both players are drawn as
 single-copy TIA sprites with different colors: P0 is red (`COLUP0 = $46`) and
 P1 is blue (`COLUP1 = $84`). Each sprite is a solid rectangle of `%00111100`
 (a 4-pixel-wide paddle) on `PLAYER_HEIGHT = 18` rows. The ball is the TIA
-Ball object, 4 pixels wide (CTRLPF D5:D4 = `%10`) and 4 rows tall. Missiles
-are the TIA Missile objects, 2 pixels wide and 4 rows tall.
+Ball object, 4 pixels wide (CTRLPF D5:D4 = `%10`) and 4 rows tall. The ball
+is rectangular by TIA hardware limitation: the Ball object is a horizontal
+line whose width is fixed per-frame by CTRLPF, with no support for
+per-scanline width variation. A "rounded" ball was investigated in Round 8
+but found infeasible within the table-direct kernel architecture (see
+[changes/en/2026-08-20-rounded-ball-analysis.md](../changes/en/2026-08-20-rounded-ball-analysis.md)).
+Missiles are the TIA Missile objects, 2 pixels wide and 4 rows tall.
 
 The event table records an ON event (turn the register on) and an OFF event
 (turn it off) at each object's display rows:
