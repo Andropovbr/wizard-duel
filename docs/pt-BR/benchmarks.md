@@ -99,19 +99,20 @@ não reprova o CI. Os limites estão centralizados como constantes em
 | ----------------- | -------------------------------------------- |
 | Crescimento de ROM | > 32 bytes OU > 5,0%                        |
 | Crescimento de RAM | > 4 bytes OU > 10,0%                        |
-| Pressão de RAM    | RAM usada >= 75% do orçamento de 81 bytes    |
-| Pressão forte de RAM | RAM usada >= 90% do orçamento de 81 bytes |
+| Pressão de RAM    | RAM usada >= 75% do limite rígido de 112 bytes |
+| Pressão forte de RAM | RAM usada >= 90% do limite rígido de 112 bytes |
 | Pior caso do kernel | aumento > 4 ciclos                         |
 | Kernel slack      | redução > 4 ciclos                            |
 
-Os limites de RAM sustentam o orçamento da Rodada 11 de manter o jogo abaixo
-de 81 dos 128 bytes do RIOT (o +1 byte em relação à Rodada 11 é
-`ball_contact_flags`, o registro de contato bola x jogador; veja o changelog):
-cruzar 75% desse orçamento avisa, cruzar 90%
-avisa com força, e usar mais de 81 bytes reprova o CI (um portão hard). O
-crescimento de RAM também é comparado com o baseline por bytes absolutos e
-percentual. Esses valores são intencionalmente conservadores; servem para
-tornar regressões significativas visíveis, não para falhar a cada byte.
+O limite rígido de RAM do projeto é 112 bytes: os 128 bytes do RIOT RAM
+menos 16 bytes de margem para que a capacidade restante seja visível
+antes que o limite de hardware seja atingido.  Exceder 112 bytes reprova
+o CI (um portão hard).  O crescimento de RAM em relação ao baseline é
+rastreado como aviso soft e NÃO reprova o CI enquanto o limite rígido
+não for excedido.  Cruzar 75% do limite rígido produz um aviso de pressão;
+cruzar 90% produz um aviso de pressão forte. Esses valores são
+intencionalmente conservadores; servem para tornar regressões
+significativas visíveis, não para falhar a cada byte.
 Atualize-os somente com uma razão técnica documentada.
 
 ## Lendo o relatório do CI

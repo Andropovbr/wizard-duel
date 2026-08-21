@@ -41,6 +41,10 @@ class MissileFireHarness:
         self.sym = _sym()
         self.cpu = Cpu(self.rom)
         self.cpu.reset()
+        # Release SELECT and RESET on the console switches (SWCHB riot[2]).
+        # Bit 1 = SELECT (active low), bit 0 = RESET (active low).
+        # 0x03 = both released (bits 1+0 set).
+        self.cpu.riot[2] = 0x03
         if boot_artifact:
             # Real hardware/Stella read the fire lines as pressed on the first
             # frames after reset (INPT latch state).
@@ -80,15 +84,40 @@ class MissileFireHarness:
             "fire_sync": (m[self._ram("fire_prev")] >> 7) & 0x01,  # FIRE_SYNC
         }
 
+    def boot_sync(self):
+        """Run the boot-sync frame and enter STATE_PLAYING via InitGame.
+
+        Frame 0: Reset handler runs (clears RAM, game_state=0), frame runs
+        in menu mode (UpdateMissiles skipped).
+        Then simulates a RESET press+release (falling edge) which triggers
+        InitGame: restores p1_hp, clears fire_prev, sets game_state=1.
+        Frame 1: RESET pressed (reset_held set), stays in menu.
+        Frame 2: RESET released, InitGame runs, first playing frame.
+        """
+        self.set_buttons(False, False)
+        self.run_frame()                        # frame 0: menu mode
+        # Simulate RESET falling edge: press then release.
+        self.cpu.riot[2] = 0x00                 # press RESET
+        self.run_frame()                        # frame 1: reset_held set, still menu
+        self.cpu.riot[2] = 0x03                 # release RESET
+        self.run_frame()                        # frame 2: InitGame + first playing frame
+
 
 class TestBoot(unittest.TestCase):
+    def _enter_playing(self, h):
+        """Simulate a RESET press+release (falling edge) to trigger InitGame."""
+        h.cpu.riot[2] = 0x00     # press RESET
+        h.run_frame()            # reset_held set, still menu
+        h.cpu.riot[2] = 0x03     # release RESET
+        h.run_frame()            # InitGame + first playing frame
+
     def test_boot_with_released_buttons_no_missiles(self):
         # Real boot: the latches read pressed on frame 1, then released.  The
         # first-frame sync must prevent any automatic shot.
         h = MissileFireHarness(boot_artifact=True)
         h.set_buttons(False, False)
         h.run_frame()          # sync frame (latch artifact = pressed)
-        h.run_frame()          # now the real (released) state
+        self._enter_playing(h) # RESET -> InitGame + first playing frame
         s = h.state()
         self.assertEqual(s["m0"], 0)
         self.assertEqual(s["m1"], 0)
@@ -99,6 +128,7 @@ class TestBoot(unittest.TestCase):
         h = MissileFireHarness(boot_artifact=False)
         h.set_buttons(False, False)
         h.run_frame()
+        self._enter_playing(h)
         s = h.state()
         self.assertEqual(s["m0"], 0)
         self.assertEqual(s["m1"], 0)
@@ -107,6 +137,8 @@ class TestBoot(unittest.TestCase):
     def test_boot_with_buttons_held_no_auto_fire(self):
         h = MissileFireHarness(boot_artifact=True)
         h.set_buttons(True, True)      # genuinely held at boot
+        h.run_frame()                   # frame 0: Reset runs, menu mode
+        self._enter_playing(h)          # RESET -> InitGame + sync frame
         for _ in range(6):
             h.run_frame()
             s = h.state()
@@ -124,6 +156,7 @@ class TestBoot(unittest.TestCase):
     def test_no_missiles_without_any_input(self):
         # Never touch the buttons; nothing may fire.
         h = MissileFireHarness(boot_artifact=True)
+        h.boot_sync()
         for _ in range(10):
             h.run_frame()
             s = h.state()
@@ -134,8 +167,7 @@ class TestBoot(unittest.TestCase):
 class TestEdgeDetection(unittest.TestCase):
     def setUp(self):
         self.h = MissileFireHarness(boot_artifact=True)
-        self.h.set_buttons(False, False)
-        self.h.run_frame()             # sync frame
+        self.h.boot_sync()
 
     def test_released_to_pressed_p0_spawns_m0(self):
         self.h.set_buttons(True, False)
@@ -200,8 +232,7 @@ class TestEdgeDetection(unittest.TestCase):
 class TestMissileActive(unittest.TestCase):
     def setUp(self):
         self.h = MissileFireHarness(boot_artifact=True)
-        self.h.set_buttons(False, False)
-        self.h.run_frame()             # sync frame
+        self.h.boot_sync()
 
     def test_press_while_missile_active_does_not_respawn(self):
         self.h.set_buttons(True, False)

@@ -45,15 +45,14 @@ class TestRamLimit(unittest.TestCase):
         self.assertEqual(self.used + self.available, RAM_LIMIT)
 
     def test_round3_ram_usage(self):
-        # Round 6 (ball contact) RAM: players/ball/missiles/hp/flags (15,
-        # now including ball_contact_flags) + fire_prev/evCnt (2) + event
-        # table (60: dummy + 10 entries + marker) + builder temps (3) +
-        # nullDelta (1) = 81 bytes ($80-$D0).  The +1 byte over Round 11 is
-        # ball_contact_flags, a deliberate separate byte for the ball x
-        # player contact record (see main.asm VARS comment).  The four
-        # pending kernel registers from Round 10 are gone (the table-direct
-        # apply reads the entries directly).
-        self.assertEqual(self.used, 81)
+        # Round 12 (game modes) RAM: players/ball/missiles/hp/flags (15,
+        # including ball_contact_flags) + fire_prev/evCnt (2) +
+        # game_state/game_mode/select_prev/reset_prev/swchb_cur/reset_held (6) +
+        # event table (60: dummy + 10 entries + marker) + builder temps (3) +
+        # nullDelta (1) = 87 bytes ($80-$D6).  The +6 bytes are the game
+        # state machine: two state/mode bytes, two switch-edge bytes
+        # for SELECT and RESET detection, SWCHB snapshot, and reset_held flag.
+        self.assertEqual(self.used, 87)
 
 
 if __name__ == "__main__":
