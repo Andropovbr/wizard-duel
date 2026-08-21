@@ -539,12 +539,18 @@ HandleInput:
     BEQ .selectUpdateP       ; 2/3  no edge
     LDA #STATE_MENU
     STA game_state
+    ; Clean up RESET state so stale flags don't trigger InitGame next frame
+    LDA #0
+    STA reset_held
+    LDA swchb_cur
+    AND #RESET_BIT
+    STA reset_prev
 .selectUpdateP:
     LDA swchb_cur            ; 3
     AND #SELECT_BIT          ; 2
     STA select_prev          ; 3
     PLA                      ; 4   restore SWCHB snapshot
-    JMP .resetCheckP         ; 3
+    RTS                      ; 6   SELECT already handled, done
 .selectNotPressedP:
     LDA swchb_cur            ; 3
     AND #SELECT_BIT          ; 2
@@ -560,6 +566,13 @@ HandleInput:
     BEQ .resetDoneP          ; 2/3  no edge
     LDA #STATE_MENU
     STA game_state
+    ; Clean up RESET state: sync reset_prev so next frame in menu
+    ; correctly sees RESET held (no false falling edge)
+    LDA #0
+    STA reset_held
+    LDA swchb_cur
+    AND #RESET_BIT
+    STA reset_prev
     JMP .resetDoneP          ; 3
 .resetNotPressedP:
     LDA swchb_cur            ; 3
