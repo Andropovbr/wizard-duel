@@ -15,10 +15,10 @@ de produção final é uma bola pequena de largura fixa.
 
 ## Modificado
 
-- `BALL_WIDTH`: 4 → 2 (2 color clocks de largura)
+- `BALL_WIDTH`: 4 → 1 (1 color clock de largura)
 - `BALL_HEIGHT`: 4 → 2 (2 scanlines de altura)
-- `BALL_SIZE_CTRLPF`: `%00100000` (4 clocks) → `%00010000` (2 clocks)
-- `BALL_X_MAX`: 156 → 158 (160 - BALL_WIDTH)
+- `BALL_SIZE_CTRLPF`: `%00100000` (4 clocks) → `%00000000` (1 clock)
+- `BALL_X_MAX`: 156 → 159 (160 - BALL_WIDTH)
 - `BALL_Y_MAX`: 181 → 183 (KERNEL_SCANLINES - BALL_HEIGHT)
 - Modelo Python em `test_events.py`: `scene()` agora lê `BALL_HEIGHT` da
   tabela de símbolos do ROM em vez de hardcoded 4.
@@ -39,9 +39,9 @@ A bola é um objeto Ball do TIA. Sua largura é definida por CTRLPF D5:D4:
   - `%10` = 4 clocks  ← anterior
   - `%11` = 8 clocks
 
-Uma bola 2x2 (2 color clocks × 2 scanlines) é o menor tamanho que
-permanece claramente visível como um ponto intencional e não como um
-artefacto subpixel. A altura de 2 scanlines garante sobreposição vertical
+Uma bola 2x2 (2 color clocks × 2 scanlines) foi o primeiro candidato
+testado, mas pareceu visualmente larga. A escolha final é 1x2 (1 color clock
+× 2 scanlines) usando a largura nativa do ball do TIA. A altura de 2 scanlines garante sobreposição vertical
 entre frames consecutivos em movimento de 1 px/frame, evitando efeitos
 estroboscópicos.
 
@@ -78,8 +78,8 @@ Sem mudança no uso de ROM ou RAM.
 
 ## Testes
 
-- `test_ball_is_small_2_by_2`: valida WIDTH=2, HEIGHT=2, CTRLPF=$10
-- `test_ball_bounds_within_visible_area`: valida BALL_X_MAX=158
+- `test_ball_is_small_1_by_2`: valida WIDTH=1, HEIGHT=2, CTRLPF=$00
+- `test_ball_bounds_within_visible_area`: valida BALL_X_MAX=159
 - `test_bounces_at_right_edge`: usa BALL_X_MAX em vez de 156
 - `test_bounce_at_bottom_right_corner`: usa BALL_X_MAX em vez de 156
 - `test_ball_events_are_height_apart`: valida HEIGHT=2

@@ -2,12 +2,13 @@
 
 ## Objective
 
-Replace the 4x4 ball with a small 2x2 ball inspired by classic Atari 2600
+Replace the 4x4 ball with a small 1x2 ball inspired by classic Atari 2600
 games (Pong, Video Olympics). The rounded-orb approach explored on the
 `round-8-rounded-ball` branch proved that a diamond shape required
 disproportionate complexity and kernel timing cost (CTRLPF per-row changes,
-mini-loop, 16-cycle kernel penalty). The final production choice is a simple
-fixed-width small ball.
+mini-loop, 16-cycle kernel penalty). The 2x2 candidate was tested first but
+appeared slightly wide; the final choice is 1x2 (1 color clock × 2 scanlines)
+using the native TIA ball width.
 
 ## Added
 
@@ -15,10 +16,10 @@ fixed-width small ball.
 
 ## Changed
 
-- `BALL_WIDTH`: 4 → 2 (2 color clocks wide)
+- `BALL_WIDTH`: 4 → 1 (1 color clock wide)
 - `BALL_HEIGHT`: 4 → 2 (2 scanlines tall)
-- `BALL_SIZE_CTRLPF`: `%00100000` (4 clocks) → `%00010000` (2 clocks)
-- `BALL_X_MAX`: 156 → 158 (160 - BALL_WIDTH)
+- `BALL_SIZE_CTRLPF`: `%00100000` (4 clocks) → `%00000000` (1 clock)
+- `BALL_X_MAX`: 156 → 159 (160 - BALL_WIDTH)
 - `BALL_Y_MAX`: 181 → 183 (KERNEL_SCANLINES - BALL_HEIGHT)
 - Updated `test_events.py` Python model: `scene()` now reads `BALL_HEIGHT`
   from the ROM symbol table instead of hardcoding 4.
@@ -77,8 +78,8 @@ No change in ROM or RAM usage.
 
 ## Tests
 
-- `test_ball_is_small_2_by_2`: validates WIDTH=2, HEIGHT=2, CTRLPF=$10
-- `test_ball_bounds_within_visible_area`: validates BALL_X_MAX=158
+- `test_ball_is_small_1_by_2`: validates WIDTH=1, HEIGHT=2, CTRLPF=$00
+- `test_ball_bounds_within_visible_area`: validates BALL_X_MAX=159
 - `test_bounces_at_right_edge`: uses BALL_X_MAX instead of 156
 - `test_bounce_at_bottom_right_corner`: uses BALL_X_MAX instead of 156
 - `test_ball_events_are_height_apart`: validates HEIGHT=2

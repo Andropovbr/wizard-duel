@@ -217,17 +217,17 @@ class TestBallConstants(unittest.TestCase):
     def setUpClass(cls):
         cls.c = read_constants()
 
-    def test_ball_is_small_2_by_2(self):
-        self.assertEqual(self.c.get("BALL_WIDTH"), 2)
+    def test_ball_is_small_1_by_2(self):
+        self.assertEqual(self.c.get("BALL_WIDTH"), 1)
         self.assertEqual(self.c.get("BALL_HEIGHT"), 2)
-        # CTRLPF D5:D4 = %01 -> 2 color clocks wide ($10).
-        self.assertEqual(self.c.get("BALL_SIZE_CTRLPF"), 0b00010000)
+        # CTRLPF D5:D4 = %00 -> 1 color clock wide ($00).
+        self.assertEqual(self.c.get("BALL_SIZE_CTRLPF"), 0b00000000)
 
     def test_ball_bounds_within_visible_area(self):
         height = self.c.get("BALL_HEIGHT")
         kernel = self.c.get("KERNEL_SCANLINES")
         self.assertEqual(self.c.get("BALL_X_MIN"), 0)
-        self.assertEqual(self.c.get("BALL_X_MAX"), 160 - 2)
+        self.assertEqual(self.c.get("BALL_X_MAX"), 160 - 1)
         self.assertEqual(self.c.get("BALL_Y_MIN"), 0)
         # ball_y is the FIRST display row; the ball occupies rows
         # ball_y .. ball_y + BALL_HEIGHT - 1.  BALL_Y_MAX keeps the last row

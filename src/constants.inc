@@ -216,9 +216,9 @@ BACKGR_COLOR       = $00     ; black
 ; bounds below are expressed in the visible pixel coordinate (ball_x), so the
 ; ball stays fully inside the 160-pixel visible width.
 ; ---------------------------------------------------------------------------
-BALL_WIDTH         = 2       ; ball size in pixels (CTRLPF D5:D4 = %01)
+BALL_WIDTH         = 1       ; ball size in pixels (CTRLPF D5:D4 = %00)
 BALL_HEIGHT        = 2       ; ball size in scanlines (ENABL = 1 for 2 rows)
-BALL_SIZE_CTRLPF   = %00010000   ; CTRLPF D5=0, D4=1 -> 2 color clocks
+BALL_SIZE_CTRLPF   = %00000000   ; CTRLPF D5=0, D4=0 -> 1 color clock
 BALL_COLOR         = $0E     ; white (NTSC)
 BALL_ENABLE        = %00000010   ; ENABL value on a ball row. The TIA only
                                  ; samples bit 1 of the ball enable register
