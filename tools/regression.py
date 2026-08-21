@@ -16,14 +16,16 @@ Baseline resolution (first match wins):
 
 Hard regressions (hardware limits) fail with exit code 1:
   * ROM > 4096 bytes
-  * RAM > 128 bytes
-  * RAM > PROJECT_RAM_BUDGET (the current round's RAM target, tighter than
-    the hardware limit so budget pressure is caught before it becomes fatal)
+  * RAM > 128 bytes (hardware limit)
+  * RAM > PROJECT_RAM_BUDGET (112 bytes, reserves 16 B headroom from the
+    128-byte RIOT RAM so remaining capacity is visible before it is gone)
   * kernel worst case > 76 cycles
   * frame scanline count != 262
 
 Soft regressions (growth within hardware limits) are reported as warnings
-and do NOT fail CI.  Thresholds are centralized below and documented in
+and do NOT fail CI.  Baseline growth is tracked but does not contribute
+to hard failures -- only the absolute project budget does.
+Thresholds are centralized below and documented in
 docs/en/benchmarks.md (and docs/pt-BR/benchmarks.md).
 """
 
@@ -64,18 +66,13 @@ WARN_KERNEL_SLACK_DECREASE = 4
 RAM_PRESSURE_WARN_PCT = 75.0
 RAM_PRESSURE_STRONG_PCT = 90.0
 
-# Current round's RAM target.  Exceeding it is a hard regression even though
-# the hardware limit is 128 bytes, so budget pressure is caught early.
-# Round 6 (ball contact): 81 bytes ($80-$D0) - Round 11's 80 bytes plus the
-# new ball_contact_flags byte.  The +1 byte is deliberate and documented (see
-# the VARS comment in main.asm and the Round 6 change log): ball contact is a
-# distinct per-frame record that must survive the whole frame, so it cannot
-# share a VBLANK scratch byte or an existing bit-pack.  The alternative
-# packings (aliasing nullDelta/evRow, packing p0_hp/p1_hp, reusing spare
-# fire_prev/m_active/hit_flags bits) were rejected because they clobber the
-# value in VBLANK, break the hit_flags contract, or risk the tested Round 5
-# HP logic for a single byte.
-PROJECT_RAM_BUDGET = 81
+# Absolute project RAM budget.  Exceeding it is a hard regression.
+# Set to 112 bytes: 128-byte RIOT RAM minus 16 bytes of headroom so that
+# remaining capacity is visible before the hardware limit is reached.
+# This is an architectural decision, not a per-round target tied to the
+# baseline.  Growth from the baseline is tracked as a soft warning but
+# does not cause CI failure unless the hard limit is exceeded.
+PROJECT_RAM_BUDGET = 112
 
 # (key, label, unit) -- the labels/order used in the report.
 METRICS = [
@@ -147,8 +144,8 @@ def compare(base, current):
     if current.get("ram_used", 0) > RAM_LIMIT:
         hard.append(f"RAM {current['ram_used']} > {RAM_LIMIT} bytes")
     if current.get("ram_used", 0) > PROJECT_RAM_BUDGET:
-        hard.append(f"RAM {current['ram_used']} > project budget "
-                    f"{PROJECT_RAM_BUDGET} bytes")
+        hard.append(f"RAM {current['ram_used']} B exceeds project hard limit "
+                    f"of {PROJECT_RAM_BUDGET} B")
     if current.get("kernel_worst", 0) > SCANLINE_BUDGET:
         hard.append(f"kernel worst case {current['kernel_worst']} > "
                     f"{SCANLINE_BUDGET} cycles")

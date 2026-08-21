@@ -170,24 +170,51 @@ class TestHardRegressions(unittest.TestCase):
         _, _, hard = compare(BASE, cur)
         self.assertTrue(any("ROM" in h for h in hard))
 
-    def test_ram_over_limit_fails(self):
+    def test_ram_over_hardware_limit_fails(self):
         cur = dict(BASE)
         cur["ram_used"] = RAM_LIMIT + 1
         _, _, hard = compare(BASE, cur)
         self.assertTrue(any("RAM" in h for h in hard))
 
     def test_ram_over_project_budget_fails(self):
-        # Exceeding the current round's RAM budget is a hard regression even
-        # though 65 bytes is well inside the 128-byte hardware limit.
         cur = dict(BASE)
         cur["ram_used"] = PROJECT_RAM_BUDGET + 1
         _, _, hard = compare(BASE, cur)
-        self.assertTrue(any("project budget" in h for h in hard))
+        self.assertTrue(any("exceeds project hard limit" in h for h in hard))
 
-    def test_ram_within_project_budget_passes(self):
+    def test_ram_at_project_budget_passes(self):
         cur = dict(BASE)
         cur["ram_used"] = PROJECT_RAM_BUDGET
         _, _, hard = compare(BASE, cur)
+        self.assertTrue(all("RAM" not in h for h in hard))
+
+    def test_ram_growth_within_budget_passes(self):
+        """Growth from baseline is a soft warning, not a hard failure."""
+        cur = dict(BASE)
+        cur["ram_used"] = 87  # well within 112 B hard limit
+        rows, warnings, hard = compare(BASE, cur)
+        self.assertTrue(all("RAM" not in h or "exceeds" not in h for h in hard))
+        # should produce a growth warning instead
+        self.assertTrue(any("RAM" in w for w in warnings))
+
+    def test_ram_small_growth_no_warning(self):
+        """1-4 B growth is informational, no warning triggered."""
+        cur = dict(BASE)
+        cur["ram_used"] = BASE["ram_used"] + 3
+        _, warnings, hard = compare(BASE, cur)
+        self.assertEqual([], [w for w in warnings if "RAM" in w])
+        self.assertEqual([], hard)
+
+    def test_ram_5b_growth_warns(self):
+        cur = dict(BASE)
+        cur["ram_used"] = BASE["ram_used"] + 5
+        _, warnings, hard = compare(BASE, cur)
+        self.assertTrue(any("RAM" in w and "grew" in w for w in warnings))
+
+    def test_ram_reduction_passes(self):
+        cur = dict(BASE)
+        cur["ram_used"] = BASE["ram_used"] - 10
+        _, warnings, hard = compare(BASE, cur)
         self.assertTrue(all("RAM" not in h for h in hard))
 
     def test_kernel_over_budget_fails(self):

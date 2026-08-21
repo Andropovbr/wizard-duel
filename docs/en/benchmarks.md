@@ -97,20 +97,20 @@ conservative values):
 | ----------------- | -------------------------------------------------- |
 | ROM growth        | > 32 bytes OR > 5.0%                               |
 | RAM growth        | > 4 bytes OR > 10.0%                               |
-| RAM pressure      | RAM used >= 75% of the 81-byte project budget      |
-| RAM strong pressure | RAM used >= 90% of the 81-byte project budget    |
+| RAM pressure      | RAM used >= 75% of the 112-byte project hard limit  |
+| RAM strong pressure | RAM used >= 90% of the 112-byte project hard limit |
 | Kernel worst case | increase > 4 cycles                                |
 | Kernel slack      | decrease > 4 cycles                                |
 
-The RAM thresholds back the Round 11 budget of keeping the game under 81 of
-the 128 RIOT bytes (the +1 byte over Round 11 is `ball_contact_flags`, the
-ball x player contact record; see the change log): crossing 75% of that
-budget warns, crossing 90% warns
-strongly, and using more than 81 bytes fails CI (a hard gate). RAM growth is
-also compared against the baseline by absolute bytes and percentage. These
-values are intentionally conservative; they are meant to make meaningful
-regressions visible, not to fail on every byte. Update them only with a
-documented technical reason.
+The project RAM hard limit is 112 bytes: the 128-byte RIOT RAM minus 16
+bytes of headroom so remaining capacity is visible before the hardware
+limit is reached.  Exceeding 112 bytes fails CI (a hard gate).  RAM growth
+from the baseline is tracked as a soft warning and does NOT cause CI
+failure as long as the hard limit is not exceeded.  Crossing 75% of the
+hard limit produces a pressure warning; crossing 90% produces a strong
+pressure warning. These values are intentionally conservative; they are
+meant to make meaningful regressions visible, not to fail on every byte.
+Update them only with a documented technical reason.
 
 ## Reading the CI report
 
