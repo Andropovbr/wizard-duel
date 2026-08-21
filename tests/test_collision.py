@@ -70,9 +70,9 @@ class CollisionHarness:
         self.cpu = Cpu(self.rom)
         self.cpu.reset()
         # Release SELECT and RESET on the console switches (SWCHB riot[2]).
-        # Bit 3 = SELECT (active low), bit 2 = RESET (active low).
-        # 0x04 = RESET released, SELECT released.
-        self.cpu.riot[2] = 0x04
+        # Bit 1 = SELECT (active low), bit 0 = RESET (active low).
+        # 0x03 = both released (bits 1+0 set).
+        self.cpu.riot[2] = 0x03
         if boot_artifact:
             # Real hardware/Stella read the fire lines as pressed on the first
             # frames after reset (INPT latch state).
@@ -163,12 +163,12 @@ class CollisionHarness:
         self.set_buttons(False, False)
         self.run_frame()
         # Simulate RESET rising edge: set reset_prev with RESET bit (was
-        # released), then clear SWCHB bit 2 (RESET pressed).  HandleInput
+        # released), then clear SWCHB bit 0 (RESET pressed).  HandleInput
         # detects the edge and calls InitGame.
-        self.cpu.ram[self._ram("reset_prev")] = 0x04  # RESET was released
+        self.cpu.ram[self._ram("reset_prev")] = 0x01  # RESET was released
         self.cpu.riot[2] = 0x00                        # RESET now pressed
         self.run_frame()
-        self.cpu.riot[2] = 0x04                        # release RESET
+        self.cpu.riot[2] = 0x03                        # release RESET
 
     def fire_m0(self):
         self.set_buttons(True, False)

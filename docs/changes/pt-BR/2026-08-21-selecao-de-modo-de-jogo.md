@@ -55,6 +55,20 @@ de baixo custo mostra o modo selecionado na tela de seleção.
 
 ## Raciocínio Técnico
 
+### Definições de Bits do SWCHB (Correção Crítica)
+
+`SELECT_BIT` original (%00001000, bit 3) e `RESET_BIT` (%00000100, bit 2)
+estavam errados. A especificação do hardware do Atari 2600 define:
+
+- SWCHB bit 0 = RESET (active low)
+- SWCHB bit 1 = SELECT (active low)
+- bit 2 = não utilizado
+- bit 3 = chave Color/BW
+
+Corrigido para `SELECT_BIT` = %00000010 (bit 1), `RESET_BIT` = %00000001
+(bit 0). Todo o código usando esses constantes simbólicos foi
+automaticamente corrigido.
+
 ### Correção da Detecção de Borda dos Switches
 
 Bits do SWCHB são active-low: 0 = pressionado, 1 = liberado. Após a
@@ -63,8 +77,16 @@ interpretava como "já pressionado". O primeiro pressionamento real
 portanto nunca produzia uma borda de subida (0 AND mask = 0 →
 "ainda segurado").
 
-Correção: inicializar ambos com `SELECT_BIT|RESET_BIT` (= 0x0C,
+Correção: inicializar ambos com `SELECT_BIT|RESET_BIT` (= 0x03,
 ambos liberados) no handler Reset após o loop de limpeza da RAM.
+
+### Reescrita do HandleInput
+
+Versão anterior com múltiplas leituras e PHA/PLA substituída por
+design simples com leitura única: SWCHB é lido uma vez por frame
+em `swchb_cur`, depois SELECT e RESET são comparados com seus
+valores anteriores em `select_prev`/`reset_prev`. Sem re-leituras,
+sem manipulação de stack.
 
 ### Visual do Menu
 
@@ -110,7 +132,7 @@ Antes:
 
 Depois:
 - ROM: 2064 bytes
-- RAM: 85 bytes (+4: game_state, game_mode, select_prev, reset_prev)
+- RAM: 86 bytes (+5: game_state, game_mode, select_prev, reset_prev, swchb_cur)
 
 ## Testes
 
@@ -118,6 +140,8 @@ Depois:
 - Todos os gates de qualidade passam (ROM ≤ 4096, RAM ≤ 128, 262 scanlines)
 - Novos padrões de teste: simulação de RESET via borda de subida para
   transição adequada do InitGame nos harnesses de teste
+- Todos os harnesses atualizados com masks SWCHB corretos (riot[2] = 0x03
+  para liberado, riot[2] & 0x01 para verificação do bit RESET)
 
 ## Limitações Conhecidas
 

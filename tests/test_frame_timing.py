@@ -109,16 +109,16 @@ class TestFrameStability(unittest.TestCase):
         # event pipeline drives real behavior across frames.
         m_active = self._ram("m_active")
         gstate = self._ram("game_state")
-        self.cpu.riot[2] = 0x04          # release SELECT/RESET
+        self.cpu.riot[2] = 0x03          # release SELECT/RESET
         self.cpu.inpt[4] = 0xFF          # boot sync frame first (buttons released)
         self.cpu.inpt[5] = 0xFF
         self.run_frame()                 # frame 0: menu mode
         # Simulate RESET rising edge to trigger InitGame
         reset_prev = self._ram("reset_prev")
-        self.cpu.ram[reset_prev] = 0x04  # prev state = released
+        self.cpu.ram[reset_prev] = 0x01  # prev state = released (RESET_BIT)
         self.cpu.riot[2] = 0x00          # press RESET
         self.run_frame()                 # frame 1: InitGame + first playing frame
-        self.cpu.riot[2] = 0x04          # release RESET
+        self.cpu.riot[2] = 0x03          # release RESET
         self.cpu.inpt[4] = 0x00          # now a real press
         self.cpu.inpt[5] = 0xFF
         self.run_frame()

@@ -469,98 +469,85 @@ OverscanWait:
     JMP StartOfFrame        ; 3   next frame
 
 ; =============================================================================
-; HandleInput (Round 12)
+; HandleInput (Round 12, v2)
 ;
-; Reads the console SELECT and RESET switches (SWCHB bits 3 and 2, active low)
-; with edge detection: a mode change or state transition only fires on a
-; released-to-pressed transition, so holding a button does not repeat.
-; Runs during VBLANK before the gameplay update routines.
+; Reads SWCHB once per frame into swchb_cur.  SELECT and RESET bits are
+; active-low (0 = pressed).  Edge detection: released -> pressed only.
+;
+; SWCHB bit layout (Atari 2600 spec):
+;   bit 0 = RESET, bit 1 = SELECT
 ;
 ; When game_state == STATE_MENU:
-;   - SELECT toggles game_mode between MODE_DUEL and MODE_SCORE.
-;   - RESET transitions to STATE_PLAYING and calls InitGame to set up the
-;     playing state with the selected mode.
+;   SELECT toggles game_mode (DUEL/SCORE).
+;   RESET calls InitGame and transitions to STATE_PLAYING.
 ;
 ; When game_state == STATE_PLAYING:
-;   - SELECT is ignored (modes cannot be changed mid-game).
-;   - RESET transitions back to STATE_MENU (preserves game_mode).
-;
-; select_prev stores the previous frame's SELECT bit (bit 3).
-; reset_prev stores the previous frame's RESET bit (bit 2).
-; Edge detection: current bit is 0 (pressed) AND prev bit is non-zero
-; (was released) -> action.  Bits are isolated with AND masks so other
-; switch bits do not interfere.
+;   SELECT is ignored.
+;   RESET returns to STATE_MENU (preserves game_mode).
 ; =============================================================================
 HandleInput:
+    LDA SWCHB                ; 4   read console switches ONCE
+    STA swchb_cur            ; 3   snapshot for this frame
     LDA game_state           ; 3
-    BEQ .menuInput           ; 2/3  STATE_MENU -> handle SELECT + RESET
-    ; ---- Playing state: only RESET (back to menu) ----
-    LDA SWCHB                ; 4
-    AND #RESET_BIT           ; 2
-    BNE .resetNotPressedP    ; 2/3  RESET not pressed
-    LDA reset_prev           ; 3
-    AND #RESET_BIT           ; 2
-    BEQ .resetStillHeldP     ; 2/3  already pressed -> no edge
-    ; Rising edge: transition to menu (preserves game_mode)
-    LDA #STATE_MENU
-    STA game_state
-    JMP .resetStoreP         ; 3
-.resetStillHeldP:
-    LDA SWCHB                ; 4
-    AND #RESET_BIT           ; 2
-    STA reset_prev           ; 3
-    RTS                      ; 6
-.resetNotPressedP:
-    LDA SWCHB                ; 4
-    AND #RESET_BIT           ; 2
-    STA reset_prev           ; 3
-.resetStoreP:
-    RTS                      ; 6
-
-.menuInput:
-    ; ---- SELECT: edge detection (released -> pressed) ----
-    LDA SWCHB                ; 4   read console switches
-    PHA                      ; 3   save full SWCHB for RESET check below
-    AND #SELECT_BIT          ; 2   isolate the SELECT bit
-    BNE .selectNotPressed    ; 2/3  SELECT not pressed this frame
+    BNE .playingInput        ; 2/3
+    ; ---- Menu state: SELECT toggles mode, RESET starts game ----
+    ; SELECT edge detection
+    LDA swchb_cur            ; 3
+    AND #SELECT_BIT          ; 2
+    BNE .selectNotPressed    ; 2/3
     LDA select_prev          ; 3
     AND #SELECT_BIT          ; 2
-    BEQ .selectStillHeld     ; 2/3  was already pressed -> no edge
-    ; Rising edge detected: toggle the mode
+    BEQ .selectUpdate        ; 2/3  no edge (was already pressed)
     LDA game_mode            ; 3
-    EOR #1                   ; 2   toggle bit 0: 0 <-> 1
+    EOR #1                   ; 2   toggle 0 <-> 1
     STA game_mode            ; 3
-.selectStillHeld:
-    LDA SWCHB                ; 4   re-read to store current SELECT state
+.selectUpdate:
+    LDA swchb_cur            ; 3
     AND #SELECT_BIT          ; 2
     STA select_prev          ; 3
-    PLA                      ; 4   restore saved SWCHB
     JMP .resetCheck          ; 3
 .selectNotPressed:
-    LDA SWCHB                ; 4
+    LDA swchb_cur            ; 3
     AND #SELECT_BIT          ; 2
     STA select_prev          ; 3
-    PLA                      ; 4   restore saved SWCHB
-    ; ---- RESET (menu state): edge detection -> start game ----
+    ; RESET edge detection
 .resetCheck:
-    AND #RESET_BIT           ; 2   isolate RESET from the saved SWCHB
-    BNE .resetNotPressedM    ; 2/3  RESET not pressed
+    LDA swchb_cur            ; 3
+    AND #RESET_BIT           ; 2
+    BNE .resetNotPressedM    ; 2/3
     LDA reset_prev           ; 3
     AND #RESET_BIT           ; 2
-    BEQ .resetStillHeldM     ; 2/3  already pressed -> no edge
-    ; Rising edge: start the game
-    JSR InitGame             ; 6   reinitialize gameplay, transition to playing
-    JMP .resetStoreM         ; 3
-.resetStillHeldM:
-    LDA SWCHB                ; 4
+    BEQ .resetUpdateM        ; 2/3  no edge
+    JSR InitGame             ; 6   start the game
+    JMP .resetDone           ; 3
+.resetUpdateM:
+    LDA swchb_cur            ; 3
     AND #RESET_BIT           ; 2
     STA reset_prev           ; 3
     RTS                      ; 6
 .resetNotPressedM:
-    LDA SWCHB                ; 4
+    LDA swchb_cur            ; 3
     AND #RESET_BIT           ; 2
     STA reset_prev           ; 3
-.resetStoreM:
+.resetDone:
+    RTS                      ; 6
+
+.playingInput:
+    ; ---- Playing state: only RESET (back to menu) ----
+    LDA swchb_cur            ; 3
+    AND #RESET_BIT           ; 2
+    BNE .resetNotPressedP    ; 2/3
+    LDA reset_prev           ; 3
+    AND #RESET_BIT           ; 2
+    BEQ .resetDoneP          ; 2/3  no edge
+    LDA #STATE_MENU
+    STA game_state
+    JMP .resetDoneP          ; 3
+.resetNotPressedP:
+    LDA swchb_cur            ; 3
+    AND #RESET_BIT           ; 2
+    STA reset_prev           ; 3
+.resetDoneP:
     RTS                      ; 6
 
 ; =============================================================================
@@ -2005,6 +1992,7 @@ game_state  DS 1            ; STATE_MENU or STATE_PLAYING
 game_mode   DS 1            ; MODE_DUEL or MODE_SCORE
 select_prev DS 1            ; previous SELECT switch bit for edge detection
 reset_prev  DS 1            ; previous RESET switch bit for edge detection
+swchb_cur   DS 1            ; current frame SWCHB snapshot (HandleInput)
 
 ; Event table: 5-byte dummy at offset 0 (all-zero regs so the kernel's
 ; pre-first-event apply writes only AUDV0), then up to EV_MAX_EVENTS real

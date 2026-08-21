@@ -42,9 +42,9 @@ class MissileFireHarness:
         self.cpu = Cpu(self.rom)
         self.cpu.reset()
         # Release SELECT and RESET on the console switches (SWCHB riot[2]).
-        # Bit 3 = SELECT (active low), bit 2 = RESET (active low).
-        # 0x04 = RESET released, SELECT released.
-        self.cpu.riot[2] = 0x04
+        # Bit 1 = SELECT (active low), bit 0 = RESET (active low).
+        # 0x03 = both released (bits 1+0 set).
+        self.cpu.riot[2] = 0x03
         if boot_artifact:
             # Real hardware/Stella read the fire lines as pressed on the first
             # frames after reset (INPT latch state).
@@ -98,21 +98,21 @@ class MissileFireHarness:
         self.run_frame()                        # frame 0: menu mode
         # Simulate RESET rising edge to trigger InitGame (which sets
         # p1_hp, clears fire_prev, and transitions to STATE_PLAYING).
-        reset_bit = self.cpu.riot[2] & 0x04     # current RESET state
+        reset_bit = self.cpu.riot[2] & 0x01     # current RESET state (bit 0)
         self.cpu.ram[self._ram("reset_prev")] = reset_bit
         self.cpu.riot[2] = 0x00                  # press RESET
         self.run_frame()                        # frame 1: InitGame + sync
-        self.cpu.riot[2] = 0x04                  # release RESET
+        self.cpu.riot[2] = 0x03                  # release RESET
 
 
 class TestBoot(unittest.TestCase):
     def _enter_playing(self, h):
         """Simulate a RESET rising edge to trigger InitGame after the boot frame."""
-        reset_bit = h.cpu.riot[2] & 0x04
+        reset_bit = h.cpu.riot[2] & 0x01  # bit 0 = RESET
         h.cpu.ram[h._ram("reset_prev")] = reset_bit
         h.cpu.riot[2] = 0x00
         h.run_frame()
-        h.cpu.riot[2] = 0x04
+        h.cpu.riot[2] = 0x03
 
     def test_boot_with_released_buttons_no_missiles(self):
         # Real boot: the latches read pressed on frame 1, then released.  The

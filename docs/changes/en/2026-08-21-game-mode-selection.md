@@ -54,6 +54,20 @@ selected mode on the title screen.
 
 ## Technical Reasoning
 
+### SWCHB Bit Definitions (Critical Fix)
+
+The original `SELECT_BIT` (%00001000, bit 3) and `RESET_BIT` (%00000100,
+bit 2) were wrong.  The Atari 2600 hardware spec defines:
+
+- SWCHB bit 0 = RESET (active low)
+- SWCHB bit 1 = SELECT (active low)
+- bit 2 = not used
+- bit 3 = Color/BW switch
+
+Corrected to `SELECT_BIT` = %00000010 (bit 1), `RESET_BIT` = %00000001
+(bit 0).  All code using these symbolic constants was automatically
+corrected.
+
 ### Switch Edge Detection Fix
 
 SWCHB bits are active-low: 0 = pressed, 1 = released. After RAM clear,
@@ -61,8 +75,15 @@ SWCHB bits are active-low: 0 = pressed, 1 = released. After RAM clear,
 "already pressed". The first real press therefore never produced a
 rising edge (0 AND mask = 0 → "still held").
 
-Fix: initialize both to `SELECT_BIT|RESET_BIT` (= 0x0C, both released)
+Fix: initialize both to `SELECT_BIT|RESET_BIT` (= 0x03, both released)
 in the Reset handler after the RAM clear loop.
+
+### HandleInput Rewrite
+
+Replaced the multi-read PHA/PLA version with a simple single-read
+design: SWCHB is read once per frame into `swchb_cur`, then both
+SELECT and RESET are checked against their previous values from
+`select_prev`/`reset_prev`.  No re-reads, no stack manipulation.
 
 ### Menu Visual
 
@@ -107,7 +128,7 @@ Before:
 
 After:
 - ROM: 2064 bytes
-- RAM: 85 bytes (+4: game_state, game_mode, select_prev, reset_prev)
+- RAM: 86 bytes (+5: game_state, game_mode, select_prev, reset_prev, swchb_cur)
 
 ## Tests
 
@@ -115,6 +136,8 @@ After:
 - All quality gates pass (ROM ≤ 4096, RAM ≤ 128, 262 scanlines)
 - New test patterns: RESET simulation via rising edge for proper
   InitGame transition in test harnesses
+- All test harnesses updated to use correct SWCHB masks (riot[2] = 0x03
+  for released, riot[2] & 0x01 for RESET bit check)
 
 ## Known Limitations
 

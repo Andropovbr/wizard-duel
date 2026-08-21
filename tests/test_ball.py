@@ -280,8 +280,8 @@ class TestBallRamBudget(unittest.TestCase):
         # evRow/tempCount/tblLen (3) + nullDelta (1) = 81 bytes ($80-$D0).
         # The +1 byte over Round 11 is the ball x player contact record
         # (CONTACT_P0/CONTACT_P1).  Round 12 adds game_state, game_mode,
-        # select_prev, reset_prev (4 bytes) = 85 bytes.
-        self.assertEqual(self.used, 85)
+        # select_prev, reset_prev, swchb_cur (5 bytes) = 86 bytes.
+        self.assertEqual(self.used, 86)
 
 
 class TestEventKernel(unittest.TestCase):

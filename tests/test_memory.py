@@ -47,12 +47,12 @@ class TestRamLimit(unittest.TestCase):
     def test_round3_ram_usage(self):
         # Round 12 (game modes) RAM: players/ball/missiles/hp/flags (15,
         # including ball_contact_flags) + fire_prev/evCnt (2) +
-        # game_state/game_mode/select_prev/reset_prev (4) + event
-        # table (60: dummy + 10 entries + marker) + builder temps (3) +
-        # nullDelta (1) = 85 bytes ($80-$D4).  The +4 bytes are the game
-        # state machine: two state/mode bytes plus two switch-edge bytes
-        # for SELECT and RESET detection.
-        self.assertEqual(self.used, 85)
+        # game_state/game_mode/select_prev/reset_prev/swchb_cur (5) +
+        # event table (60: dummy + 10 entries + marker) + builder temps (3) +
+        # nullDelta (1) = 86 bytes ($80-$D5).  The +5 bytes are the game
+        # state machine: two state/mode bytes, two switch-edge bytes
+        # for SELECT and RESET detection, and one SWCHB snapshot byte.
+        self.assertEqual(self.used, 86)
 
 
 if __name__ == "__main__":

@@ -486,6 +486,7 @@ MODE_DUEL  = 0
 MODE_SCORE = 1
 
 ; Console switches (SWCHB, $0282, active low):
-;   D7 = difficulty P0, D6 = difficulty P1, D3 = SELECT, D2 = RESET
-SELECT_BIT = %00001000
-RESET_BIT  = %00000100
+;   D7 = difficulty P1, D6 = difficulty P0, D3 = Color/BW,
+;   D1 = SELECT, D0 = RESET
+SELECT_BIT = %00000010
+RESET_BIT  = %00000001
