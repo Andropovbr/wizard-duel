@@ -60,8 +60,8 @@ separate byte from `hit_flags` (a ball contact is not a missile hit) and from
 
 | Address   | Name        | Size | Purpose                              |
 | --------- | ----------- | ---- | ------------------------------------ |
-| `$80`     | `P0Y`       | 1    | player 0 vertical position (0..172)  |
-| `$81`     | `P1Y`       | 1    | player 1 vertical position (0..172)  |
+| `$80`     | `P0Y`       | 1    | player 0 vertical position (0..166)  |
+| `$81`     | `P1Y`       | 1    | player 1 vertical position (0..166)  |
 | `$82`     | `p0_hp`     | 1    | player 0 hit points (0..3)           |
 | `$83`     | `p1_hp`     | 1    | player 1 hit points (0..3)           |
 | `$84`     | `ball_x`    | 1    | ball leftmost visible pixel (0..156) |

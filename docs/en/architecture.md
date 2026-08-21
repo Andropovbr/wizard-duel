@@ -294,7 +294,7 @@ in the overscan, keeping the visible kernel purely render-focused:
 The visible kernel is event-driven (see above). Both players are drawn as
 single-copy TIA sprites with different colors: P0 is red (`COLUP0 = $46`) and
 P1 is blue (`COLUP1 = $84`). Each sprite is a solid rectangle of `%00111100`
-(a 4-pixel-wide paddle) on `PLAYER_HEIGHT = 12` rows. The ball is the TIA
+(a 4-pixel-wide paddle) on `PLAYER_HEIGHT = 18` rows. The ball is the TIA
 Ball object, 4 pixels wide (CTRLPF D5:D4 = `%10`) and 4 rows tall. Missiles
 are the TIA Missile objects, 2 pixels wide and 4 rows tall.
 
@@ -303,8 +303,8 @@ The event table records an ON event (turn the register on) and an OFF event
 
 | object | ON event                              | OFF event                       |
 | ------ | ------------------------------------- | ------------------------------- |
-| P0     | `(P0Y, GRP0, PADDLE_BITS)`            | `(P0Y+12, GRP0, 0)`             |
-| P1     | `(P1Y, GRP1, PADDLE_BITS)`            | `(P1Y+12, GRP1, 0)`             |
+| P0     | `(P0Y, GRP0, PADDLE_BITS)`            | `(P0Y+18, GRP0, 0)`             |
+| P1     | `(P1Y, GRP1, PADDLE_BITS)`            | `(P1Y+18, GRP1, 0)`             |
 | Ball   | `(ball_y, ENABL, BALL_ENABLE)`        | `(ball_y+4, ENABL, 0)`          |
 | M0     | `(m0_y, ENAM0, MISSILE_ENABLE)`       | `(m0_y+4, ENAM0, 0)`            |
 | M1     | `(m1_y, ENAM1, MISSILE_ENABLE)`       | `(m1_y+4, ENAM1, 0)`            |

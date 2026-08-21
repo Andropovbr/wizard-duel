@@ -113,9 +113,9 @@ class TestFrameConstants(unittest.TestCase):
         height = self.c.get("PLAYER_HEIGHT", 0)
         # PLAYER_Y_MAX is a computed EQU (KERNEL_SCANLINES - HEIGHT - 1);
         # verify the expression result against the constants we can read.
-        self.assertEqual(height, 12)
+        self.assertEqual(height, 18)
         self.assertEqual(self.c.get("KERNEL_SCANLINES"), 185)
-        self.assertEqual(185 - height - 1, 172)
+        self.assertEqual(185 - height - 1, 166)
         self.assertEqual(self.c.get("PLAYER_Y_MIN"), 0)
         self.assertEqual(self.c.get("PLAYER1_X"), 16)
         self.assertEqual(self.c.get("PLAYER2_X"), 136)
