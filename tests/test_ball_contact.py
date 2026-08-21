@@ -286,6 +286,10 @@ class TestBallContactFrameTiming(unittest.TestCase):
         self.cpu.reset()
         self.cpu.inpt[4] = 0xFF
         self.cpu.inpt[5] = 0xFF
+        # Release SELECT and RESET on the console switches
+        self.cpu.riot[2] = 0x04
+        # Enter playing state so gameplay updates run
+        self.cpu.ram[self._ram("game_state")] = 1  # STATE_PLAYING
 
     def _ram(self, name):
         return self.sym[name] - 0x80

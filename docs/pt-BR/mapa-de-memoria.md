@@ -50,15 +50,13 @@ existentes, então o maior endereço emitido não mudou.
 
 ## Layout da RAM (RAM RIOT `$80-$FF`, 128 bytes)
 
-A Rodada 6 usa 81 bytes ($80-$D0). A tabela de eventos é um bloco fixo de 60
+A Rodada 12 usa 85 bytes ($80-$D4). A tabela de eventos é um bloco fixo de 60
 bytes: um dummy de 5 bytes no offset 0, até 10 entradas reais de 5 bytes e o
 marcador de fim de 5 bytes. O kernel lê as entradas diretamente (apply direto
 da tabela), então os registradores pendentes da Rodada 10 e os buffers de
 registros/ordem, `evIdx`, `joystate`, `scanCnt` e as flags separadas de
-míssil foram removidos. O +1 byte em relação à Rodada 11 é
-`ball_contact_flags`: a informação de contato bola x jogador é deliberadamente
-um byte separado de `hit_flags` (um contato da bola não é um acerto de míssil)
-e de `m_active`/`fire_prev` (cujos bits livres são reescritos a cada quadro).
+míssil foram removidos. A Rodada 12 adiciona 4 bytes para estado e modo do
+jogo (`game_state`, `game_mode`, `select_prev`, `reset_prev`).
 
 | Endereço | Nome        | Tam. | Finalidade                            |
 | -------- | ----------- | ---- | ------------------------------------- |
@@ -78,20 +76,24 @@ e de `m_active`/`fire_prev` (cujos bits livres são reescritos a cada quadro).
 | `$8D`    | `hit_flags` | 1    | resultado de acerto de míssil (bit0 P0, bit1 P1) |
 | `$8E`    | `ball_contact_flags` | 1 | registro de contato da bola (bit0 P0, bit1 P1) |
 | `$8F`    | `fire_prev` | 1    | borda de fogo compactada (bit7 = sync)|
-| `$90`    | `evCnt`     | 1    | kernel: scanlines até o próximo evento|
-| `$91-$CC`| `evTbl`     | 60   | dummy (5B) + entradas (máx. 10 x 5B) + marcador (5B) |
-| `$CD`    | `evRow`     | 1    | builder: linha atual do evento        |
-| `$CE`    | `tempCount` | 1    | builder: ponto de deslocamento / prevRow |
-| `$CF`    | `tblLen`    | 1    | builder: número de entradas reais     |
-| `$D0`    | `nullDelta` | 1    | delta da primeira entrada (185 se vazia) |
-| `$D1-$FF`| -           | 47   | não alocado                          |
+| `$90`    | `game_state`| 1    | STATE_MENU (0) ou STATE_PLAYING (1)   |
+| `$91`    | `game_mode` | 1    | MODE_DUEL (0) ou MODE_SCORE (1)      |
+| `$92`    | `select_prev`| 1   | bit SELECT do quadro anterior (bit 3) |
+| `$93`    | `reset_prev`| 1    | bit RESET do quadro anterior (bit 2)  |
+| `$94`    | `evCnt`     | 1    | kernel: scanlines até o próximo evento|
+| `$95-$D0`| `evTbl`     | 60   | dummy (5B) + entradas (máx. 10 x 5B) + marcador (5B) |
+| `$D1`    | `evRow`     | 1    | builder: linha atual do evento        |
+| `$D2`    | `tempCount` | 1    | builder: ponto de deslocamento / prevRow |
+| `$D3`    | `tblLen`    | 1    | builder: número de entradas reais     |
+| `$D4`    | `nullDelta` | 1    | delta da primeira entrada (185 se vazia) |
+| `$D5-$FF`| -           | 43   | não alocado                          |
 
 As variáveis ficam na zero page para que todos os acessos usem os modos de
 endereçamento curtos e rápidos de zero page. A tabela de eventos (60 bytes) é
 o maior bloco único e fica deliberadamente na página 0: o kernel indexa
 `evTbl-4,Y` (base de zero page) com Y de até 55, então nenhum acesso indexado
 pode cruzar uma fronteira de página e cada escrita do kernel tem tempo
-determinístico. Os 47 bytes livres extras são a margem para as próximas
+determinístico. Os 43 bytes livres extras são a margem para as próximas
 rodadas.
 
 ## Uso de registradores de hardware

@@ -84,9 +84,12 @@ class TestFrameStability(unittest.TestCase):
         # tblLen is the NUMBER of real entries (<= EV_MAX_EVENTS); the byte
         # size is 5*tblLen + 10 (dummy + entries + marker).
         tlen = self._ram("tblLen")
+        gstate = self._ram("game_state")
         self.cpu.inpt[4] = 0xFF      # first frame is the boot sync frame
         self.cpu.inpt[5] = 0xFF
         self.run_frame()
+        # Enter playing state so missiles can fire
+        self.cpu.ram[gstate] = 1     # STATE_PLAYING
         for i in range(60):
             p0 = (i // 4) % 2 == 0
             p1 = (i // 6) % 2 == 0
@@ -105,10 +108,18 @@ class TestFrameStability(unittest.TestCase):
         # Sanity: pressing P0 spawns M0 and it later despawns, proving the
         # event pipeline drives real behavior across frames.
         m_active = self._ram("m_active")
-        self.cpu.inpt[4] = 0xFF      # boot sync frame first (buttons released)
+        gstate = self._ram("game_state")
+        self.cpu.riot[2] = 0x04          # release SELECT/RESET
+        self.cpu.inpt[4] = 0xFF          # boot sync frame first (buttons released)
         self.cpu.inpt[5] = 0xFF
-        self.run_frame()
-        self.cpu.inpt[4] = 0x00      # now a real press
+        self.run_frame()                 # frame 0: menu mode
+        # Simulate RESET rising edge to trigger InitGame
+        reset_prev = self._ram("reset_prev")
+        self.cpu.ram[reset_prev] = 0x04  # prev state = released
+        self.cpu.riot[2] = 0x00          # press RESET
+        self.run_frame()                 # frame 1: InitGame + first playing frame
+        self.cpu.riot[2] = 0x04          # release RESET
+        self.cpu.inpt[4] = 0x00          # now a real press
         self.cpu.inpt[5] = 0xFF
         self.run_frame()
         self.assertNotEqual(self.cpu.ram[m_active] & 0x01, 0,
@@ -136,9 +147,12 @@ class TestFrameStability(unittest.TestCase):
         # spawning and hitting for the whole test.
         p0_hp = self._ram("p0_hp")
         p1_hp = self._ram("p1_hp")
+        gstate = self._ram("game_state")
         self.cpu.inpt[4] = 0xFF      # boot sync frames first
         self.cpu.inpt[5] = 0xFF
         self.run_frame()
+        # Enter playing state so gameplay updates run
+        self.cpu.ram[gstate] = 1     # STATE_PLAYING
         for _ in range(3):
             self.cpu.cxm0p = 0xC0
             self.cpu.cxm1p = 0xC0
@@ -176,9 +190,12 @@ class TestFrameStability(unittest.TestCase):
         be = self.sym["BuildEvents"]
         p0_hp = self._ram("p0_hp")
         p1_hp = self._ram("p1_hp")
+        gstate = self._ram("game_state")
         self.cpu.inpt[4] = 0xFF      # boot sync frame first
         self.cpu.inpt[5] = 0xFF
         self.run_frame()
+        # Enter playing state so gameplay updates run
+        self.cpu.ram[gstate] = 1     # STATE_PLAYING
         for i in range(60):
             self.cpu.ram[p0_hp] = 3   # keep both players alive all the way
             self.cpu.ram[p1_hp] = 3
@@ -218,9 +235,12 @@ class TestFrameStability(unittest.TestCase):
         # hold there too: 19912 cycles = 262 scanlines with both players dead.
         p0_hp = self._ram("p0_hp")
         p1_hp = self._ram("p1_hp")
+        gstate = self._ram("game_state")
         self.cpu.inpt[4] = 0xFF      # boot sync frame first
         self.cpu.inpt[5] = 0xFF
         self.run_frame()
+        # Enter playing state so gameplay updates run
+        self.cpu.ram[gstate] = 1     # STATE_PLAYING
         self.cpu.ram[p0_hp] = 0      # kill both players up front
         self.cpu.ram[p1_hp] = 0
         for i in range(60):
@@ -251,9 +271,12 @@ class TestFrameStability(unittest.TestCase):
         # 19912 cycles = 262 scanlines every frame.
         p0_hp = self._ram("p0_hp")
         p1_hp = self._ram("p1_hp")
+        gstate = self._ram("game_state")
         self.cpu.inpt[4] = 0xFF      # boot sync frames first
         self.cpu.inpt[5] = 0xFF
         self.run_frame()
+        # Enter playing state so gameplay updates run
+        self.cpu.ram[gstate] = 1     # STATE_PLAYING
         for _ in range(3):
             self.cpu.cxm0p = 0xC0
             self.cpu.cxm1p = 0xC0

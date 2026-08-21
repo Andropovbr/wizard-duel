@@ -23,6 +23,9 @@ Features:
 * cross-fire collisions (M0 -> P1, M1 -> P0) are detected by the TIA latches
   and consume HP: each player starts with `PLAYER_START_HP = 3` hit points
   (Round 5)
+* game mode selection (Round 12): STATE_MENU / STATE_PLAYING state machine,
+  SELECT toggles DUEL/SCORE, RESET starts the game, visual indicator via
+  player color (red = DUEL, blue = SCORE)
 
 There is intentionally no magic system, AI, scoring or HUD yet; the gameplay
 rules are expected to evolve in later rounds without requiring architectural

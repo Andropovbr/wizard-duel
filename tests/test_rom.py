@@ -30,7 +30,9 @@ class TestSymbols(unittest.TestCase):
                      "ball_x", "ball_y", "ball_dx", "ball_dy",
                      "m0_x", "m0_y", "m1_x", "m1_y",
                      "m_active", "hit_flags", "fire_prev", "evCnt",
-                     "evTbl", "evRow", "tempCount", "tblLen", "nullDelta"):
+                     "evTbl", "evRow", "tempCount", "tblLen", "nullDelta",
+                     "HandleInput", "InitGame",
+                     "game_state", "game_mode", "select_prev", "reset_prev"):
             self.assertIn(name, self.sym, f"missing symbol {name}")
 
     def test_reset_at_rom_origin(self):
@@ -41,7 +43,8 @@ class TestSymbols(unittest.TestCase):
                      "ball_x", "ball_y", "ball_dx", "ball_dy",
                      "m0_x", "m0_y", "m1_x", "m1_y",
                      "m_active", "hit_flags", "fire_prev", "evCnt",
-                     "evTbl", "evRow", "tempCount", "tblLen", "nullDelta"):
+                     "evTbl", "evRow", "tempCount", "tblLen", "nullDelta",
+                     "game_state", "game_mode", "select_prev", "reset_prev"):
             self.assertGreaterEqual(self.sym[name], 0x80)
             self.assertLessEqual(self.sym[name], 0xFF)
 

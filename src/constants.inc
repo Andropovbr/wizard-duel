@@ -465,3 +465,27 @@ PLAYER_START_HP      = 3
 ; VBLANK values. Bit 1 blanks the display; bit 6 ($40) only controls the
 ; INPT latches used for paddles, which are not used yet.
 VBLANK_BLANK = $02
+
+; ---------------------------------------------------------------------------
+; Game state and mode (Round 12)
+; ---------------------------------------------------------------------------
+; game_state tracks whether the game is in the menu/selection screen or in
+; active gameplay.  game_mode records which mode was selected and persists
+; through the playing state for future mode-specific logic.
+;
+; On power-on, game_state defaults to STATE_MENU (zero-page RAM is cleared
+; to 0) so the player must select a mode before gameplay begins.
+;
+; STATE_MENU:   the selection screen.  SELECT cycles modes, RESET starts.
+; STATE_PLAYING: active gameplay.  The existing Update*/Position*/BuildEvents
+;                pipeline runs; collisions and HP damage are processed.
+STATE_MENU    = 0
+STATE_PLAYING = 1
+
+MODE_DUEL  = 0
+MODE_SCORE = 1
+
+; Console switches (SWCHB, $0282, active low):
+;   D7 = difficulty P0, D6 = difficulty P1, D3 = SELECT, D2 = RESET
+SELECT_BIT = %00001000
+RESET_BIT  = %00000100

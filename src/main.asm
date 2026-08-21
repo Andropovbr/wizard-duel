@@ -197,6 +197,9 @@ Reset:
     ; button state instead of treating the boot-time INPT latch reading
     ; (which reads the fire lines as pressed) as a fresh rising edge.
 
+    ; game_state defaults to STATE_MENU (0) from the RAM clearing above.
+    ; game_mode defaults to MODE_DUEL (0).  No explicit initialization needed.
+
 ; =============================================================================
 ; StartOfFrame - one complete frame
 ; =============================================================================
@@ -214,9 +217,27 @@ StartOfFrame:
     STA VSYNC               ; 3   release vertical sync
 
     ; ---- VBLANK: game logic (input + movement + placement) --------------
+    JSR HandleInput          ; SELECT/RESET input (menu state only)
+    LDA game_state           ; 3
+    BEQ .menuState           ; 2/3  STATE_MENU -> skip gameplay, setup visuals
+    ; ---- Playing state: full gameplay update ----
     JSR UpdatePlayers       ; move both players vertically (see below)
     JSR UpdateBall          ; move the ball and bounce it off the arena edges
     JSR UpdateMissiles      ; fire, move and despawn both missiles
+    JMP .positionAndBuild   ; 3
+    ; ---- Menu state: set indicator colors, skip P1 so only P0 renders ----
+.menuState:
+    LDA game_mode            ; 3
+    BEQ .menuDuel            ; 2/3  MODE_DUEL -> keep default PLAYER1_COLOR
+    LDA #PLAYER2_COLOR       ; 2   MODE_SCORE -> blue indicator
+    JMP .menuColorSet        ; 3
+.menuDuel:
+    LDA #PLAYER1_COLOR       ; 2   MODE_DUEL -> red indicator
+.menuColorSet:
+    STA COLUP0               ; 3   set P0 color to indicate the mode
+    LDA #0                   ; 2
+    STA p1_hp                ; 3   dead P1 -> BuildEvents skips its events
+.positionAndBuild:
     JSR PositionPlayers     ; fixed horizontal placement (RESP + HMP)
     JSR PositionBall        ; ball horizontal placement (RESBL + HMBL)
     JSR PositionMissiles    ; missile horizontal placement (RESM + HMM)
@@ -435,6 +456,159 @@ OverscanWait:
     BNE .overscanLoop       ; 2/3
 
     JMP StartOfFrame        ; 3   next frame
+
+; =============================================================================
+; HandleInput (Round 12)
+;
+; Reads the console SELECT and RESET switches (SWCHB bits 3 and 2, active low)
+; with edge detection: a mode change or state transition only fires on a
+; released-to-pressed transition, so holding a button does not repeat.
+; Runs during VBLANK before the gameplay update routines.
+;
+; When game_state == STATE_MENU:
+;   - SELECT toggles game_mode between MODE_DUEL and MODE_SCORE.
+;   - RESET transitions to STATE_PLAYING and calls InitGame to set up the
+;     playing state with the selected mode.
+;
+; When game_state == STATE_PLAYING:
+;   - SELECT is ignored (modes cannot be changed mid-game).
+;   - RESET transitions back to STATE_MENU (preserves game_mode).
+;
+; select_prev stores the previous frame's SELECT bit (bit 3).
+; reset_prev stores the previous frame's RESET bit (bit 2).
+; Edge detection: current bit is 0 (pressed) AND prev bit is non-zero
+; (was released) -> action.  Bits are isolated with AND masks so other
+; switch bits do not interfere.
+; =============================================================================
+HandleInput:
+    LDA game_state           ; 3
+    BEQ .menuInput           ; 2/3  STATE_MENU -> handle SELECT + RESET
+    ; ---- Playing state: only RESET (back to menu) ----
+    LDA SWCHB                ; 4
+    AND #RESET_BIT           ; 2
+    BNE .resetNotPressedP    ; 2/3  RESET not pressed
+    LDA reset_prev           ; 3
+    AND #RESET_BIT           ; 2
+    BEQ .resetStillHeldP     ; 2/3  already pressed -> no edge
+    ; Rising edge: transition to menu (preserves game_mode)
+    LDA #STATE_MENU
+    STA game_state
+    JMP .resetStoreP         ; 3
+.resetStillHeldP:
+    LDA SWCHB                ; 4
+    AND #RESET_BIT           ; 2
+    STA reset_prev           ; 3
+    RTS                      ; 6
+.resetNotPressedP:
+    LDA SWCHB                ; 4
+    AND #RESET_BIT           ; 2
+    STA reset_prev           ; 3
+.resetStoreP:
+    RTS                      ; 6
+
+.menuInput:
+    ; ---- SELECT: edge detection (released -> pressed) ----
+    LDA SWCHB                ; 4   read console switches
+    PHA                      ; 3   save full SWCHB for RESET check below
+    AND #SELECT_BIT          ; 2   isolate the SELECT bit
+    BNE .selectNotPressed    ; 2/3  SELECT not pressed this frame
+    LDA select_prev          ; 3
+    AND #SELECT_BIT          ; 2
+    BEQ .selectStillHeld     ; 2/3  was already pressed -> no edge
+    ; Rising edge detected: toggle the mode
+    LDA game_mode            ; 3
+    EOR #1                   ; 2   toggle bit 0: 0 <-> 1
+    STA game_mode            ; 3
+.selectStillHeld:
+    LDA SWCHB                ; 4   re-read to store current SELECT state
+    AND #SELECT_BIT          ; 2
+    STA select_prev          ; 3
+    PLA                      ; 4   restore saved SWCHB
+    JMP .resetCheck          ; 3
+.selectNotPressed:
+    LDA SWCHB                ; 4
+    AND #SELECT_BIT          ; 2
+    STA select_prev          ; 3
+    PLA                      ; 4   restore saved SWCHB
+    ; ---- RESET (menu state): edge detection -> start game ----
+.resetCheck:
+    AND #RESET_BIT           ; 2   isolate RESET from the saved SWCHB
+    BNE .resetNotPressedM    ; 2/3  RESET not pressed
+    LDA reset_prev           ; 3
+    AND #RESET_BIT           ; 2
+    BEQ .resetStillHeldM     ; 2/3  already pressed -> no edge
+    ; Rising edge: start the game
+    JSR InitGame             ; 6   reinitialize gameplay, transition to playing
+    JMP .resetStoreM         ; 3
+.resetStillHeldM:
+    LDA SWCHB                ; 4
+    AND #RESET_BIT           ; 2
+    STA reset_prev           ; 3
+    RTS                      ; 6
+.resetNotPressedM:
+    LDA SWCHB                ; 4
+    AND #RESET_BIT           ; 2
+    STA reset_prev           ; 3
+.resetStoreM:
+    RTS                      ; 6
+
+; =============================================================================
+; InitGame (Round 12)
+;
+; Transitions from STATE_MENU to STATE_PLAYING.  Reinitializes all gameplay
+; state (players, ball, missiles, HP) exactly like the power-on Reset, so
+; the game always starts clean regardless of what happened in the menu.
+; The selected game_mode is preserved.
+;
+; Called once when RESET is pressed on the menu screen.  The hardware RESET
+; (power cycle) clears RAM and starts in STATE_MENU via the Reset vector;
+; this routine handles the software transition to gameplay.
+; =============================================================================
+InitGame:
+    ; Restore P1 color (menu may have changed P0 color for the indicator)
+    LDA #PLAYER2_COLOR
+    STA COLUP1
+
+    ; Restore P1 HP (menu set it to 0 to skip rendering)
+    LDA #PLAYER_START_HP
+    STA p1_hp
+
+    ; Initialize player positions
+    LDA #PLAYER1_Y_INIT
+    STA P0Y
+    LDA #PLAYER2_Y_INIT
+    STA P1Y
+
+    ; Initialize ball state
+    LDA #BALL_X_INIT
+    STA ball_x
+    LDA #BALL_Y_INIT
+    STA ball_y
+    LDA #DIR_RIGHT
+    STA ball_dx
+    LDA #DIR_DOWN
+    STA ball_dy
+
+    ; Initialize P0 HP
+    LDA #PLAYER_START_HP
+    STA p0_hp
+
+    ; Clear missile state
+    LDA #0
+    STA m_active
+
+    ; Clear fire input state (menu may have set fire_prev bits via dead-player
+    ; fire lock when p1_hp was 0 for the visual indicator)
+    STA fire_prev
+
+    ; Clear collision flags
+    STA hit_flags
+    STA ball_contact_flags
+
+    ; Transition to playing state
+    LDA #STATE_PLAYING
+    STA game_state
+    RTS
 
 ; =============================================================================
 ; UpdatePlayers
@@ -1809,6 +1983,16 @@ ball_contact_flags DS 1     ; CONTACT_P0/CONTACT_P1, set by ProcessCollisions
 
 fire_prev   DS 1            ; packed fire state (FIRE_P0/FIRE_P1 + FIRE_SYNC)
 evCnt       DS 1            ; kernel: scanlines until the next event fires
+
+; Game state and mode (Round 12).  game_state is STATE_MENU (0) on power-on
+; (RAM cleared to 0) and STATE_PLAYING (1) during gameplay.  game_mode
+; records DUEL (0) or SCORE (1) and persists through menu/play transitions.
+; select_prev/reset_prev hold the previous frame's switch bits for edge
+; detection (released -> pressed).
+game_state  DS 1            ; STATE_MENU or STATE_PLAYING
+game_mode   DS 1            ; MODE_DUEL or MODE_SCORE
+select_prev DS 1            ; previous SELECT switch bit for edge detection
+reset_prev  DS 1            ; previous RESET switch bit for edge detection
 
 ; Event table: 5-byte dummy at offset 0 (all-zero regs so the kernel's
 ; pre-first-event apply writes only AUDV0), then up to EV_MAX_EVENTS real

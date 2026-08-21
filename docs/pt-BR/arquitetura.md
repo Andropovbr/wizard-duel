@@ -24,6 +24,9 @@ Funcionalidades:
 * colisões cruzadas (M0 -> P1, M1 -> P0) são detectadas pelos latches do TIA
   e consomem HP: cada jogador começa com `PLAYER_START_HP = 3` pontos de vida
   (Rodada 5)
+* seleção de modo de jogo (Rodada 12): máquina de estados STATE_MENU /
+  STATE_PLAYING, SELECT alterna DUEL/SCORE, RESET inicia o jogo, indicador
+  visual via cor do jogador (vermelho = DUEL, azul = SCORE)
 
 Intencionalmente ainda não há sistema de magia, IA, placar ou HUD; as regras
 de jogo devem evoluir nas próximas rodadas sem exigir mudanças arquiteturais.
