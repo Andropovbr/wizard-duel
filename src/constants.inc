@@ -485,6 +485,30 @@ STATE_PLAYING = 1
 MODE_DUEL  = 0
 MODE_SCORE = 1
 
+; ---------------------------------------------------------------------------
+; SCORE mode constants (Round 13)
+; ---------------------------------------------------------------------------
+; SCORE mode replaces bounce-based ball physics with goal detection: the ball
+; scores a point when it exits the arena, and a rally reset follows.
+;
+; Goal conditions (checked in UpdateBall, VBLANK):
+;   ball_dx positive + ball_x == BALL_X_MAX  →  P0 scores (right edge)
+;   ball_dx negative + ball_x == BALL_X_MIN  →  P1 scores (left edge)
+;
+; On goal: score increments, pending_rally_reset is set, missiles are killed,
+; and ball movement is skipped.  ResetRally runs at the start of the NEXT
+; frame's VBLANK, restoring HP, positions, ball, missiles, and flags.
+;
+; KO conditions (checked in ProcessHitEffects, overscan):
+;   p0_hp == 0 after damage  →  P1 scores (P0-first priority)
+;   p1_hp == 0 after damage  →  P0 scores (only if P0 is alive)
+;   Max 1 point per rally via P0-first priority.
+;
+; pending_rally_reset is the single flag that gates both:
+;   - Fire lock in ProcessHitEffects (damage skipped when set)
+;   - ResetRally in VBLANK (rally state restored when set)
+; It is cleared by ResetRally itself.
+
 ; Console switches (SWCHB, $0282, active low):
 ;   D7 = difficulty P1, D6 = difficulty P0, D3 = Color/BW,
 ;   D1 = SELECT, D0 = RESET

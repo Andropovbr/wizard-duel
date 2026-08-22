@@ -229,9 +229,22 @@ StartOfFrame:
     LDA game_state           ; 3
     BEQ .menuState           ; 2/3  STATE_MENU -> skip gameplay, setup visuals
     ; ---- Playing state: full gameplay update ----
+    ; Round 13: pending_rally_reset triggers ResetRally at the start of
+    ; this frame's VBLANK, before gameplay updates.  The flag was set in
+    ; the previous frame's overscan (KO) or VBLANK (goal).
+    LDA pending_rally_reset  ; 3
+    BEQ .noPendingReset      ; 2/3  no rally reset pending
+    JSR ResetRally           ; 6+54  restore rally state (clears the flag)
+.noPendingReset:
     JSR UpdatePlayers       ; move both players vertically (see below)
     JSR UpdateBall          ; move the ball and bounce it off the arena edges
+    ; Round 13: skip UpdateMissiles when a goal was just scored (pending
+    ; was cleared by ResetRally above, but UpdateBall may set it again
+    ; in SCORE mode).  Check again after UpdateBall.
+    LDA pending_rally_reset ; 3
+    BNE .skipMissiles       ; 2/3  goal scored → no new missiles this frame
     JSR UpdateMissiles      ; fire, move and despawn both missiles
+.skipMissiles:
     JMP .positionAndBuild   ; 3
     ; ---- Menu state: set indicator colors, hide ball, show both paddles ---
 .menuState:
@@ -593,6 +606,51 @@ HandleInput:
 ; (power cycle) clears RAM and starts in STATE_MENU via the Reset vector;
 ; this routine handles the software transition to gameplay.
 ; =============================================================================
+; =============================================================================
+; ResetRally (Round 13)
+;
+; Restores rally state for a new rally: HP, positions, ball, missiles,
+; and transient flags.  Does NOT touch scores — those are managed by the
+; caller (InitGame for game start, goal/KO handlers during gameplay).
+;
+; Called from: InitGame (game start), StartOfFrame (pending_rally_reset)
+; =============================================================================
+ResetRally:
+    LDA #PLAYER_START_HP
+    STA p0_hp
+    STA p1_hp
+    LDA #PLAYER1_Y_INIT
+    STA P0Y
+    LDA #PLAYER2_Y_INIT
+    STA P1Y
+    LDA #BALL_X_INIT
+    STA ball_x
+    LDA #BALL_Y_INIT
+    STA ball_y
+    LDA #DIR_RIGHT
+    STA ball_dx
+    LDA #DIR_DOWN
+    STA ball_dy
+    LDA #0
+    STA m_active
+    STA hit_flags
+    STA ball_contact_flags
+    STA fire_prev
+    STA pending_rally_reset
+    RTS
+
+; =============================================================================
+; InitGame (Round 12, updated Round 13)
+;
+; Transitions from STATE_MENU to STATE_PLAYING.  Reinitializes all gameplay
+; state (players, ball, missiles, HP) exactly like the power-on Reset, so
+; the game always starts clean regardless of what happened in the menu.
+; The selected game_mode is preserved.  Scores are reset to 0-0.
+;
+; Called once when RESET is pressed on the menu screen.  The hardware RESET
+; (power cycle) clears RAM and starts in STATE_MENU via the Reset vector;
+; this routine handles the software transition to gameplay.
+; =============================================================================
 InitGame:
     ; Restore all colors to gameplay defaults (menu may have changed
     ; COLUP0 for the mode indicator and COLUPF to hide the ball).
@@ -603,37 +661,13 @@ InitGame:
     LDA #BALL_COLOR
     STA COLUPF               ; ball + missiles share this color
 
-    ; Restore HP (menu must not have touched it, but be safe)
-    LDA #PLAYER_START_HP
-    STA p0_hp
-    STA p1_hp
-
-    ; Initialize player positions
-    LDA #PLAYER1_Y_INIT
-    STA P0Y
-    LDA #PLAYER2_Y_INIT
-    STA P1Y
-
-    ; Initialize ball state
-    LDA #BALL_X_INIT
-    STA ball_x
-    LDA #BALL_Y_INIT
-    STA ball_y
-    LDA #DIR_RIGHT
-    STA ball_dx
-    LDA #DIR_DOWN
-    STA ball_dy
-
-    ; Clear missile state
+    ; Reset scores (game start only; not touched during rally resets)
     LDA #0
-    STA m_active
+    STA score_p0
+    STA score_p1
 
-    ; Clear fire input state (first frame sync handles the real button state)
-    STA fire_prev
-
-    ; Clear collision flags
-    STA hit_flags
-    STA ball_contact_flags
+    ; Reset rally state (HP, positions, ball, missiles, flags)
+    JSR ResetRally
 
     ; Transition to playing state
     LDA #STATE_PLAYING
@@ -720,7 +754,10 @@ UpdatePlayers:
 ; ball_y .. ball_y + BALL_HEIGHT - 1).
 ; =============================================================================
 UpdateBall:
-    ; ---- Horizontal bounce (reverse at the exact left/right edges) ----
+    ; ---- Game mode check: SCORE mode uses goal detection instead of bounce ---
+    LDA game_mode            ; 3
+    BNE .scoreHorizontal     ; 2/3  SCORE mode → goal check instead of bounce
+    ; ---- DUEL mode: original horizontal bounce (unchanged) ----
     LDA ball_x              ; 3
     CMP #BALL_X_MAX         ; 2   at the right edge?
     BNE .noRight            ; 2/3
@@ -733,8 +770,43 @@ UpdateBall:
     LDA #DIR_RIGHT          ; 2
     STA ball_dx             ; 3
 .noLeft:
+    JMP .verticalBounce     ; 3
 
-    ; ---- Vertical bounce (reverse at the exact top/bottom edges) ------
+.scoreHorizontal:
+    ; ---- SCORE mode: check for goal instead of horizontal bounce ----
+    ; Goal: ball exits the arena past the opponent's side.
+    ;   ball_dx positive (moving right) + ball_x == BALL_X_MAX → P0 scores
+    ;   ball_dx negative (moving left)  + ball_x == BALL_X_MIN → P1 scores
+    ; On goal: increment score, set pending_rally_reset, kill missiles,
+    ; skip movement.  ResetRally runs at next frame's VBLANK start.
+    LDA ball_dx             ; 3
+    BMI .scoreCheckLeft     ; 2/3  moving left ($FF)
+    ; Moving right: check right edge
+    LDA ball_x              ; 3
+    CMP #BALL_X_MAX         ; 2   at the right edge?
+    BNE .verticalBounce     ; 2/3  not at edge → no goal, continue normally
+    ; Goal! Ball exited right → P0 scores
+    INC score_p0            ; 5
+    LDA #1                  ; 2
+    STA pending_rally_reset ; 3
+    LDA #0                  ; 2
+    STA m_active            ; 3   kill existing missiles → no TIA latches
+    JMP .done               ; 3   skip movement (rally ends this frame)
+
+.scoreCheckLeft:
+    LDA ball_x              ; 3
+    CMP #BALL_X_MIN         ; 2   at the left edge?
+    BNE .verticalBounce     ; 2/3  not at edge → no goal
+    ; Goal! Ball exited left → P1 scores
+    INC score_p1            ; 5
+    LDA #1                  ; 2
+    STA pending_rally_reset ; 3
+    LDA #0                  ; 2
+    STA m_active            ; 3   kill existing missiles
+    JMP .done               ; 3   skip movement
+
+.verticalBounce:
+    ; ---- Vertical bounce (both modes, unchanged) ----
     LDA ball_y              ; 3
     CMP #BALL_Y_MAX         ; 2   at the bottom edge?
     BNE .noBottom           ; 2/3
@@ -757,6 +829,7 @@ UpdateBall:
     CLC                     ; 2
     ADC ball_dy             ; 3
     STA ball_y              ; 3
+.done:
     RTS                     ; 6
 
 ; =============================================================================
@@ -1164,6 +1237,28 @@ reboundTbl:
 ; =============================================================================
     ALIGN 256
 ProcessHitEffects:
+    ; ---- SCORE mode: check if a goal already ended the rally ----
+    ; When pending_rally_reset is set (goal scored in UpdateBall), skip
+    ; damage processing.  The rally will be reset in the next frame's
+    ; VBLANK.  Pad the skip path to maintain overscan WSYNC alignment.
+    LDA game_mode           ; 3
+    BEQ .processDamage      ; 2/3  DUEL → always process damage
+    LDA pending_rally_reset ; 3
+    BEQ .processDamage      ; 2/3  no goal → process damage normally
+    ; Goal already scored this rally: skip damage, pad for timing, fireLock.
+    ; The pad (8 NOPs = 16 cycles) ensures the first overscan WSYNC write
+    ; lands inside the (K+304, K+380) alignment window.
+    NOP                     ; 2
+    NOP                     ; 2
+    NOP                     ; 2
+    NOP                     ; 2
+    NOP                     ; 2
+    NOP                     ; 2
+    NOP                     ; 2
+    NOP                     ; 2
+    JMP .fireLock           ; 3
+
+.processDamage:
     ; ---- P0 damage: HIT_P0 set and P0 alive -> lose one HP ----
     LDA hit_flags           ; 3
     AND #HIT_P0             ; 2
@@ -1180,6 +1275,28 @@ ProcessHitEffects:
     BEQ .p1After            ; 2/3  already dead: ignore further hits
     DEC p1_hp               ; 5
 .p1After:
+    ; ---- SCORE mode: KO detection (P0-first priority, max 1 point/rally) ----
+    ; Only in SCORE mode.  P0 is checked first; if P0 is KO'd, P1 scores
+    ; and P1 is NOT checked (P0-first priority ensures exactly 1 point).
+    LDA game_mode           ; 3
+    BEQ .fireLock           ; 2/3  DUEL → no KO scoring
+    ; Check P0 KO (HP == 0 after damage)
+    LDA p0_hp               ; 3
+    BNE .p0AliveKo          ; 2/3  alive → skip P0 KO
+    ; P0 KO'd → P1 scores
+    INC score_p1            ; 5
+    LDA #1                  ; 2
+    STA pending_rally_reset ; 3
+    JMP .fireLock           ; 3   P0 KO processed; P1 NOT checked (priority)
+.p0AliveKo:
+    ; Check P1 KO (only if P0 is alive)
+    LDA p1_hp               ; 3
+    BNE .fireLock           ; 2/3  alive → no KO
+    ; P1 KO'd → P0 scores
+    INC score_p0            ; 5
+    LDA #1                  ; 2
+    STA pending_rally_reset ; 3
+.fireLock:
     ; ---- dead-player fire lock (branchless) ----
     LDA p0_hp               ; 3
     CLC                     ; 2
@@ -2025,6 +2142,16 @@ select_prev DS 1            ; previous SELECT switch bit for edge detection
 reset_prev  DS 1            ; previous RESET switch bit for edge detection
 swchb_cur   DS 1            ; current frame SWCHB snapshot (HandleInput)
 reset_held  DS 1            ; nonzero while RESET is held in menu
+
+; SCORE mode state (Round 13).  score_p0/score_p1 track the score for each
+; player; both start at 0 when a SCORE game begins.  pending_rally_reset is
+; set when a rally ends (goal or KO) and triggers ResetRally at the start of
+; the NEXT frame's VBLANK.  This defers the rally reset out of the overscan
+; (where timing is critical) and out of UpdateBall (where it would interfere
+; with missile state).  The flag is cleared by ResetRally.
+score_p0     DS 1            ; SCORE mode: Player 0 score (0..255)
+score_p1     DS 1            ; SCORE mode: Player 1 score (0..255)
+pending_rally_reset DS 1     ; SCORE mode: set on goal/KO, cleared by ResetRally
 
 ; Event table: 5-byte dummy at offset 0 (all-zero regs so the kernel's
 ; pre-first-event apply writes only AUDV0), then up to EV_MAX_EVENTS real
