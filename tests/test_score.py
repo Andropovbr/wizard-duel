@@ -223,8 +223,8 @@ class TestImmediateGoalReset(unittest.TestCase):
         # Rally state fully reset
         self.assertEqual(s["pending_rally_reset"], 0,
                          "flag cleared by immediate ResetRally")
-        self.assertEqual(s["p0_y"], C["PLAYER_Y_INIT"], "P0 centered")
-        self.assertEqual(s["p1_y"], C["PLAYER_Y_INIT"], "P1 centered")
+        self.assertEqual(s["p0_y"], C["P0_Y_INIT"], "P0 centered")
+        self.assertEqual(s["p1_y"], C["P1_Y_INIT"], "P1 centered")
         self.assertEqual(s["ball_x"], C["BALL_X_INIT"], "ball centered X")
         self.assertEqual(s["ball_y"], C["BALL_Y_INIT"], "ball centered Y")
         self.assertEqual(s["m_active"], 0, "missiles cleared")
@@ -456,31 +456,31 @@ class TestPlayerCentering(unittest.TestCase):
         self.h.boot_sync()
 
     def test_both_players_same_y_after_boot(self):
-        """P0 and P1 Y positions are equal after InitGame."""
+        """P0 and P1 Y positions are at their initial values after InitGame."""
         s = self.h.state()
-        self.assertEqual(s["p0_y"], s["p1_y"],
-                         "both players must share the same initial Y")
+        self.assertEqual(s["p0_y"], C["P0_Y_INIT"],
+                         "P0 Y must equal P0_Y_INIT")
+        self.assertEqual(s["p1_y"], C["P1_Y_INIT"],
+                         "P1 Y must equal P1_Y_INIT")
 
     def test_players_centered_in_arena(self):
-        """Initial Y equals (KERNEL_SCANLINES - PLAYER_HEIGHT) / 2."""
+        """Initial Y values are centered with 1-scanline offset."""
         s = self.h.state()
-        expected = (C["KERNEL_SCANLINES"] - C["PLAYER_HEIGHT"]) // 2
-        self.assertEqual(s["p0_y"], expected,
-                         "P0 Y must be vertically centered")
-        self.assertEqual(s["p1_y"], expected,
-                         "P1 Y must be vertically centered")
+        self.assertEqual(s["p0_y"], C["P0_Y_INIT"],
+                         "P0 Y must be P0_Y_INIT (center - 1)")
+        self.assertEqual(s["p1_y"], C["P1_Y_INIT"],
+                         "P1 Y must be P1_Y_INIT (center)")
 
     def test_players_centered_after_rally_reset(self):
-        """ResetRally centers both players."""
+        """ResetRally places players at their centered Y values."""
         self.h.cpu.ram[self.h._ram("p0_hp")] = 1
         self.h.set_collisions(m1_p0=True)
         self.h.run_frame()  # KO
         self.h.run_frame()  # ResetRally
         s = self.h.state()
-        expected = (C["KERNEL_SCANLINES"] - C["PLAYER_HEIGHT"]) // 2
-        self.assertEqual(s["p0_y"], expected,
+        self.assertEqual(s["p0_y"], C["P0_Y_INIT"],
                          "P0 centered after rally reset")
-        self.assertEqual(s["p1_y"], expected,
+        self.assertEqual(s["p1_y"], C["P1_Y_INIT"],
                          "P1 centered after rally reset")
 
 

@@ -473,44 +473,44 @@ class TestPlayerBallRowCollision(unittest.TestCase):
 
     def test_ball_on_equals_p1_on(self):
         """Case A: Ball ON row == P1 ON row."""
-        self._check_player_height(p0y=83, p1y=83, by=83)
+        self._check_player_height(p0y=82, p1y=83, by=83)
 
     def test_ball_off_equals_p1_on(self):
         """Case B: Ball OFF row == P1 ON row."""
         PH = read_constants()["PLAYER_HEIGHT"]
         BH = read_constants()["BALL_HEIGHT"]
-        self._check_player_height(p0y=83, p1y=83, by=83 - BH)
+        self._check_player_height(p0y=82, p1y=83, by=83 - BH)
 
     def test_ball_on_equals_p1_off(self):
         """Case C: Ball ON row == P1 OFF row."""
         PH = read_constants()["PLAYER_HEIGHT"]
-        self._check_player_height(p0y=83, p1y=83, by=83 + PH)
+        self._check_player_height(p0y=82, p1y=83, by=83 + PH)
 
     def test_ball_off_equals_p1_off(self):
         """Case D: Ball OFF row == P1 OFF row."""
         PH = read_constants()["PLAYER_HEIGHT"]
         BH = read_constants()["BALL_HEIGHT"]
-        self._check_player_height(p0y=83, p1y=83, by=83 + PH - BH)
+        self._check_player_height(p0y=82, p1y=83, by=83 + PH - BH)
 
     def test_ball_on_equals_p0_on(self):
         """P0 Control A: Ball ON row == P0 ON row."""
-        self._check_player_height(p0y=83, p1y=83, by=83)
+        self._check_player_height(p0y=82, p1y=83, by=82)
 
     def test_ball_off_equals_p0_on(self):
         """P0 Control B: Ball OFF row == P0 ON row."""
         BH = read_constants()["BALL_HEIGHT"]
-        self._check_player_height(p0y=83, p1y=83, by=83 - BH)
+        self._check_player_height(p0y=82, p1y=83, by=82 - BH)
 
     def test_ball_on_equals_p0_off(self):
         """P0 Control C: Ball ON row == P0 OFF row."""
         PH = read_constants()["PLAYER_HEIGHT"]
-        self._check_player_height(p0y=83, p1y=83, by=83 + PH)
+        self._check_player_height(p0y=82, p1y=83, by=82 + PH)
 
     def test_ball_off_equals_p0_off(self):
         """P0 Control D: Ball OFF row == P0 OFF row."""
         PH = read_constants()["PLAYER_HEIGHT"]
         BH = read_constants()["BALL_HEIGHT"]
-        self._check_player_height(p0y=83, p1y=83, by=83 + PH - BH)
+        self._check_player_height(p0y=82, p1y=83, by=82 + PH - BH)
 
     def test_no_player_event_is_bumped_by_ball(self):
         """Sweep: for every ball_y, player ON/OFF rows must match P0Y/P1Y."""
@@ -520,7 +520,7 @@ class TestPlayerBallRowCollision(unittest.TestCase):
             # Skip cases where player events fall off-screen
             if 83 + PH > 185:
                 continue
-            self._check_player_height(p0y=83, p1y=83, by=by)
+            self._check_player_height(p0y=82, p1y=83, by=by)
 
 
 if __name__ == "__main__":

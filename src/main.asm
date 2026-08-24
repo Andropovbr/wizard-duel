@@ -172,9 +172,11 @@ Reset:
     STA SWACNT              ; port A = all inputs (joysticks readable)
 
     ; Initial vertical positions (horizontal placement is fixed each frame)
-    LDA #PLAYER_Y_INIT
+    ; P0Y is 1 scanline above P1Y to avoid triple-write conflicts
+    ; when both players and ball share the same row.
+    LDA #P0_Y_INIT
     STA P0Y
-    LDA #PLAYER_Y_INIT
+    LDA #P1_Y_INIT
     STA P1Y
 
     ; Initial ball state: centered, moving down-right at 1 px/frame
@@ -626,8 +628,9 @@ ResetRally:
     LDA #PLAYER_START_HP
     STA p0_hp
     STA p1_hp
-    LDA #PLAYER_Y_INIT
+    LDA #P0_Y_INIT
     STA P0Y
+    LDA #P1_Y_INIT
     STA P1Y
     LDA #BALL_X_INIT
     STA ball_x

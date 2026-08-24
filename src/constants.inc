@@ -186,6 +186,8 @@ PADDLE_BITS        = %00111100
 PLAYER1_X          = 16
 PLAYER2_X          = 136
 PLAYER_Y_INIT      = 83      ; (KERNEL_SCANLINES - PLAYER_HEIGHT) / 2 = centered vertically
+P0_Y_INIT          = PLAYER_Y_INIT - 1  ; 82: 1 scanline above center
+P1_Y_INIT          = PLAYER_Y_INIT      ; 83: at center
 
 PLAYER1_COLOR      = $46     ; red (NTSC)
 PLAYER2_COLOR      = $84     ; blue (NTSC)
