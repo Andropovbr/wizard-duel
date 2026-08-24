@@ -138,8 +138,8 @@ class TestGoalRight(unittest.TestCase):
     def test_right_goal_sets_pending_rally_reset(self):
         self.h.set_ball(BALL_X_MAX, DIR_RIGHT)
         self.h.run_frame()
-        self.assertEqual(self.h.state()["pending_rally_reset"],
-                         RALLY_RESET_P0_GOAL)
+        # ResetRally runs immediately → flag is cleared
+        self.assertEqual(self.h.state()["pending_rally_reset"], 0)
 
     def test_right_goal_clears_missiles(self):
         self.h.cpu.ram[self.h._ram("m_active")] = 0x03  # both missiles active
@@ -150,8 +150,8 @@ class TestGoalRight(unittest.TestCase):
     def test_right_goal_skips_ball_movement(self):
         self.h.set_ball(BALL_X_MAX, DIR_RIGHT)
         self.h.run_frame()
-        # Ball should NOT have moved (goal skips movement)
-        self.assertEqual(self.h.state()["ball_x"], BALL_X_MAX)
+        # ResetRally runs immediately → ball centered at BALL_X_INIT
+        self.assertEqual(self.h.state()["ball_x"], C["BALL_X_INIT"])
 
 
 class TestGoalLeft(unittest.TestCase):
@@ -171,8 +171,8 @@ class TestGoalLeft(unittest.TestCase):
     def test_left_goal_sets_pending_rally_reset(self):
         self.h.set_ball(BALL_X_MIN, DIR_LEFT)
         self.h.run_frame()
-        self.assertEqual(self.h.state()["pending_rally_reset"],
-                         RALLY_RESET_P1_GOAL)
+        # ResetRally runs immediately → flag is cleared
+        self.assertEqual(self.h.state()["pending_rally_reset"], 0)
 
 
 class TestNoGoalWithoutEdge(unittest.TestCase):
@@ -201,6 +201,51 @@ class TestNoGoalWithoutEdge(unittest.TestCase):
         self.h.run_frame()
         s = self.h.state()
         self.assertEqual(s["score_p1"], 0, "no score when moving away from edge")
+
+
+class TestImmediateGoalReset(unittest.TestCase):
+    """Regression: goal triggers immediate ResetRally in the same VBLANK."""
+
+    def setUp(self):
+        self.h = SCOREHarness()
+        self.h.boot_sync()
+
+    def _check_reset_state(self, side):
+        """Shared assertions for both goal directions."""
+        s = self.h.state()
+        # Score incremented exactly once
+        if side == "right":
+            self.assertEqual(s["score_p0"], 1, "P0 score +1")
+            self.assertEqual(s["score_p1"], 0, "P1 score unchanged")
+        else:
+            self.assertEqual(s["score_p1"], 1, "P1 score +1")
+            self.assertEqual(s["score_p0"], 0, "P0 score unchanged")
+        # Rally state fully reset
+        self.assertEqual(s["pending_rally_reset"], 0,
+                         "flag cleared by immediate ResetRally")
+        self.assertEqual(s["p0_y"], C["PLAYER_Y_INIT"], "P0 centered")
+        self.assertEqual(s["p1_y"], C["PLAYER_Y_INIT"], "P1 centered")
+        self.assertEqual(s["ball_x"], C["BALL_X_INIT"], "ball centered X")
+        self.assertEqual(s["ball_y"], C["BALL_Y_INIT"], "ball centered Y")
+        self.assertEqual(s["m_active"], 0, "missiles cleared")
+        self.assertEqual(s["p0_hp"], C["PLAYER_START_HP"], "P0 HP restored")
+        self.assertEqual(s["p1_hp"], C["PLAYER_START_HP"], "P1 HP restored")
+
+    def test_right_goal_immediate_reset(self):
+        self.h.set_ball(BALL_X_MAX, DIR_RIGHT)
+        self.h.run_frame()
+        self._check_reset_state("right")
+        # Serve direction: P0 scored → DIR_LEFT
+        self.assertEqual(self.h.state()["ball_dx"], DIR_LEFT,
+                         "serve toward P0 (who conceded)")
+
+    def test_left_goal_immediate_reset(self):
+        self.h.set_ball(BALL_X_MIN, DIR_LEFT)
+        self.h.run_frame()
+        self._check_reset_state("left")
+        # Serve direction: P1 scored → DIR_RIGHT
+        self.assertEqual(self.h.state()["ball_dx"], DIR_RIGHT,
+                         "serve toward P1 (who conceded)")
 
 
 class TestKOScoring(unittest.TestCase):

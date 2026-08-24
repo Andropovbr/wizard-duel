@@ -231,20 +231,24 @@ StartOfFrame:
     ; ---- Playing state: full gameplay update ----
     ; Round 13: pending_rally_reset triggers ResetRally at the start of
     ; this frame's VBLANK, before gameplay updates.  The flag was set in
-    ; the previous frame's overscan (KO) or VBLANK (goal).
+    ; the previous frame's overscan (KO).
     LDA pending_rally_reset  ; 3
     BEQ .noPendingReset      ; 2/3  no rally reset pending
     JSR ResetRally           ; 6+54  restore rally state (clears the flag)
 .noPendingReset:
     JSR UpdatePlayers       ; move both players vertically (see below)
     JSR UpdateBall          ; move the ball and bounce it off the arena edges
-    ; Round 13: skip UpdateMissiles when a goal was just scored (pending
-    ; was cleared by ResetRally above, but UpdateBall may set it again
-    ; in SCORE mode).  Check again after UpdateBall.
+    ; Round 14: goal detected in SCORE mode → ResetRally immediately,
+    ; before PositionPlayers/BuildEvents, so the visible frame already
+    ; shows the fresh rally state (centered players, center ball, HP
+    ; restored).  KO still uses the deferred path above (detected in
+    ; overscan, flag set for next frame's VBLANK start).
     LDA pending_rally_reset ; 3
-    BNE .skipMissiles       ; 2/3  goal scored → no new missiles this frame
+    BEQ .noGoalReset        ; 2/3  no goal this frame
+    JSR ResetRally           ; 6+54  immediate rally reset (clears the flag)
+    JMP .positionAndBuild   ; 3   skip missiles; state is fresh
+.noGoalReset:
     JSR UpdateMissiles      ; fire, move and despawn both missiles
-.skipMissiles:
     JMP .positionAndBuild   ; 3
     ; ---- Menu state: set indicator colors, hide ball, show both paddles ---
 .menuState:
@@ -785,10 +789,11 @@ UpdateBall:
 .scoreHorizontal:
     ; ---- SCORE mode: check for goal instead of horizontal bounce ----
     ; Goal: ball exits the arena past the opponent's side.
-    ;   ball_dx positive (moving right) + ball_x == BALL_X_MAX → P0 scores
-    ;   ball_dx negative (moving left)  + ball_x == BALL_X_MIN → P1 scores
+    ;   ball_dx positive (moving right) + ball_x == BALL_X_MAX -> P0 scores
+    ;   ball_dx negative (moving left)  + ball_x == BALL_X_MIN -> P1 scores
     ; On goal: increment score, set pending_rally_reset, kill missiles,
-    ; skip movement.  ResetRally runs at next frame's VBLANK start.
+    ; skip movement.  ResetRally executes in the same VBLANK (before
+    ; PositionPlayers/BuildEvents) so no transitional frame is rendered.
     LDA ball_dx             ; 3
     BMI .scoreCheckLeft     ; 2/3  moving left ($FF)
     ; Moving right: check right edge
