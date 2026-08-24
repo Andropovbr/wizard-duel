@@ -1401,6 +1401,14 @@ PositionBall:
     SEC                     ; 2
     SBC #3                  ; 2   q = 0 compensation (ball_x + 5)
 PositionBallOk:
+    ; At q_loop >= 12 (input >= 165, ball_x >= 157) the TIA RESP strobe
+    ; lands the ball at coarse 163, not 165 as the model predicts.  Add
+    ; +2 more to compensate so the rendered position stays monotonic.
+    CMP #165                ; 2   input >= 165  <=>  ball_x >= 157
+    BCC PositionBallReady   ; 2/3
+    CLC                     ; 2
+    ADC #2                  ; 2   input += 2  (ball_x + 10 total)
+PositionBallReady:
     LDX #4                  ; 2   object 4 = ball
     JSR PosObject           ; 6
     RTS                     ; 6
