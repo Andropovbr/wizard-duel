@@ -378,9 +378,12 @@ WaitVBlank:
 ; same emulator cycle convention).  The beam reaches pixel p at cycle
 ; ~(p + 69)/3, so pixel 0 is reached at ~23.  Write 1 always lands before
 ; pixel 0; write 2 only lands before an object whose x >= 15.  The builder
-; therefore enforces the slot rule: ENABL and ENAM1 must never be slot 2,
-; and when ENABL is already in slot 1, no new event merges (preventing a
-; third write collision).  See the event kernel constants in constants.inc.
+; enforces the slot rule: ENAM1 must never be slot 2 (M1 x varies); ENABL
+; may be slot 2 only when ball_x >= 15.  When Ball and a player share a row,
+; they are reordered within the slot pair (no bump) based on ball_x:
+;   ball_x >= 15: player slot 1, ball slot 2
+;   ball_x <  15: ball slot 1, player slot 2
+; See the event kernel constants in constants.inc.
 ;
 ; Dummy entry: the table's first 5 bytes are all zeros (reg1 = reg2 = 0), so
 ; on the lines before the first event fires the apply writes both values to
@@ -1600,10 +1603,8 @@ BuildEvents:
     LDX #3                    ; 2   candidate: P1
 .scanBall:
     ; ---- Ball (bit 4): scanned AFTER players so players win row ties ----
-    ; When Ball and a player share a row, the player keeps slot 1 and the
-    ; Ball is bumped to row+1.  The ball is 3 pixels tall; a 1-scanline
-    ; shift is invisible.  Paddles are 18 pixels tall; a 1-scanline shift
-    ; is clearly visible.
+    ; When Ball and a player share a row, they are reordered within the slot
+    ; pair based on ball_x (no bump).  See AppendEvent .sameRow.
     LDA nullDelta             ; 3
     AND #OBJ_BALL_BIT         ; 2
     BEQ .scanM0               ; 2/3
@@ -1807,11 +1808,15 @@ BuildEvents:
 ; end) and:
 ;   * entry row < new row: write the new entry at the marker position (no
 ;     shift in the common case), fresh marker 5 bytes on;
-;   * entry row == new row: merge the new event as its slot 2 - UNLESS the new
-;     event is the ball or M1 (register ENABL or ENAM1), which must never be
-;     slot 2 (their x can be below 15, the deadline for the second pending
-;     write), or the entry is already a double.  In those cases the event's
-;     row is bumped to row+1 and the scan continues from the next entry;
+;   * entry row == new row: merge the new event as its slot 2 - UNLESS the
+;     event is already a double, the new event is ENAM1 (M1 x can be < 15),
+;     or the new event is ENABL and ball_x < 15 (the beam reaches pixel 15
+;     at cycle ~28, but slot 2 writes at cycle 27).  When the existing entry
+;     has ENABL in slot 1 and the new event is a player, the two are swapped:
+;     player -> slot 2 (always safe, player x=16), ball -> slot 1 (always
+;     safe).  When the new event is ENABL and ball_x < 15 and the existing
+;     entry is a player, they are also swapped: player -> slot 2, ball -> slot
+;     1.  Otherwise the event's row is bumped to row+1.
 ;   * entry row > new row: step one entry back.
 ;
 ; A table entry never holds three writes (that would break the 76-cycle kernel
@@ -1902,10 +1907,77 @@ AppendEvent:
 .sameRow:
     LDA evTbl+3,Y           ; 4   reg2 of the same-row entry
     BNE .bumpRow            ; 2/3  already a double -> bump the new event
-    CPX #EV_REG_ENABL       ; 2   the ball must never be slot 2
-    BEQ .bumpRow            ; 2/3
+    ; ---- slot-2 register safety check ----
+    ; Slot 2 writes at cycle 27; the beam reaches pixel p at ~(p+69)/3, so
+    ; pixel 15 at cycle ~28.  An object with x >= 15 is safe in slot 2.
+    ; Players are always at x=16 (safe).  ENABL depends on ball_x.
+    ; ENAM1 can be at any x (M1 x varies) so it is never slot 2.
     CPX #EV_REG_ENAM1       ; 2   M1 must never be slot 2 (x can be < 15)
     BEQ .bumpRow            ; 2/3
+    CPX #EV_REG_ENABL       ; 2   is the NEW event the ball?
+    BEQ .ballNewSameRow     ; 2/3  -> check ball_x for slot-2 safety
+    ; ---- new event is NOT the ball; check if the EXISTING entry is ENABL ----
+    LDA evTbl+1,Y           ; 4   reg1 of the existing entry
+    CMP #EV_REG_ENABL       ; 2
+    BNE .normalMerge        ; 2/3  neither is ENABL -> safe to merge as slot 2
+    ; ---- existing entry has ENABL in slot 1, new event is a player ----
+    ; Swap: player -> slot 1, ball -> slot 2.  Player x=16 is always safe
+    ; for slot 2.  Ball goes to slot 1 (always safe).
+    LDA ball_x              ; 3
+    CMP #15                 ; 2   ball_x >= 15 -> ball safe in slot 2
+    BCS .swapEnabl          ; 2/3  -> swap (ball to slot 2, player to slot 1)
+    ; ball_x < 15: ball cannot go to slot 2, but player CAN go to slot 2.
+    ; Swap: player -> slot 1, ball -> slot 2 would put ball in slot 2 (unsafe).
+    ; Instead: player -> slot 1 (overwrite, no change), ball -> slot 2 is
+    ; unsafe.  But player x=16 IS safe for slot 2, so we can just put the
+    ; player in slot 1 and the ball in slot 2... wait, ball_x < 15 means
+    ; ball CANNOT be slot 2.  So: put player in slot 1, ball in slot 1?
+    ; No - the existing entry already has ENABL in slot 1.
+    ; Correct: put the PLAYER in slot 1 (overwrite ENABL), put ball in slot 2.
+    ; But ball_x < 15 means slot 2 write arrives too late for the ball.
+    ; The ball is 3 pixels wide; the write at cycle 27 reaches the beam at
+    ; pixel ~12 (cycle 27 -> ~(12+69)/3 = 27).  For ball_x < 15 the beam
+    ; has already passed the ball's left edge.  We must put the ball in slot 1.
+    ; Player x=16 IS safe for slot 2.  So: ball -> slot 1, player -> slot 2.
+    ; This means: overwrite slot 1 with player (wrong!), put ball in slot 2.
+    ; Actually we need: slot 1 = ENABL (ball), slot 2 = GRP (player).
+    ; The existing entry has ENABL in slot 1 already.  We just need to add
+    ; the player as slot 2.  Player x=16 is safe for slot 2.  Done!
+    JMP .normalMerge        ; 3   merge player into slot 2 (safe: player x=16)
+.ballNewSameRow:
+    LDA ball_x              ; 3
+    CMP #15                 ; 2   ball_x >= 15 -> safe to merge as slot 2
+    BCS .normalMerge        ; 2/3  -> merge ball into slot 2
+    ; ball_x < 15: ball cannot be slot 2.  Check if existing entry has a
+    ; player: swap ball to slot 1, player to slot 2 (player x=16 always safe).
+    LDA evTbl+1,Y           ; 4   reg1 of the existing entry
+    CMP #EV_REG_ENABL       ; 2
+    BEQ .bumpRow            ; 2/3  both ENABL: impossible (ball is single), bump
+    ; Existing entry is a player.  Swap: player -> slot 2, ball -> slot 1.
+    ; Player x=16 is always safe for slot 2.
+.swapEnabl:
+    PLA                     ; 4   register index (ENABL)
+    STA tempSwap            ; 3   save ball's register temporarily
+    PLA                     ; 4   value (BALL_ENABLE)
+    ; Read the existing player entry from the table
+    PHA                     ; 4   push ball's value (will go to slot 1)
+    LDA evTbl+2,Y           ; 4   player's value
+    PHA                     ; 4   push player's value (will go to slot 2)
+    LDA evTbl+1,Y           ; 4   player's register
+    PHA                     ; 4   push player's register (will go to slot 2)
+    ; Write ball to slot 1 (overwrite the player's register)
+    LDA tempSwap            ; 3   ball's register (ENABL)
+    STA evTbl+1,Y           ; 4   slot 1 reg = ENABL
+    PLA                     ; 4   player's register
+    STA evTbl+3,Y           ; 4   slot 2 reg = player's register
+    PLA                     ; 4   player's value
+    STA evTbl+4,Y           ; 4   slot 2 val = player's value
+    PLA                     ; 4   ball's value
+    STA evTbl+2,Y           ; 4   slot 1 val = BALL_ENABLE
+    LDA evRow               ; 3   restore row (clobbered by tempSwap load)
+    STA evTbl,Y             ; 4   row (unchanged, but restore for correctness)
+    RTS                     ; 6
+.normalMerge:
     ; ---- merge the new event into the same-row single as its slot 2 ----
     PLA                     ; 4   register index
     STA evTbl+3,Y           ; 4   reg2
@@ -1923,11 +1995,13 @@ AppendEvent:
     TAY                     ; 2
     LDA evTbl,Y             ; 4   its row ($FF if it is the marker)
     CMP #EV_MARKER_ROW      ; 2
-    BEQ .writeEntry         ; 2/3  next is the marker -> append the bumped event
+    BEQ .bumpToWrite        ; 2/3  next is the marker -> append the bumped event
     CMP evRow               ; 3
     BEQ .sameRow            ; 2/3  bumped row == next row -> merge/bump again
     ; next row > bumped row -> insert the bumped event before it (at Y)
     ; fall through into insertMid
+.bumpToWrite:
+    JMP .writeEntry         ; 3
 .insertMid:
     ; ---- shift the suffix from Y up by 5, then write the entry at Y ----
     JSR ShiftBy5            ; 6   Y preserved; shifts the marker + suffix
@@ -2181,6 +2255,7 @@ evTbl       DS EV_TBL_SIZE  ; dummy + entries + end-marker (60 bytes, constants.
 ; across the insert and convert phases).
 evRow       DS 1            ; InsertEvent: event row  /  ConvertDeltas: row
 tempCount   DS 1            ; InsertEvent: shift point / ConvertDeltas: prevRow
+tempSwap    DS 1            ; AppendEvent: ball value during slot swap
 tblLen      DS 1            ; number of real entries in the table
 
 nullDelta   DS 1            ; first event's delta (row_1, or 185 when empty)

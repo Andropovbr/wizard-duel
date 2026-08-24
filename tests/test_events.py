@@ -45,7 +45,8 @@ SCAN_ORDER = (OBJ_P0, OBJ_P1, OBJ_BALL, OBJ_M0, OBJ_M1)
 ENTRY0 = 5
 
 
-def scene(p0y, p1y, by, m0y, m1y, m0a, m1a, p0_alive=True, p1_alive=True):
+def scene(p0y, p1y, by, m0y, m1y, m0a, m1a, p0_alive=True, p1_alive=True,
+          ball_x=80):
     """Return (active, objects) for a scene.
 
     Objects are keyed by dispatch code; each is (y, height, reg, on_val).
@@ -56,6 +57,7 @@ def scene(p0y, p1y, by, m0y, m1y, m0a, m1a, p0_alive=True, p1_alive=True):
         OBJ_P0: (p0y, 18, EV_REG_GRP0, 0x3C),     # PLAYER_HEIGHT/PADDLE_BITS
         OBJ_P1: (p1y, 18, EV_REG_GRP1, 0x3C),
         OBJ_BALL: (by, ball_h, EV_REG_ENABL, 0x02),  # BALL_HEIGHT/BALL_ENABLE
+        "_ball_x": ball_x,
     }
     active = set()
     if p0_alive:
@@ -80,6 +82,7 @@ def build(active, objects, kernel_lines=185, max_events=10):
     byte table (dummy at offset 0, entries from ENTRY0, marker at the end)
     and the prime delta nullDelta.
     """
+    ball_x = objects.get("_ball_x", 80)
     # Dummy (delta byte = EV_MARKER_ROW back-scan sentinel, regs all zero)
     # followed by the marker.
     table = [EV_MARKER_ROW, 0, 0, 0, 0, EV_MARKER_VAL, 0, 0, 0, 0]
@@ -98,15 +101,17 @@ def build(active, objects, kernel_lines=185, max_events=10):
                 best_row = cand
         y, height, reg, val = objects[best]
         if best in on_pending:
-            _append(table, best_row, reg, val, kernel_lines, max_events)
+            _append(table, best_row, reg, val, kernel_lines, max_events,
+                    ball_x)
             on_pending.discard(best)
         else:
-            _append(table, best_row, reg, 0, kernel_lines, max_events)
+            _append(table, best_row, reg, 0, kernel_lines, max_events,
+                    ball_x)
             active_mask.discard(best)
     return _convert(table, kernel_lines)
 
 
-def _append(table, row, reg, val, kernel_lines, max_events):
+def _append(table, row, reg, val, kernel_lines, max_events, ball_x=80):
     """AppendEvent: append/merge/bump an event into the flat table.
 
     The table is a byte list of 5-byte entries (dummy at offset 0, real
@@ -128,8 +133,8 @@ def _append(table, row, reg, val, kernel_lines, max_events):
             table[off + 5:off + 5] = [row, reg, val, 0, 0]
             return
         if cur == row:
-            if table[off + 3] != 0 or reg in (EV_REG_ENABL, EV_REG_ENAM1):
-                # double, or a forbidden slot-2 register: bump to row+1
+            if table[off + 3] != 0:
+                # already a double -> bump the new event
                 row += 1
                 if row >= kernel_lines:
                     return
@@ -138,7 +143,63 @@ def _append(table, row, reg, val, kernel_lines, max_events):
                     table[off + 5:off + 5] = [row, reg, val, 0, 0]
                     return
                 continue
-            table[off + 3] = reg      # merge as slot 2
+            # entry is a single: check slot-2 safety
+            if reg == EV_REG_ENAM1:
+                # M1 must never be slot 2 (x varies, can be < 15)
+                row += 1
+                if row >= kernel_lines:
+                    return
+                i += 1
+                if i >= n_real:
+                    table[off + 5:off + 5] = [row, reg, val, 0, 0]
+                    return
+                continue
+            existing_reg1 = table[off + 1]
+            if reg == EV_REG_ENABL:
+                # new event is the ball
+                if ball_x >= 15:
+                    # safe to merge ball into slot 2
+                    table[off + 3] = reg
+                    table[off + 4] = val
+                    return
+                # ball_x < 15: ball cannot be slot 2
+                if existing_reg1 == EV_REG_ENABL:
+                    # both ENABL: impossible (ball is single), bump
+                    row += 1
+                    if row >= kernel_lines:
+                        return
+                    i += 1
+                    if i >= n_real:
+                        table[off + 5:off + 5] = [row, reg, val, 0, 0]
+                        return
+                    continue
+                # existing entry is a player: swap
+                # ball -> slot 1, player -> slot 2 (player x=16 always safe)
+                player_reg = table[off + 1]
+                player_val = table[off + 2]
+                table[off + 1] = EV_REG_ENABL   # ball reg -> slot 1
+                table[off + 2] = val             # ball val -> slot 1
+                table[off + 3] = player_reg      # player reg -> slot 2
+                table[off + 4] = player_val      # player val -> slot 2
+                return
+            # new event is NOT the ball
+            if existing_reg1 == EV_REG_ENABL:
+                # existing entry has ball in slot 1, new event is a player
+                if ball_x >= 15:
+                    # ball safe in slot 2: swap player to slot 1, ball to slot 2
+                    ball_val = table[off + 2]
+                    table[off + 1] = reg         # player reg -> slot 1
+                    table[off + 2] = val         # player val -> slot 1
+                    table[off + 3] = EV_REG_ENABL  # ball reg -> slot 2
+                    table[off + 4] = ball_val    # ball val -> slot 2
+                    return
+                # ball_x < 15: ball must stay in slot 1, player -> slot 2
+                # player x=16 is safe for slot 2
+                table[off + 3] = reg
+                table[off + 4] = val
+                return
+            # neither is ENABL: safe to merge as slot 2
+            table[off + 3] = reg
             table[off + 4] = val
             return
         i -= 1                        # entry row > new row: step back
@@ -215,7 +276,10 @@ class TestBuilderBasics(unittest.TestCase):
 
     def test_same_row_events_merge(self):
         # P0 ON, P1 ON and Ball ON on the same row.  Players are scanned first
-        # so P0 wins slot 1, P1 merges into slot 2; Ball is bumped to row+1.
+        # so P0 wins slot 1, P1 merges into slot 2; Ball sees a double entry
+        # and is bumped to row+1.  Ball_x=80 (default, >= 15) so if the entry
+        # were a single, Ball could merge as slot 2 — but with two writes
+        # already, it must bump.
         active, objects = scene(128, 128, 128, 0, 0, False, False)
         table, nd = build(active, objects)
         rows = table_rows(table, nd)
@@ -245,20 +309,15 @@ class TestBuilderBasics(unittest.TestCase):
         active, objects = scene(48, 128, 100, 0, 100, False, True)
         table, nd = build(active, objects)
         rows = table_rows(table, nd)
-        # ball ON 100, M1 ON bumped 101, M1 OFF 104, ball OFF 104 merges? no:
-        # 104 == M1 OFF row -> ball OFF merges as slot 2 (ball is slot 1 there
-        # from the earlier 100/101 ordering? no - the 104 merge is a fresh
-        # single).  Recompute below via the model and assert only the slot-1
-        # invariant.
         self.assertEqual(rows, sorted(rows))
         for d, reg1, val1, reg2, val2 in entries(table):
             if reg2 != 0:
-                self.assertNotIn(reg1, (EV_REG_ENAM1,))
-                self.assertNotIn(reg2, (EV_REG_ENAM1, EV_REG_ENABL))
+                self.assertNotIn(reg2, (EV_REG_ENAM1,))
 
     def test_enabl_and_enam1_never_second_write(self):
-        # Across a dense scenario matrix, the ball and M1 must never end up as
-        # the second write of a double.
+        # Across a dense scenario matrix, M1 must never end up as the second
+        # write of a double.  ENABL may be slot 2 when ball_x >= 15 (the
+        # default), which is safe.
         for by in range(0, 180, 5):
             for m0y, m1y in ((by, by), (by - 2, by + 2), (52, 132)):
                 for m0a, m1a in ((True, True), (True, False),
@@ -267,9 +326,6 @@ class TestBuilderBasics(unittest.TestCase):
                     table, nd = build(active, objects)
                     for d, reg1, val1, reg2, val2 in entries(table):
                         if reg2 != 0:
-                            self.assertNotEqual(
-                                reg2, EV_REG_ENABL,
-                                f"ENABL in the second slot at by={by}")
                             self.assertNotEqual(
                                 reg2, EV_REG_ENAM1,
                                 f"ENAM1 in the second slot at m1y={m1y}")

@@ -48,10 +48,10 @@ class TestRamLimit(unittest.TestCase):
         # Round 12 (game modes) RAM: players/ball/missiles/hp/flags (15,
         # including ball_contact_flags) + fire_prev/evCnt (2) +
         # game_state/game_mode/select_prev/reset_prev/swchb_cur/reset_held (6) +
-        # event table (60: dummy + 10 entries + marker) + builder temps (3) +
+        # event table (60: dummy + 10 entries + marker) + builder temps (4) +
         # nullDelta (1) +
-        # score_p0/score_p1/pending_rally_reset (3) = 90 bytes ($80-$D9).
-        self.assertEqual(self.used, 90)
+        # score_p0/score_p1/pending_rally_reset (3) = 91 bytes ($80-$DA).
+        self.assertEqual(self.used, 91)
 
 
 if __name__ == "__main__":
