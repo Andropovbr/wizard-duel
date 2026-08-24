@@ -172,9 +172,9 @@ Reset:
     STA SWACNT              ; port A = all inputs (joysticks readable)
 
     ; Initial vertical positions (horizontal placement is fixed each frame)
-    LDA #PLAYER1_Y_INIT
+    LDA #PLAYER_Y_INIT
     STA P0Y
-    LDA #PLAYER2_Y_INIT
+    LDA #PLAYER_Y_INIT
     STA P1Y
 
     ; Initial ball state: centered, moving down-right at 1 px/frame
@@ -619,15 +619,25 @@ ResetRally:
     LDA #PLAYER_START_HP
     STA p0_hp
     STA p1_hp
-    LDA #PLAYER1_Y_INIT
+    LDA #PLAYER_Y_INIT
     STA P0Y
-    LDA #PLAYER2_Y_INIT
     STA P1Y
     LDA #BALL_X_INIT
     STA ball_x
     LDA #BALL_Y_INIT
     STA ball_y
+    ; Determine ball_dx from pending_rally_reset encoding:
+    ;   RALLY_RESET_KO (1) or RALLY_RESET_P1_GOAL (3) → DIR_RIGHT
+    ;   RALLY_RESET_P0_GOAL (2) → DIR_LEFT
+    LDX pending_rally_reset
+    CPX #RALLY_RESET_P0_GOAL
+    BEQ .rallyP0Goal
+    ; Default: DIR_RIGHT (covers KO and P1 goal)
     LDA #DIR_RIGHT
+    JMP .rallySetDx
+.rallyP0Goal:
+    LDA #DIR_LEFT
+.rallySetDx:
     STA ball_dx
     LDA #DIR_DOWN
     STA ball_dy
@@ -787,7 +797,7 @@ UpdateBall:
     BNE .verticalBounce     ; 2/3  not at edge → no goal, continue normally
     ; Goal! Ball exited right → P0 scores
     INC score_p0            ; 5
-    LDA #1                  ; 2
+    LDA #RALLY_RESET_P0_GOAL ; 2  P0 scored → DIR_LEFT toward P0
     STA pending_rally_reset ; 3
     LDA #0                  ; 2
     STA m_active            ; 3   kill existing missiles → no TIA latches
@@ -799,7 +809,7 @@ UpdateBall:
     BNE .verticalBounce     ; 2/3  not at edge → no goal
     ; Goal! Ball exited left → P1 scores
     INC score_p1            ; 5
-    LDA #1                  ; 2
+    LDA #RALLY_RESET_P1_GOAL ; 2  P1 scored → DIR_RIGHT toward P1
     STA pending_rally_reset ; 3
     LDA #0                  ; 2
     STA m_active            ; 3   kill existing missiles
@@ -1285,7 +1295,7 @@ ProcessHitEffects:
     BNE .p0AliveKo          ; 2/3  alive → skip P0 KO
     ; P0 KO'd → P1 scores
     INC score_p1            ; 5
-    LDA #1                  ; 2
+    LDA #RALLY_RESET_KO     ; 2
     STA pending_rally_reset ; 3
     JMP .fireLock           ; 3   P0 KO processed; P1 NOT checked (priority)
 .p0AliveKo:
@@ -1294,7 +1304,7 @@ ProcessHitEffects:
     BNE .fireLock           ; 2/3  alive → no KO
     ; P1 KO'd → P0 scores
     INC score_p0            ; 5
-    LDA #1                  ; 2
+    LDA #RALLY_RESET_KO     ; 2
     STA pending_rally_reset ; 3
 .fireLock:
     ; ---- dead-player fire lock (branchless) ----

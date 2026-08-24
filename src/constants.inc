@@ -185,8 +185,7 @@ PADDLE_BITS        = %00111100
 
 PLAYER1_X          = 16
 PLAYER2_X          = 136
-PLAYER1_Y_INIT     = 48
-PLAYER2_Y_INIT     = 128
+PLAYER_Y_INIT      = 83      ; (KERNEL_SCANLINES - PLAYER_HEIGHT) / 2 = centered vertically
 
 PLAYER1_COLOR      = $46     ; red (NTSC)
 PLAYER2_COLOR      = $84     ; blue (NTSC)
@@ -504,10 +503,18 @@ MODE_SCORE = 1
 ;   p1_hp == 0 after damage  →  P0 scores (only if P0 is alive)
 ;   Max 1 point per rally via P0-first priority.
 ;
-; pending_rally_reset is the single flag that gates both:
-;   - Fire lock in ProcessHitEffects (damage skipped when set)
-;   - ResetRally in VBLANK (rally state restored when set)
-; It is cleared by ResetRally itself.
+; pending_rally_reset is a small enum that doubles as both the flag and the
+; reason for the reset.  Values:
+;   0 = no reset pending (normal play)
+;   1 = KO or default reset — ball_dx = DIR_RIGHT (toward P1)
+;   2 = P0 scored (ball exited right) — ball_dx = DIR_LEFT  (toward P0)
+;   3 = P1 scored (ball exited left)  — ball_dx = DIR_RIGHT (toward P1)
+; ResetRally reads the encoding to determine ball_dx, then clears it.
+; This avoids an extra RAM byte while still allowing goal-specific serve
+; direction.
+RALLY_RESET_KO      = 1
+RALLY_RESET_P0_GOAL = 2
+RALLY_RESET_P1_GOAL = 3
 
 ; Console switches (SWCHB, $0282, active low):
 ;   D7 = difficulty P1, D6 = difficulty P0, D3 = Color/BW,

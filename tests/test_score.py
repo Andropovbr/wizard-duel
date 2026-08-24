@@ -35,6 +35,9 @@ HIT_P0 = C["HIT_P0"]            # %00000001: P0 hit by M1
 HIT_P1 = C["HIT_P1"]            # %00000010: P1 hit by M0
 M0P_P1 = 0x80                    # CXM0P D7
 M1P_P0 = 0x80                    # CXM1P D7
+RALLY_RESET_KO = C["RALLY_RESET_KO"]        # 1
+RALLY_RESET_P0_GOAL = C["RALLY_RESET_P0_GOAL"]  # 2
+RALLY_RESET_P1_GOAL = C["RALLY_RESET_P1_GOAL"]  # 3
 
 
 def _sym():
@@ -100,6 +103,8 @@ class SCOREHarness:
             "score_p1": m[self._ram("score_p1")],
             "p0_hp": m[self._ram("p0_hp")],
             "p1_hp": m[self._ram("p1_hp")],
+            "p0_y": m[self._ram("P0Y")],
+            "p1_y": m[self._ram("P1Y")],
             "ball_x": m[self._ram("ball_x")],
             "ball_y": m[self._ram("ball_y")],
             "ball_dx": m[self._ram("ball_dx")],
@@ -133,7 +138,8 @@ class TestGoalRight(unittest.TestCase):
     def test_right_goal_sets_pending_rally_reset(self):
         self.h.set_ball(BALL_X_MAX, DIR_RIGHT)
         self.h.run_frame()
-        self.assertEqual(self.h.state()["pending_rally_reset"], 1)
+        self.assertEqual(self.h.state()["pending_rally_reset"],
+                         RALLY_RESET_P0_GOAL)
 
     def test_right_goal_clears_missiles(self):
         self.h.cpu.ram[self.h._ram("m_active")] = 0x03  # both missiles active
@@ -165,7 +171,8 @@ class TestGoalLeft(unittest.TestCase):
     def test_left_goal_sets_pending_rally_reset(self):
         self.h.set_ball(BALL_X_MIN, DIR_LEFT)
         self.h.run_frame()
-        self.assertEqual(self.h.state()["pending_rally_reset"], 1)
+        self.assertEqual(self.h.state()["pending_rally_reset"],
+                         RALLY_RESET_P1_GOAL)
 
 
 class TestNoGoalWithoutEdge(unittest.TestCase):
@@ -350,6 +357,86 @@ class TestScoreAccumulation(unittest.TestCase):
         s = self.h.state()
         self.assertEqual(s["score_p0"], 1)
         self.assertEqual(s["score_p1"], 1)
+
+
+class TestServeDirection(unittest.TestCase):
+    """After a goal, the ball serves toward the player who scored."""
+
+    def setUp(self):
+        self.h = SCOREHarness()
+        self.h.boot_sync()
+
+    def test_p0_goal_serves_left_toward_p0(self):
+        """P0 scores (right goal) → next rally ball_dx = DIR_LEFT."""
+        self.h.set_ball(BALL_X_MAX, DIR_RIGHT)
+        self.h.run_frame()  # P0 scores → pending_rally_reset = RALLY_RESET_P0_GOAL
+        self.h.run_frame()  # ResetRally runs
+        s = self.h.state()
+        self.assertEqual(s["ball_dx"], DIR_LEFT,
+                         "after P0 goal, ball serves left toward P0")
+
+    def test_p1_goal_serves_right_toward_p1(self):
+        """P1 scores (left goal) → next rally ball_dx = DIR_RIGHT."""
+        self.h.set_ball(BALL_X_MIN, DIR_LEFT)
+        self.h.run_frame()  # P1 scores → pending_rally_reset = RALLY_RESET_P1_GOAL
+        self.h.run_frame()  # ResetRally runs
+        s = self.h.state()
+        self.assertEqual(s["ball_dx"], DIR_RIGHT,
+                         "after P1 goal, ball serves right toward P1")
+
+    def test_ko_serves_right_by_default(self):
+        """KO → pending_rally_reset = RALLY_RESET_KO → DIR_RIGHT."""
+        self.h.cpu.ram[self.h._ram("p0_hp")] = 1
+        self.h.set_collisions(m1_p0=True)
+        self.h.run_frame()  # KO → pending_rally_reset = RALLY_RESET_KO
+        self.h.run_frame()  # ResetRally runs
+        s = self.h.state()
+        self.assertEqual(s["ball_dx"], DIR_RIGHT,
+                         "after KO, ball serves right (default)")
+
+    def test_score_preserved_across_rally(self):
+        """Score persists across rally reset."""
+        self.h.set_ball(BALL_X_MAX, DIR_RIGHT)
+        self.h.run_frame()  # P0 scores
+        self.h.run_frame()  # reset
+        s = self.h.state()
+        self.assertEqual(s["score_p0"], 1, "score persists after reset")
+
+
+class TestPlayerCentering(unittest.TestCase):
+    """Both players start centered vertically in the arena."""
+
+    def setUp(self):
+        self.h = SCOREHarness()
+        self.h.boot_sync()
+
+    def test_both_players_same_y_after_boot(self):
+        """P0 and P1 Y positions are equal after InitGame."""
+        s = self.h.state()
+        self.assertEqual(s["p0_y"], s["p1_y"],
+                         "both players must share the same initial Y")
+
+    def test_players_centered_in_arena(self):
+        """Initial Y equals (KERNEL_SCANLINES - PLAYER_HEIGHT) / 2."""
+        s = self.h.state()
+        expected = (C["KERNEL_SCANLINES"] - C["PLAYER_HEIGHT"]) // 2
+        self.assertEqual(s["p0_y"], expected,
+                         "P0 Y must be vertically centered")
+        self.assertEqual(s["p1_y"], expected,
+                         "P1 Y must be vertically centered")
+
+    def test_players_centered_after_rally_reset(self):
+        """ResetRally centers both players."""
+        self.h.cpu.ram[self.h._ram("p0_hp")] = 1
+        self.h.set_collisions(m1_p0=True)
+        self.h.run_frame()  # KO
+        self.h.run_frame()  # ResetRally
+        s = self.h.state()
+        expected = (C["KERNEL_SCANLINES"] - C["PLAYER_HEIGHT"]) // 2
+        self.assertEqual(s["p0_y"], expected,
+                         "P0 centered after rally reset")
+        self.assertEqual(s["p1_y"], expected,
+                         "P1 centered after rally reset")
 
 
 if __name__ == "__main__":

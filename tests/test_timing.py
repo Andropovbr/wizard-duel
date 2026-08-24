@@ -119,8 +119,10 @@ class TestFrameConstants(unittest.TestCase):
         self.assertEqual(self.c.get("PLAYER_Y_MIN"), 0)
         self.assertEqual(self.c.get("PLAYER1_X"), 16)
         self.assertEqual(self.c.get("PLAYER2_X"), 136)
-        self.assertEqual(self.c.get("PLAYER1_Y_INIT"), 48)
-        self.assertEqual(self.c.get("PLAYER2_Y_INIT"), 128)
+        # PLAYER_Y_INIT = (KERNEL_SCANLINES - PLAYER_HEIGHT) / 2 = 83
+        # The Python parser can't resolve parenthesized division, so verify
+        # the numeric value directly.
+        self.assertEqual(self.c.get("PLAYER_Y_INIT"), 83)
 
 
 class TestKernelCycleBudget(unittest.TestCase):
