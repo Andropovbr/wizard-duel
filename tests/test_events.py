@@ -34,11 +34,11 @@ EV_REG_ENAM0, EV_REG_ENAM1, EV_REG_ENABL = 3, 4, 5
 EV_MARKER_ROW = 0xFF
 EV_MARKER_VAL = 0xFF
 
-# Object dispatch codes and the BuildEvents scan order (Round 10 write-slot
-# rule): the ball is scanned first so it wins row ties and keeps slot 1, then
-# M1 before M0 before P0 before P1.
+# Object dispatch codes and the BuildEvents scan order (Round 14 write-slot
+# rule): players are scanned first so they win row ties and keep slot 1; the
+# ball is scanned after players, then M0, then M1.
 OBJ_M1, OBJ_M0, OBJ_P0, OBJ_P1, OBJ_BALL = 0, 1, 2, 3, 4
-SCAN_ORDER = (OBJ_BALL, OBJ_M1, OBJ_M0, OBJ_P0, OBJ_P1)
+SCAN_ORDER = (OBJ_P0, OBJ_P1, OBJ_BALL, OBJ_M0, OBJ_M1)
 
 # Offset of the first real entry (the dummy occupies table bytes 0..4; its
 # delta byte is the EV_MARKER_ROW sentinel so the builder back-scan stops there).
@@ -214,35 +214,34 @@ class TestBuilderBasics(unittest.TestCase):
                          [48, 52, 56, 66, 128, 132, 136, 142, 144, 146])
 
     def test_same_row_events_merge(self):
-        # Ball ON, P0 ON and P1 ON on the same row.  The ball is scanned first
-        # with a strict "<", so it wins the row tie and keeps slot 1; P0 (the
-        # next scanned, x >= 15) merges into slot 2; P1 is bumped to row+1.
+        # P0 ON, P1 ON and Ball ON on the same row.  Players are scanned first
+        # so P0 wins slot 1, P1 merges into slot 2; Ball is bumped to row+1.
         active, objects = scene(128, 128, 128, 0, 0, False, False)
         table, nd = build(active, objects)
         rows = table_rows(table, nd)
         self.assertEqual(rows, [128, 129, 130, 146])
-        # entry 0 is a double with the ball first (slot 1), then P0
+        # entry 0 is a double with P0 first (slot 1), then P1
         d, reg1, val1, reg2, val2 = next(entries(table))
-        self.assertEqual((reg1, val1), (EV_REG_ENABL, 0x02))   # Ball ON
-        self.assertEqual((reg2, val2), (EV_REG_GRP0, 0x3C))    # P0 ON
+        self.assertEqual((reg1, val1), (EV_REG_GRP0, 0x3C))   # P0 ON
+        self.assertEqual((reg2, val2), (EV_REG_GRP1, 0x3C))   # P1 ON
         self.assertEqual(fire_rows(table, nd), [128, 129, 130, 146])
 
     def test_non_ball_merge_keeps_scan_order(self):
-        # P0, P1 and M0 all ON at 48, ball at 142.  M0 is scanned before P0,
-        # so M0 (x >= 15) is slot 1 and P0 slot 2 on row 48; P1 is bumped to
-        # 49.  The OFF events merge the same way on row 60.
+        # P0, P1 and M0 all ON at 48, ball at 142.  P0 is scanned first, so
+        # P0 is slot 1 and P1 (next player scanned) merges into slot 2; M0 is
+        # bumped to 49.  The OFF events merge the same way on row 60.
         active, objects = scene(48, 48, 142, 48, 0, True, False)
         table, nd = build(active, objects)
         rows = table_rows(table, nd)
         self.assertEqual(rows, [48, 49, 52, 66, 142, 144])
         d, reg1, val1, reg2, val2 = next(entries(table))
-        self.assertEqual((reg1, val1), (EV_REG_ENAM0, 0x02))   # M0 ON slot 1
-        self.assertEqual((reg2, val2), (EV_REG_GRP0, 0x3C))    # P0 ON slot 2
+        self.assertEqual((reg1, val1), (EV_REG_GRP0, 0x3C))   # P0 ON slot 1
+        self.assertEqual((reg2, val2), (EV_REG_GRP1, 0x3C))   # P1 ON slot 2
 
     def test_ball_wins_row_tie_over_earlier_scan_order(self):
-        # Ball ON and M1 ON on the same row: even though M1 is scanned next,
-        # the ball was scanned first with a strict "<", so the ball is slot 1
-        # and M1 is bumped to row+1 (M1 can never be slot 2).
+        # Ball ON and M1 ON on the same row: players are scanned first, then
+        # ball, then M0, then M1.  Ball wins over M1 (scanned earlier), so
+        # ball is slot 1 and M1 is bumped to row+1 (M1 can never be slot 2).
         active, objects = scene(48, 128, 100, 0, 100, False, True)
         table, nd = build(active, objects)
         rows = table_rows(table, nd)
@@ -360,6 +359,112 @@ class TestBuilderBasics(unittest.TestCase):
             n_events = sum(1 for _ in entries(table))
             self.assertEqual(len(rows), n_events)
             self.assertEqual(sorted(rows), rows)
+
+
+class TestPlayerBallRowCollision(unittest.TestCase):
+    """Regression: player events must never be bumped when ball shares a row.
+
+    Before the Round 14 fix, when Ball OFF and P1 ON/OFF shared a row,
+    the ball was scanned first (won the row tie) and occupied slot 1.
+    P1's event was then bumped to row+1, causing P1 to appear 1 scanline
+    too short or too tall.  The fix reorders the scan loop so players are
+    checked before the ball: players always win row ties and the ball is
+    bumped instead (invisible on a 3-pixel ball).
+    """
+
+    def _check_player_height(self, p0y, p1y, by, m0y=0, m1y=0,
+                             m0a=False, m1a=False):
+        """Build events and verify both players have exactly PLAYER_HEIGHT."""
+        PH = read_constants()["PLAYER_HEIGHT"]
+        BH = read_constants()["BALL_HEIGHT"]
+        active, objects = scene(p0y, p1y, by, m0y, m1y, m0a, m1a)
+        table, nd = build(active, objects)
+
+        # Find P0 ON/OFF and P1 ON/OFF rows from the table
+        p0_on = p0_off = p1_on = p1_off = None
+        row = nd
+        i = ENTRY0
+        while table[i] != EV_MARKER_VAL:
+            reg1, val1 = table[i+1], table[i+2]
+            reg2, val2 = table[i+3], table[i+4]
+            if reg1 == EV_REG_GRP0:
+                if val1: p0_on = row
+                else: p0_off = row
+            if reg2 == EV_REG_GRP0:
+                if val2: p0_on = row
+                else: p0_off = row
+            if reg1 == EV_REG_GRP1:
+                if val1: p1_on = row
+                else: p1_off = row
+            if reg2 == EV_REG_GRP1:
+                if val2: p1_on = row
+                else: p1_off = row
+            row += table[i]
+            i += 5
+
+        self.assertIsNotNone(p0_on, "P0 ON not found")
+        self.assertIsNotNone(p0_off, "P0 OFF not found")
+        self.assertIsNotNone(p1_on, "P1 ON not found")
+        self.assertIsNotNone(p1_off, "P1 OFF not found")
+        self.assertEqual(p0_off - p0_on, PH,
+                         f"P0 height {p0_off - p0_on} != {PH} "
+                         f"(p0y={p0y} by={by})")
+        self.assertEqual(p1_off - p1_on, PH,
+                         f"P1 height {p1_off - p1_on} != {PH} "
+                         f"(p1y={p1y} by={by})")
+        self.assertEqual(p0_on, p0y, f"P0 ON {p0_on} != P0Y {p0y}")
+        self.assertEqual(p1_on, p1y, f"P1 ON {p1_on} != P1Y {p1y}")
+
+    def test_ball_on_equals_p1_on(self):
+        """Case A: Ball ON row == P1 ON row."""
+        self._check_player_height(p0y=83, p1y=83, by=83)
+
+    def test_ball_off_equals_p1_on(self):
+        """Case B: Ball OFF row == P1 ON row."""
+        PH = read_constants()["PLAYER_HEIGHT"]
+        BH = read_constants()["BALL_HEIGHT"]
+        self._check_player_height(p0y=83, p1y=83, by=83 - BH)
+
+    def test_ball_on_equals_p1_off(self):
+        """Case C: Ball ON row == P1 OFF row."""
+        PH = read_constants()["PLAYER_HEIGHT"]
+        self._check_player_height(p0y=83, p1y=83, by=83 + PH)
+
+    def test_ball_off_equals_p1_off(self):
+        """Case D: Ball OFF row == P1 OFF row."""
+        PH = read_constants()["PLAYER_HEIGHT"]
+        BH = read_constants()["BALL_HEIGHT"]
+        self._check_player_height(p0y=83, p1y=83, by=83 + PH - BH)
+
+    def test_ball_on_equals_p0_on(self):
+        """P0 Control A: Ball ON row == P0 ON row."""
+        self._check_player_height(p0y=83, p1y=83, by=83)
+
+    def test_ball_off_equals_p0_on(self):
+        """P0 Control B: Ball OFF row == P0 ON row."""
+        BH = read_constants()["BALL_HEIGHT"]
+        self._check_player_height(p0y=83, p1y=83, by=83 - BH)
+
+    def test_ball_on_equals_p0_off(self):
+        """P0 Control C: Ball ON row == P0 OFF row."""
+        PH = read_constants()["PLAYER_HEIGHT"]
+        self._check_player_height(p0y=83, p1y=83, by=83 + PH)
+
+    def test_ball_off_equals_p0_off(self):
+        """P0 Control D: Ball OFF row == P0 OFF row."""
+        PH = read_constants()["PLAYER_HEIGHT"]
+        BH = read_constants()["BALL_HEIGHT"]
+        self._check_player_height(p0y=83, p1y=83, by=83 + PH - BH)
+
+    def test_no_player_event_is_bumped_by_ball(self):
+        """Sweep: for every ball_y, player ON/OFF rows must match P0Y/P1Y."""
+        PH = read_constants()["PLAYER_HEIGHT"]
+        BH = read_constants()["BALL_HEIGHT"]
+        for by in range(0, 185):
+            # Skip cases where player events fall off-screen
+            if 83 + PH > 185:
+                continue
+            self._check_player_height(p0y=83, p1y=83, by=by)
 
 
 if __name__ == "__main__":

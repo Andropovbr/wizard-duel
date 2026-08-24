@@ -378,9 +378,9 @@ WaitVBlank:
 ; same emulator cycle convention).  The beam reaches pixel p at cycle
 ; ~(p + 69)/3, so pixel 0 is reached at ~23.  Write 1 always lands before
 ; pixel 0; write 2 only lands before an object whose x >= 15.  The builder
-; therefore enforces the slot rule (ball is inserted first and M1 never merges
-; as slot 2), so slot 2 is always P0 (x=16), P1 (x=136) or M0 (x>=18).  See
-; the event kernel constants in constants.inc.
+; therefore enforces the slot rule: ENABL and ENAM1 must never be slot 2,
+; and when ENABL is already in slot 1, no new event merges (preventing a
+; third write collision).  See the event kernel constants in constants.inc.
 ;
 ; Dummy entry: the table's first 5 bytes are all zeros (reg1 = reg2 = 0), so
 ; on the lines before the first event fires the apply writes both values to
@@ -1518,14 +1518,12 @@ BuildEvents:
     ; sorted order: AppendEvent (below) appends at the end in the common case
     ; (no shift) and only occasionally shifts a small suffix.
     ;
-    ; nullDelta doubles as the active-object mask (bit set = the object still
-    ; has an event to emit) and evCnt doubles as the ON-pending mask (bit set =
-    ; its ON is still due).  Both are dead during the build: ConvertDeltas
-    ; rewrites nullDelta right after, and the kernel primes evCnt only after
-    ; BuildEvents returns.  The ball is scanned FIRST with a strict "<" update,
-    ; so it wins row ties and is inserted before the tied object: at a shared
-    ; row the ball keeps slot 1 and the other object takes slot 2 (legal for
-    ; P0/P1/M0; AppendEvent bumps M1 to row+1).
+    ; Selection scan order: P0 → P1 → Ball → M0 → M1.  Players are scanned
+    ; before the ball so that when they share a row, the player wins slot 1
+    ; and the ball is bumped to row+1.  The ball is 3 pixels tall; a
+    ; 1-scanline shift is invisible.  Paddles are 18 pixels tall; a
+    ; 1-scanline shift is clearly visible.  The AppendEvent slot rule still
+    ; prevents ENABL/ENAM1 from occupying slot 2.
     LDA #OBJ_BALL_BIT         ; 2   the ball is always rendered
     STA nullDelta             ; 3   activeMask
     LDA m_active              ; 3
@@ -1564,61 +1562,7 @@ BuildEvents:
 .doSelection:
     LDA #$FF                  ; 2
     STA evRow                 ; 3   running minimum row = $FF
-    ; ---- Ball (bit 4): scanned first so it wins row ties (keeps slot 1) ----
-    LDA nullDelta             ; 3
-    AND #OBJ_BALL_BIT         ; 2
-    BEQ .scanM1               ; 2/3
-    LDA evCnt                 ; 3   ON still pending?
-    AND #OBJ_BALL_BIT         ; 2
-    BNE .ballOnCand           ; 2/3
-    LDA ball_y                ; 3   OFF candidate
-    CLC                       ; 2
-    ADC #BALL_HEIGHT          ; 2
-    JMP .ballCand             ; 3
-.ballOnCand:
-    LDA ball_y                ; 3   ON candidate
-.ballCand:
-    CMP evRow                 ; 3
-    BCS .scanM1               ; 2/3
-    STA evRow                 ; 3
-    LDX #4                    ; 2   candidate: Ball
-.scanM1:
-    LDA nullDelta             ; 3
-    AND #OBJ_M1_BIT           ; 2
-    BEQ .scanM0               ; 2/3
-    LDA evCnt                 ; 3
-    AND #OBJ_M1_BIT           ; 2
-    BNE .m1OnCand             ; 2/3
-    LDA m1_y                  ; 3   OFF candidate
-    CLC                       ; 2
-    ADC #MISSILE_HEIGHT       ; 2
-    JMP .m1Cand               ; 3
-.m1OnCand:
-    LDA m1_y                  ; 3   ON candidate
-.m1Cand:
-    CMP evRow                 ; 3
-    BCS .scanM0               ; 2/3
-    STA evRow                 ; 3
-    LDX #0                    ; 2   candidate: M1
-.scanM0:
-    LDA nullDelta             ; 3
-    AND #OBJ_M0_BIT           ; 2
-    BEQ .scanP0               ; 2/3
-    LDA evCnt                 ; 3
-    AND #OBJ_M0_BIT           ; 2
-    BNE .m0OnCand             ; 2/3
-    LDA m0_y                  ; 3   OFF candidate
-    CLC                       ; 2
-    ADC #MISSILE_HEIGHT       ; 2
-    JMP .m0Cand               ; 3
-.m0OnCand:
-    LDA m0_y                  ; 3   ON candidate
-.m0Cand:
-    CMP evRow                 ; 3
-    BCS .scanP0               ; 2/3
-    STA evRow                 ; 3
-    LDX #1                    ; 2   candidate: M0
-.scanP0:
+    ; ---- P0 (bit 2): scanned before Ball so players win row ties ----
     LDA nullDelta             ; 3
     AND #OBJ_P0_BIT           ; 2
     BEQ .scanP1               ; 2/3
@@ -1639,7 +1583,7 @@ BuildEvents:
 .scanP1:
     LDA nullDelta             ; 3
     AND #OBJ_P1_BIT           ; 2
-    BEQ .emitObj              ; 2/3
+    BEQ .scanBall             ; 2/3
     LDA evCnt                 ; 3
     AND #OBJ_P1_BIT           ; 2
     BNE .p1OnCand             ; 2/3
@@ -1651,9 +1595,68 @@ BuildEvents:
     LDA P1Y                   ; 3   ON candidate
 .p1Cand:
     CMP evRow                 ; 3
-    BCS .emitObj              ; 2/3
+    BCS .scanBall             ; 2/3
     STA evRow                 ; 3
     LDX #3                    ; 2   candidate: P1
+.scanBall:
+    ; ---- Ball (bit 4): scanned AFTER players so players win row ties ----
+    ; When Ball and a player share a row, the player keeps slot 1 and the
+    ; Ball is bumped to row+1.  The ball is 3 pixels tall; a 1-scanline
+    ; shift is invisible.  Paddles are 18 pixels tall; a 1-scanline shift
+    ; is clearly visible.
+    LDA nullDelta             ; 3
+    AND #OBJ_BALL_BIT         ; 2
+    BEQ .scanM0               ; 2/3
+    LDA evCnt                 ; 3   ON still pending?
+    AND #OBJ_BALL_BIT         ; 2
+    BNE .ballOnCand           ; 2/3
+    LDA ball_y                ; 3   OFF candidate
+    CLC                       ; 2
+    ADC #BALL_HEIGHT          ; 2
+    JMP .ballCand             ; 3
+.ballOnCand:
+    LDA ball_y                ; 3   ON candidate
+.ballCand:
+    CMP evRow                 ; 3
+    BCS .scanM0               ; 2/3
+    STA evRow                 ; 3
+    LDX #4                    ; 2   candidate: Ball
+.scanM0:
+    LDA nullDelta             ; 3
+    AND #OBJ_M0_BIT           ; 2
+    BEQ .scanM1               ; 2/3
+    LDA evCnt                 ; 3
+    AND #OBJ_M0_BIT           ; 2
+    BNE .m0OnCand             ; 2/3
+    LDA m0_y                  ; 3   OFF candidate
+    CLC                       ; 2
+    ADC #MISSILE_HEIGHT       ; 2
+    JMP .m0Cand               ; 3
+.m0OnCand:
+    LDA m0_y                  ; 3   ON candidate
+.m0Cand:
+    CMP evRow                 ; 3
+    BCS .scanM1               ; 2/3
+    STA evRow                 ; 3
+    LDX #1                    ; 2   candidate: M0
+.scanM1:
+    LDA nullDelta             ; 3
+    AND #OBJ_M1_BIT           ; 2
+    BEQ .emitObj              ; 2/3
+    LDA evCnt                 ; 3
+    AND #OBJ_M1_BIT           ; 2
+    BNE .m1OnCand             ; 2/3
+    LDA m1_y                  ; 3   OFF candidate
+    CLC                       ; 2
+    ADC #MISSILE_HEIGHT       ; 2
+    JMP .m1Cand               ; 3
+.m1OnCand:
+    LDA m1_y                  ; 3   ON candidate
+.m1Cand:
+    CMP evRow                 ; 3
+    BCS .emitObj              ; 2/3
+    STA evRow                 ; 3
+    LDX #0                    ; 2   candidate: M1
 .emitObj:
     CPX #4                    ; 2   dispatch on the smallest event
     BEQ .emitBall             ; 2/3
