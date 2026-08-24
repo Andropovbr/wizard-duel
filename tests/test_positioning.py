@@ -15,20 +15,24 @@ the assembled ROM and validates, for every possible input position P:
   * the ball renders at exactly ball_x.
 
 The coarse/fine model matches the behavior measured on the target (TIA /
-Stella) by freezing the ball at every ball_x 0..156 and the paddles at every
-PLAYER1_X in 0..155 (see the Round 2 change log):
+Stella):
 
   * divide-by-15 loop leaves Y = s - 15 (two's complement $F1..$FF) where
     s = P mod 15 is the fine-adjust table index;
   * fine adjustment = s - 7 (the page-aligned table holds +7..-7);
-  * coarse position = 15*q for q >= 1, but only 3 for q = 0: the shortest
+  * coarse position = 15*q for q >= 1 (except q = 11 where the TIA coarse
+    lands at 163, not 165 -- reverse-engineered from Stella captures of the
+    ball at the 150/165 boundary), but only 3 for q = 0: the shortest
     divide path writes RESP before TIA cycle 23, so the object lands 3
     pixels right of the ideal q=0 base (0). This makes the routine render a
     player at P - 7 (q >= 1) or P - 4 (q = 0);
   * the ball appears 1 pixel left of a player for the same input;
   * PositionBall therefore passes ball_x + 8 (q >= 1) or ball_x + 5 (q = 0),
     and PositionPlayers passes X + 7 (q >= 1) or X + 4 (q = 0), so both
-    render at their requested pixel for every valid position.
+    render at their requested pixel for every valid position;
+  * at the 150/165 coarse boundary (ball_x >= 157), PositionBall adds +10
+    instead of +8 to compensate for the TIA's q=11 coarse being 163
+    instead of 165.
 """
 
 import sys
@@ -85,13 +89,20 @@ class PositioningModel:
         """Position of a player object given raw PosObject input pixel P.
 
         q = P // 15 is the number of complete 15-pixel steps; the RESP
-        strobe lands those at 15*q for q >= 1 and at 3 for q = 0 (the short
-        divide path writes RESP before TIA cycle 23).
+        strobe lands those at 15*q for q >= 1 (except q = 11 where the
+        TIA coarse lands at 163, not 165 -- reverse-engineered from
+        Stella frame captures) and at 3 for q = 0 (the short divide path
+        writes RESP before TIA cycle 23).
         """
         _, rem = self.divide_loop(p)
         s = (rem - 0xF1) & 0xFF          # s = P mod 15
         q = p // 15
-        coarse = 3 if q == 0 else 15 * q
+        if q == 0:
+            coarse = 3
+        elif q == 11:
+            coarse = 163                  # actual TIA coarse for q=11
+        else:
+            coarse = 15 * q
         return coarse + fine_shift(self.table[s])
 
     def player_rendered(self, p):
@@ -102,10 +113,16 @@ class PositioningModel:
         return self.rendered(pos)
 
     def ball_rendered(self, x):
-        """Rendered position of the ball whose desired left pixel is x."""
+        """Rendered position of the ball whose desired left pixel is x.
+
+        PositionBall adds +8 for most positions but +10 for ball_x >= 157
+        to compensate for the TIA's coarse=163 (not 165) at q_loop=12.
+        """
         pos = x + 8
         if pos < 15:
             pos = x + 5                  # q = 0 coarse base is 3, not 0
+        elif pos >= 165:
+            pos = x + 10                 # q_loop >= 12 compensation
         return self.rendered(pos) - 1    # ball renders 1 pixel left of a player
 
 
@@ -155,9 +172,13 @@ class TestDivideLoopRemainder(unittest.TestCase):
             self.assertEqual(q, p // 15 + 1, f"P={p}")
 
     def test_rendered_matches_measured_offsets(self):
-        # q >= 1 renders at P - 7; q = 0 renders at P - 4 (coarse base 3).
-        for p in range(15, 160):
+        # q >= 1 renders at P - 7 (except q=11 where coarse is 163 not 165);
+        # q = 0 renders at P - 4 (coarse base 3).
+        for p in range(15, 165):
             self.assertEqual(self.model.rendered(p), p - 7, f"P={p}")
+        for p in range(165, 180):
+            # q=11: coarse=163, so rendered = 163 + fine = p - 9
+            self.assertEqual(self.model.rendered(p), p - 9, f"P={p}")
         for p in range(4, 15):
             self.assertEqual(self.model.rendered(p), p - 4, f"P={p}")
 
@@ -170,12 +191,13 @@ class TestPlayerCompensation(unittest.TestCase):
 
     def test_player_renders_at_requested_pixel(self):
         # PositionPlayers passes X + 7 (or X + 4 for q = 0), cancelling the
-        # routine's P - 7 / P - 4 offsets.
-        for p in range(160):
+        # routine's P - 7 / P - 4 offsets.  Validated range: X <= 157
+        # (input <= 164, q <= 10) where the 15*q coarse model is confirmed.
+        for p in range(158):
             self.assertEqual(self.model.player_rendered(p), p, f"P={p}")
 
     def test_consecutive_positions_advance_one_pixel(self):
-        for p in range(159):
+        for p in range(157):
             self.assertEqual(self.model.player_rendered(p + 1) -
                              self.model.player_rendered(p),
                              1, f"transition {p} -> {p + 1}")

@@ -172,9 +172,11 @@ Reset:
     STA SWACNT              ; port A = all inputs (joysticks readable)
 
     ; Initial vertical positions (horizontal placement is fixed each frame)
-    LDA #PLAYER1_Y_INIT
+    ; P0Y is 1 scanline above P1Y to avoid triple-write conflicts
+    ; when both players and ball share the same row.
+    LDA #P0_Y_INIT
     STA P0Y
-    LDA #PLAYER2_Y_INIT
+    LDA #P1_Y_INIT
     STA P1Y
 
     ; Initial ball state: centered, moving down-right at 1 px/frame
@@ -229,8 +231,25 @@ StartOfFrame:
     LDA game_state           ; 3
     BEQ .menuState           ; 2/3  STATE_MENU -> skip gameplay, setup visuals
     ; ---- Playing state: full gameplay update ----
+    ; Round 13: pending_rally_reset triggers ResetRally at the start of
+    ; this frame's VBLANK, before gameplay updates.  The flag was set in
+    ; the previous frame's overscan (KO).
+    LDA pending_rally_reset  ; 3
+    BEQ .noPendingReset      ; 2/3  no rally reset pending
+    JSR ResetRally           ; 6+54  restore rally state (clears the flag)
+.noPendingReset:
     JSR UpdatePlayers       ; move both players vertically (see below)
     JSR UpdateBall          ; move the ball and bounce it off the arena edges
+    ; Round 14: goal detected in SCORE mode → ResetRally immediately,
+    ; before PositionPlayers/BuildEvents, so the visible frame already
+    ; shows the fresh rally state (centered players, center ball, HP
+    ; restored).  KO still uses the deferred path above (detected in
+    ; overscan, flag set for next frame's VBLANK start).
+    LDA pending_rally_reset ; 3
+    BEQ .noGoalReset        ; 2/3  no goal this frame
+    JSR ResetRally           ; 6+54  immediate rally reset (clears the flag)
+    JMP .positionAndBuild   ; 3   skip missiles; state is fresh
+.noGoalReset:
     JSR UpdateMissiles      ; fire, move and despawn both missiles
     JMP .positionAndBuild   ; 3
     ; ---- Menu state: set indicator colors, hide ball, show both paddles ---
@@ -361,9 +380,12 @@ WaitVBlank:
 ; same emulator cycle convention).  The beam reaches pixel p at cycle
 ; ~(p + 69)/3, so pixel 0 is reached at ~23.  Write 1 always lands before
 ; pixel 0; write 2 only lands before an object whose x >= 15.  The builder
-; therefore enforces the slot rule (ball is inserted first and M1 never merges
-; as slot 2), so slot 2 is always P0 (x=16), P1 (x=136) or M0 (x>=18).  See
-; the event kernel constants in constants.inc.
+; enforces the slot rule: ENAM1 must never be slot 2 (M1 x varies); ENABL
+; may be slot 2 only when ball_x >= 15.  When Ball and a player share a row,
+; they are reordered within the slot pair (no bump) based on ball_x:
+;   ball_x >= 15: player slot 1, ball slot 2
+;   ball_x <  15: ball slot 1, player slot 2
+; See the event kernel constants in constants.inc.
 ;
 ; Dummy entry: the table's first 5 bytes are all zeros (reg1 = reg2 = 0), so
 ; on the lines before the first event fires the apply writes both values to
@@ -593,6 +615,62 @@ HandleInput:
 ; (power cycle) clears RAM and starts in STATE_MENU via the Reset vector;
 ; this routine handles the software transition to gameplay.
 ; =============================================================================
+; =============================================================================
+; ResetRally (Round 13)
+;
+; Restores rally state for a new rally: HP, positions, ball, missiles,
+; and transient flags.  Does NOT touch scores — those are managed by the
+; caller (InitGame for game start, goal/KO handlers during gameplay).
+;
+; Called from: InitGame (game start), StartOfFrame (pending_rally_reset)
+; =============================================================================
+ResetRally:
+    LDA #PLAYER_START_HP
+    STA p0_hp
+    STA p1_hp
+    LDA #P0_Y_INIT
+    STA P0Y
+    LDA #P1_Y_INIT
+    STA P1Y
+    LDA #BALL_X_INIT
+    STA ball_x
+    LDA #BALL_Y_INIT
+    STA ball_y
+    ; Determine ball_dx from pending_rally_reset encoding:
+    ;   RALLY_RESET_KO (1) or RALLY_RESET_P1_GOAL (3) → DIR_RIGHT
+    ;   RALLY_RESET_P0_GOAL (2) → DIR_LEFT
+    LDX pending_rally_reset
+    CPX #RALLY_RESET_P0_GOAL
+    BEQ .rallyP0Goal
+    ; Default: DIR_RIGHT (covers KO and P1 goal)
+    LDA #DIR_RIGHT
+    JMP .rallySetDx
+.rallyP0Goal:
+    LDA #DIR_LEFT
+.rallySetDx:
+    STA ball_dx
+    LDA #DIR_DOWN
+    STA ball_dy
+    LDA #0
+    STA m_active
+    STA hit_flags
+    STA ball_contact_flags
+    STA fire_prev
+    STA pending_rally_reset
+    RTS
+
+; =============================================================================
+; InitGame (Round 12, updated Round 13)
+;
+; Transitions from STATE_MENU to STATE_PLAYING.  Reinitializes all gameplay
+; state (players, ball, missiles, HP) exactly like the power-on Reset, so
+; the game always starts clean regardless of what happened in the menu.
+; The selected game_mode is preserved.  Scores are reset to 0-0.
+;
+; Called once when RESET is pressed on the menu screen.  The hardware RESET
+; (power cycle) clears RAM and starts in STATE_MENU via the Reset vector;
+; this routine handles the software transition to gameplay.
+; =============================================================================
 InitGame:
     ; Restore all colors to gameplay defaults (menu may have changed
     ; COLUP0 for the mode indicator and COLUPF to hide the ball).
@@ -603,37 +681,13 @@ InitGame:
     LDA #BALL_COLOR
     STA COLUPF               ; ball + missiles share this color
 
-    ; Restore HP (menu must not have touched it, but be safe)
-    LDA #PLAYER_START_HP
-    STA p0_hp
-    STA p1_hp
-
-    ; Initialize player positions
-    LDA #PLAYER1_Y_INIT
-    STA P0Y
-    LDA #PLAYER2_Y_INIT
-    STA P1Y
-
-    ; Initialize ball state
-    LDA #BALL_X_INIT
-    STA ball_x
-    LDA #BALL_Y_INIT
-    STA ball_y
-    LDA #DIR_RIGHT
-    STA ball_dx
-    LDA #DIR_DOWN
-    STA ball_dy
-
-    ; Clear missile state
+    ; Reset scores (game start only; not touched during rally resets)
     LDA #0
-    STA m_active
+    STA score_p0
+    STA score_p1
 
-    ; Clear fire input state (first frame sync handles the real button state)
-    STA fire_prev
-
-    ; Clear collision flags
-    STA hit_flags
-    STA ball_contact_flags
+    ; Reset rally state (HP, positions, ball, missiles, flags)
+    JSR ResetRally
 
     ; Transition to playing state
     LDA #STATE_PLAYING
@@ -720,7 +774,10 @@ UpdatePlayers:
 ; ball_y .. ball_y + BALL_HEIGHT - 1).
 ; =============================================================================
 UpdateBall:
-    ; ---- Horizontal bounce (reverse at the exact left/right edges) ----
+    ; ---- Game mode check: SCORE mode uses goal detection instead of bounce ---
+    LDA game_mode            ; 3
+    BNE .scoreHorizontal     ; 2/3  SCORE mode → goal check instead of bounce
+    ; ---- DUEL mode: original horizontal bounce (unchanged) ----
     LDA ball_x              ; 3
     CMP #BALL_X_MAX         ; 2   at the right edge?
     BNE .noRight            ; 2/3
@@ -733,8 +790,44 @@ UpdateBall:
     LDA #DIR_RIGHT          ; 2
     STA ball_dx             ; 3
 .noLeft:
+    JMP .verticalBounce     ; 3
 
-    ; ---- Vertical bounce (reverse at the exact top/bottom edges) ------
+.scoreHorizontal:
+    ; ---- SCORE mode: check for goal instead of horizontal bounce ----
+    ; Goal: ball exits the arena past the opponent's side.
+    ;   ball_dx positive (moving right) + ball_x == BALL_X_MAX -> P0 scores
+    ;   ball_dx negative (moving left)  + ball_x == BALL_X_MIN -> P1 scores
+    ; On goal: increment score, set pending_rally_reset, kill missiles,
+    ; skip movement.  ResetRally executes in the same VBLANK (before
+    ; PositionPlayers/BuildEvents) so no transitional frame is rendered.
+    LDA ball_dx             ; 3
+    BMI .scoreCheckLeft     ; 2/3  moving left ($FF)
+    ; Moving right: check right edge
+    LDA ball_x              ; 3
+    CMP #BALL_X_MAX         ; 2   at the right edge?
+    BNE .verticalBounce     ; 2/3  not at edge → no goal, continue normally
+    ; Goal! Ball exited right → P0 scores
+    INC score_p0            ; 5
+    LDA #RALLY_RESET_P0_GOAL ; 2  P0 scored → DIR_LEFT toward P0
+    STA pending_rally_reset ; 3
+    LDA #0                  ; 2
+    STA m_active            ; 3   kill existing missiles → no TIA latches
+    JMP .done               ; 3   skip movement (rally ends this frame)
+
+.scoreCheckLeft:
+    LDA ball_x              ; 3
+    CMP #BALL_X_MIN         ; 2   at the left edge?
+    BNE .verticalBounce     ; 2/3  not at edge → no goal
+    ; Goal! Ball exited left → P1 scores
+    INC score_p1            ; 5
+    LDA #RALLY_RESET_P1_GOAL ; 2  P1 scored → DIR_RIGHT toward P1
+    STA pending_rally_reset ; 3
+    LDA #0                  ; 2
+    STA m_active            ; 3   kill existing missiles
+    JMP .done               ; 3   skip movement
+
+.verticalBounce:
+    ; ---- Vertical bounce (both modes, unchanged) ----
     LDA ball_y              ; 3
     CMP #BALL_Y_MAX         ; 2   at the bottom edge?
     BNE .noBottom           ; 2/3
@@ -757,6 +850,7 @@ UpdateBall:
     CLC                     ; 2
     ADC ball_dy             ; 3
     STA ball_y              ; 3
+.done:
     RTS                     ; 6
 
 ; =============================================================================
@@ -1164,6 +1258,28 @@ reboundTbl:
 ; =============================================================================
     ALIGN 256
 ProcessHitEffects:
+    ; ---- SCORE mode: check if a goal already ended the rally ----
+    ; When pending_rally_reset is set (goal scored in UpdateBall), skip
+    ; damage processing.  The rally will be reset in the next frame's
+    ; VBLANK.  Pad the skip path to maintain overscan WSYNC alignment.
+    LDA game_mode           ; 3
+    BEQ .processDamage      ; 2/3  DUEL → always process damage
+    LDA pending_rally_reset ; 3
+    BEQ .processDamage      ; 2/3  no goal → process damage normally
+    ; Goal already scored this rally: skip damage, pad for timing, fireLock.
+    ; The pad (8 NOPs = 16 cycles) ensures the first overscan WSYNC write
+    ; lands inside the (K+304, K+380) alignment window.
+    NOP                     ; 2
+    NOP                     ; 2
+    NOP                     ; 2
+    NOP                     ; 2
+    NOP                     ; 2
+    NOP                     ; 2
+    NOP                     ; 2
+    NOP                     ; 2
+    JMP .fireLock           ; 3
+
+.processDamage:
     ; ---- P0 damage: HIT_P0 set and P0 alive -> lose one HP ----
     LDA hit_flags           ; 3
     AND #HIT_P0             ; 2
@@ -1180,6 +1296,28 @@ ProcessHitEffects:
     BEQ .p1After            ; 2/3  already dead: ignore further hits
     DEC p1_hp               ; 5
 .p1After:
+    ; ---- SCORE mode: KO detection (P0-first priority, max 1 point/rally) ----
+    ; Only in SCORE mode.  P0 is checked first; if P0 is KO'd, P1 scores
+    ; and P1 is NOT checked (P0-first priority ensures exactly 1 point).
+    LDA game_mode           ; 3
+    BEQ .fireLock           ; 2/3  DUEL → no KO scoring
+    ; Check P0 KO (HP == 0 after damage)
+    LDA p0_hp               ; 3
+    BNE .p0AliveKo          ; 2/3  alive → skip P0 KO
+    ; P0 KO'd → P1 scores
+    INC score_p1            ; 5
+    LDA #RALLY_RESET_KO     ; 2
+    STA pending_rally_reset ; 3
+    JMP .fireLock           ; 3   P0 KO processed; P1 NOT checked (priority)
+.p0AliveKo:
+    ; Check P1 KO (only if P0 is alive)
+    LDA p1_hp               ; 3
+    BNE .fireLock           ; 2/3  alive → no KO
+    ; P1 KO'd → P0 scores
+    INC score_p0            ; 5
+    LDA #RALLY_RESET_KO     ; 2
+    STA pending_rally_reset ; 3
+.fireLock:
     ; ---- dead-player fire lock (branchless) ----
     LDA p0_hp               ; 3
     CLC                     ; 2
@@ -1263,6 +1401,14 @@ PositionBall:
     SEC                     ; 2
     SBC #3                  ; 2   q = 0 compensation (ball_x + 5)
 PositionBallOk:
+    ; At q_loop >= 12 (input >= 165, ball_x >= 157) the TIA RESP strobe
+    ; lands the ball at coarse 163, not 165 as the model predicts.  Add
+    ; +2 more to compensate so the rendered position stays monotonic.
+    CMP #165                ; 2   input >= 165  <=>  ball_x >= 157
+    BCC PositionBallReady   ; 2/3
+    CLC                     ; 2
+    ADC #2                  ; 2   input += 2  (ball_x + 10 total)
+PositionBallReady:
     LDX #4                  ; 2   object 4 = ball
     JSR PosObject           ; 6
     RTS                     ; 6
@@ -1386,14 +1532,12 @@ BuildEvents:
     ; sorted order: AppendEvent (below) appends at the end in the common case
     ; (no shift) and only occasionally shifts a small suffix.
     ;
-    ; nullDelta doubles as the active-object mask (bit set = the object still
-    ; has an event to emit) and evCnt doubles as the ON-pending mask (bit set =
-    ; its ON is still due).  Both are dead during the build: ConvertDeltas
-    ; rewrites nullDelta right after, and the kernel primes evCnt only after
-    ; BuildEvents returns.  The ball is scanned FIRST with a strict "<" update,
-    ; so it wins row ties and is inserted before the tied object: at a shared
-    ; row the ball keeps slot 1 and the other object takes slot 2 (legal for
-    ; P0/P1/M0; AppendEvent bumps M1 to row+1).
+    ; Selection scan order: P0 → P1 → Ball → M0 → M1.  Players are scanned
+    ; before the ball so that when they share a row, the player wins slot 1
+    ; and the ball is bumped to row+1.  The ball is 3 pixels tall; a
+    ; 1-scanline shift is invisible.  Paddles are 18 pixels tall; a
+    ; 1-scanline shift is clearly visible.  The AppendEvent slot rule still
+    ; prevents ENABL/ENAM1 from occupying slot 2.
     LDA #OBJ_BALL_BIT         ; 2   the ball is always rendered
     STA nullDelta             ; 3   activeMask
     LDA m_active              ; 3
@@ -1432,61 +1576,7 @@ BuildEvents:
 .doSelection:
     LDA #$FF                  ; 2
     STA evRow                 ; 3   running minimum row = $FF
-    ; ---- Ball (bit 4): scanned first so it wins row ties (keeps slot 1) ----
-    LDA nullDelta             ; 3
-    AND #OBJ_BALL_BIT         ; 2
-    BEQ .scanM1               ; 2/3
-    LDA evCnt                 ; 3   ON still pending?
-    AND #OBJ_BALL_BIT         ; 2
-    BNE .ballOnCand           ; 2/3
-    LDA ball_y                ; 3   OFF candidate
-    CLC                       ; 2
-    ADC #BALL_HEIGHT          ; 2
-    JMP .ballCand             ; 3
-.ballOnCand:
-    LDA ball_y                ; 3   ON candidate
-.ballCand:
-    CMP evRow                 ; 3
-    BCS .scanM1               ; 2/3
-    STA evRow                 ; 3
-    LDX #4                    ; 2   candidate: Ball
-.scanM1:
-    LDA nullDelta             ; 3
-    AND #OBJ_M1_BIT           ; 2
-    BEQ .scanM0               ; 2/3
-    LDA evCnt                 ; 3
-    AND #OBJ_M1_BIT           ; 2
-    BNE .m1OnCand             ; 2/3
-    LDA m1_y                  ; 3   OFF candidate
-    CLC                       ; 2
-    ADC #MISSILE_HEIGHT       ; 2
-    JMP .m1Cand               ; 3
-.m1OnCand:
-    LDA m1_y                  ; 3   ON candidate
-.m1Cand:
-    CMP evRow                 ; 3
-    BCS .scanM0               ; 2/3
-    STA evRow                 ; 3
-    LDX #0                    ; 2   candidate: M1
-.scanM0:
-    LDA nullDelta             ; 3
-    AND #OBJ_M0_BIT           ; 2
-    BEQ .scanP0               ; 2/3
-    LDA evCnt                 ; 3
-    AND #OBJ_M0_BIT           ; 2
-    BNE .m0OnCand             ; 2/3
-    LDA m0_y                  ; 3   OFF candidate
-    CLC                       ; 2
-    ADC #MISSILE_HEIGHT       ; 2
-    JMP .m0Cand               ; 3
-.m0OnCand:
-    LDA m0_y                  ; 3   ON candidate
-.m0Cand:
-    CMP evRow                 ; 3
-    BCS .scanP0               ; 2/3
-    STA evRow                 ; 3
-    LDX #1                    ; 2   candidate: M0
-.scanP0:
+    ; ---- P0 (bit 2): scanned before Ball so players win row ties ----
     LDA nullDelta             ; 3
     AND #OBJ_P0_BIT           ; 2
     BEQ .scanP1               ; 2/3
@@ -1507,7 +1597,7 @@ BuildEvents:
 .scanP1:
     LDA nullDelta             ; 3
     AND #OBJ_P1_BIT           ; 2
-    BEQ .emitObj              ; 2/3
+    BEQ .scanBall             ; 2/3
     LDA evCnt                 ; 3
     AND #OBJ_P1_BIT           ; 2
     BNE .p1OnCand             ; 2/3
@@ -1519,9 +1609,66 @@ BuildEvents:
     LDA P1Y                   ; 3   ON candidate
 .p1Cand:
     CMP evRow                 ; 3
-    BCS .emitObj              ; 2/3
+    BCS .scanBall             ; 2/3
     STA evRow                 ; 3
     LDX #3                    ; 2   candidate: P1
+.scanBall:
+    ; ---- Ball (bit 4): scanned AFTER players so players win row ties ----
+    ; When Ball and a player share a row, they are reordered within the slot
+    ; pair based on ball_x (no bump).  See AppendEvent .sameRow.
+    LDA nullDelta             ; 3
+    AND #OBJ_BALL_BIT         ; 2
+    BEQ .scanM0               ; 2/3
+    LDA evCnt                 ; 3   ON still pending?
+    AND #OBJ_BALL_BIT         ; 2
+    BNE .ballOnCand           ; 2/3
+    LDA ball_y                ; 3   OFF candidate
+    CLC                       ; 2
+    ADC #BALL_HEIGHT          ; 2
+    JMP .ballCand             ; 3
+.ballOnCand:
+    LDA ball_y                ; 3   ON candidate
+.ballCand:
+    CMP evRow                 ; 3
+    BCS .scanM0               ; 2/3
+    STA evRow                 ; 3
+    LDX #4                    ; 2   candidate: Ball
+.scanM0:
+    LDA nullDelta             ; 3
+    AND #OBJ_M0_BIT           ; 2
+    BEQ .scanM1               ; 2/3
+    LDA evCnt                 ; 3
+    AND #OBJ_M0_BIT           ; 2
+    BNE .m0OnCand             ; 2/3
+    LDA m0_y                  ; 3   OFF candidate
+    CLC                       ; 2
+    ADC #MISSILE_HEIGHT       ; 2
+    JMP .m0Cand               ; 3
+.m0OnCand:
+    LDA m0_y                  ; 3   ON candidate
+.m0Cand:
+    CMP evRow                 ; 3
+    BCS .scanM1               ; 2/3
+    STA evRow                 ; 3
+    LDX #1                    ; 2   candidate: M0
+.scanM1:
+    LDA nullDelta             ; 3
+    AND #OBJ_M1_BIT           ; 2
+    BEQ .emitObj              ; 2/3
+    LDA evCnt                 ; 3
+    AND #OBJ_M1_BIT           ; 2
+    BNE .m1OnCand             ; 2/3
+    LDA m1_y                  ; 3   OFF candidate
+    CLC                       ; 2
+    ADC #MISSILE_HEIGHT       ; 2
+    JMP .m1Cand               ; 3
+.m1OnCand:
+    LDA m1_y                  ; 3   ON candidate
+.m1Cand:
+    CMP evRow                 ; 3
+    BCS .emitObj              ; 2/3
+    STA evRow                 ; 3
+    LDX #0                    ; 2   candidate: M1
 .emitObj:
     CPX #4                    ; 2   dispatch on the smallest event
     BEQ .emitBall             ; 2/3
@@ -1672,11 +1819,15 @@ BuildEvents:
 ; end) and:
 ;   * entry row < new row: write the new entry at the marker position (no
 ;     shift in the common case), fresh marker 5 bytes on;
-;   * entry row == new row: merge the new event as its slot 2 - UNLESS the new
-;     event is the ball or M1 (register ENABL or ENAM1), which must never be
-;     slot 2 (their x can be below 15, the deadline for the second pending
-;     write), or the entry is already a double.  In those cases the event's
-;     row is bumped to row+1 and the scan continues from the next entry;
+;   * entry row == new row: merge the new event as its slot 2 - UNLESS the
+;     event is already a double, the new event is ENAM1 (M1 x can be < 15),
+;     or the new event is ENABL and ball_x < 15 (the beam reaches pixel 15
+;     at cycle ~28, but slot 2 writes at cycle 27).  When the existing entry
+;     has ENABL in slot 1 and the new event is a player, the two are swapped:
+;     player -> slot 2 (always safe, player x=16), ball -> slot 1 (always
+;     safe).  When the new event is ENABL and ball_x < 15 and the existing
+;     entry is a player, they are also swapped: player -> slot 2, ball -> slot
+;     1.  Otherwise the event's row is bumped to row+1.
 ;   * entry row > new row: step one entry back.
 ;
 ; A table entry never holds three writes (that would break the 76-cycle kernel
@@ -1767,10 +1918,77 @@ AppendEvent:
 .sameRow:
     LDA evTbl+3,Y           ; 4   reg2 of the same-row entry
     BNE .bumpRow            ; 2/3  already a double -> bump the new event
-    CPX #EV_REG_ENABL       ; 2   the ball must never be slot 2
-    BEQ .bumpRow            ; 2/3
+    ; ---- slot-2 register safety check ----
+    ; Slot 2 writes at cycle 27; the beam reaches pixel p at ~(p+69)/3, so
+    ; pixel 15 at cycle ~28.  An object with x >= 15 is safe in slot 2.
+    ; Players are always at x=16 (safe).  ENABL depends on ball_x.
+    ; ENAM1 can be at any x (M1 x varies) so it is never slot 2.
     CPX #EV_REG_ENAM1       ; 2   M1 must never be slot 2 (x can be < 15)
     BEQ .bumpRow            ; 2/3
+    CPX #EV_REG_ENABL       ; 2   is the NEW event the ball?
+    BEQ .ballNewSameRow     ; 2/3  -> check ball_x for slot-2 safety
+    ; ---- new event is NOT the ball; check if the EXISTING entry is ENABL ----
+    LDA evTbl+1,Y           ; 4   reg1 of the existing entry
+    CMP #EV_REG_ENABL       ; 2
+    BNE .normalMerge        ; 2/3  neither is ENABL -> safe to merge as slot 2
+    ; ---- existing entry has ENABL in slot 1, new event is a player ----
+    ; Swap: player -> slot 1, ball -> slot 2.  Player x=16 is always safe
+    ; for slot 2.  Ball goes to slot 1 (always safe).
+    LDA ball_x              ; 3
+    CMP #15                 ; 2   ball_x >= 15 -> ball safe in slot 2
+    BCS .swapEnabl          ; 2/3  -> swap (ball to slot 2, player to slot 1)
+    ; ball_x < 15: ball cannot go to slot 2, but player CAN go to slot 2.
+    ; Swap: player -> slot 1, ball -> slot 2 would put ball in slot 2 (unsafe).
+    ; Instead: player -> slot 1 (overwrite, no change), ball -> slot 2 is
+    ; unsafe.  But player x=16 IS safe for slot 2, so we can just put the
+    ; player in slot 1 and the ball in slot 2... wait, ball_x < 15 means
+    ; ball CANNOT be slot 2.  So: put player in slot 1, ball in slot 1?
+    ; No - the existing entry already has ENABL in slot 1.
+    ; Correct: put the PLAYER in slot 1 (overwrite ENABL), put ball in slot 2.
+    ; But ball_x < 15 means slot 2 write arrives too late for the ball.
+    ; The ball is 3 pixels wide; the write at cycle 27 reaches the beam at
+    ; pixel ~12 (cycle 27 -> ~(12+69)/3 = 27).  For ball_x < 15 the beam
+    ; has already passed the ball's left edge.  We must put the ball in slot 1.
+    ; Player x=16 IS safe for slot 2.  So: ball -> slot 1, player -> slot 2.
+    ; This means: overwrite slot 1 with player (wrong!), put ball in slot 2.
+    ; Actually we need: slot 1 = ENABL (ball), slot 2 = GRP (player).
+    ; The existing entry has ENABL in slot 1 already.  We just need to add
+    ; the player as slot 2.  Player x=16 is safe for slot 2.  Done!
+    JMP .normalMerge        ; 3   merge player into slot 2 (safe: player x=16)
+.ballNewSameRow:
+    LDA ball_x              ; 3
+    CMP #15                 ; 2   ball_x >= 15 -> safe to merge as slot 2
+    BCS .normalMerge        ; 2/3  -> merge ball into slot 2
+    ; ball_x < 15: ball cannot be slot 2.  Check if existing entry has a
+    ; player: swap ball to slot 1, player to slot 2 (player x=16 always safe).
+    LDA evTbl+1,Y           ; 4   reg1 of the existing entry
+    CMP #EV_REG_ENABL       ; 2
+    BEQ .bumpRow            ; 2/3  both ENABL: impossible (ball is single), bump
+    ; Existing entry is a player.  Swap: player -> slot 2, ball -> slot 1.
+    ; Player x=16 is always safe for slot 2.
+.swapEnabl:
+    PLA                     ; 4   register index (ENABL)
+    STA tempSwap            ; 3   save ball's register temporarily
+    PLA                     ; 4   value (BALL_ENABLE)
+    ; Read the existing player entry from the table
+    PHA                     ; 4   push ball's value (will go to slot 1)
+    LDA evTbl+2,Y           ; 4   player's value
+    PHA                     ; 4   push player's value (will go to slot 2)
+    LDA evTbl+1,Y           ; 4   player's register
+    PHA                     ; 4   push player's register (will go to slot 2)
+    ; Write ball to slot 1 (overwrite the player's register)
+    LDA tempSwap            ; 3   ball's register (ENABL)
+    STA evTbl+1,Y           ; 4   slot 1 reg = ENABL
+    PLA                     ; 4   player's register
+    STA evTbl+3,Y           ; 4   slot 2 reg = player's register
+    PLA                     ; 4   player's value
+    STA evTbl+4,Y           ; 4   slot 2 val = player's value
+    PLA                     ; 4   ball's value
+    STA evTbl+2,Y           ; 4   slot 1 val = BALL_ENABLE
+    LDA evRow               ; 3   restore row (clobbered by tempSwap load)
+    STA evTbl,Y             ; 4   row (unchanged, but restore for correctness)
+    RTS                     ; 6
+.normalMerge:
     ; ---- merge the new event into the same-row single as its slot 2 ----
     PLA                     ; 4   register index
     STA evTbl+3,Y           ; 4   reg2
@@ -1788,11 +2006,13 @@ AppendEvent:
     TAY                     ; 2
     LDA evTbl,Y             ; 4   its row ($FF if it is the marker)
     CMP #EV_MARKER_ROW      ; 2
-    BEQ .writeEntry         ; 2/3  next is the marker -> append the bumped event
+    BEQ .bumpToWrite        ; 2/3  next is the marker -> append the bumped event
     CMP evRow               ; 3
     BEQ .sameRow            ; 2/3  bumped row == next row -> merge/bump again
     ; next row > bumped row -> insert the bumped event before it (at Y)
     ; fall through into insertMid
+.bumpToWrite:
+    JMP .writeEntry         ; 3
 .insertMid:
     ; ---- shift the suffix from Y up by 5, then write the entry at Y ----
     JSR ShiftBy5            ; 6   Y preserved; shifts the marker + suffix
@@ -2026,6 +2246,16 @@ reset_prev  DS 1            ; previous RESET switch bit for edge detection
 swchb_cur   DS 1            ; current frame SWCHB snapshot (HandleInput)
 reset_held  DS 1            ; nonzero while RESET is held in menu
 
+; SCORE mode state (Round 13).  score_p0/score_p1 track the score for each
+; player; both start at 0 when a SCORE game begins.  pending_rally_reset is
+; set when a rally ends (goal or KO) and triggers ResetRally at the start of
+; the NEXT frame's VBLANK.  This defers the rally reset out of the overscan
+; (where timing is critical) and out of UpdateBall (where it would interfere
+; with missile state).  The flag is cleared by ResetRally.
+score_p0     DS 1            ; SCORE mode: Player 0 score (0..255)
+score_p1     DS 1            ; SCORE mode: Player 1 score (0..255)
+pending_rally_reset DS 1     ; SCORE mode: set on goal/KO, cleared by ResetRally
+
 ; Event table: 5-byte dummy at offset 0 (all-zero regs so the kernel's
 ; pre-first-event apply writes only AUDV0), then up to EV_MAX_EVENTS real
 ; 5-byte entries, then the 5-byte marker.  Deltas are gaps to the NEXT event
@@ -2036,6 +2266,7 @@ evTbl       DS EV_TBL_SIZE  ; dummy + entries + end-marker (60 bytes, constants.
 ; across the insert and convert phases).
 evRow       DS 1            ; InsertEvent: event row  /  ConvertDeltas: row
 tempCount   DS 1            ; InsertEvent: shift point / ConvertDeltas: prevRow
+tempSwap    DS 1            ; AppendEvent: ball value during slot swap
 tblLen      DS 1            ; number of real entries in the table
 
 nullDelta   DS 1            ; first event's delta (row_1, or 185 when empty)

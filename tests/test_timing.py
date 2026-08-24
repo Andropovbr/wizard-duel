@@ -119,8 +119,11 @@ class TestFrameConstants(unittest.TestCase):
         self.assertEqual(self.c.get("PLAYER_Y_MIN"), 0)
         self.assertEqual(self.c.get("PLAYER1_X"), 16)
         self.assertEqual(self.c.get("PLAYER2_X"), 136)
-        self.assertEqual(self.c.get("PLAYER1_Y_INIT"), 48)
-        self.assertEqual(self.c.get("PLAYER2_Y_INIT"), 128)
+        # PLAYER_Y_INIT = (KERNEL_SCANLINES - PLAYER_HEIGHT) / 2 = 83
+        # P0 is 1 scanline above center, P1 is at center.
+        self.assertEqual(self.c.get("PLAYER_Y_INIT"), 83)
+        self.assertEqual(self.c.get("P0_Y_INIT"), 82)
+        self.assertEqual(self.c.get("P1_Y_INIT"), 83)
 
 
 class TestKernelCycleBudget(unittest.TestCase):

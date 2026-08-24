@@ -163,10 +163,14 @@ class CollisionHarness:
         self.set_buttons(False, False)
         self.run_frame()
         # Simulate RESET falling edge: press then release.
-        self.cpu.riot[2] = 0x00                        # press RESET
+        self.cpu.riot[2] = 0x00                        # press RESET (+ SELECT artifact)
         self.run_frame()                                # reset_held set, still menu
         self.cpu.riot[2] = 0x03                        # release RESET
         self.run_frame()                                # InitGame + playing
+        # Force DUEL mode: the RESET+SELECT artifact above toggles game_mode
+        # to 1 (SCORE) via a spurious SELECT edge.  The harness simulates
+        # two-player DUEL, so game_mode must be 0.
+        self.cpu.ram[self._ram("game_mode")] = 0
 
     def fire_m0(self):
         self.set_buttons(True, False)

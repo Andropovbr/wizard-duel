@@ -34,18 +34,19 @@ EV_REG_ENAM0, EV_REG_ENAM1, EV_REG_ENABL = 3, 4, 5
 EV_MARKER_ROW = 0xFF
 EV_MARKER_VAL = 0xFF
 
-# Object dispatch codes and the BuildEvents scan order (Round 10 write-slot
-# rule): the ball is scanned first so it wins row ties and keeps slot 1, then
-# M1 before M0 before P0 before P1.
+# Object dispatch codes and the BuildEvents scan order (Round 14 write-slot
+# rule): players are scanned first so they win row ties and keep slot 1; the
+# ball is scanned after players, then M0, then M1.
 OBJ_M1, OBJ_M0, OBJ_P0, OBJ_P1, OBJ_BALL = 0, 1, 2, 3, 4
-SCAN_ORDER = (OBJ_BALL, OBJ_M1, OBJ_M0, OBJ_P0, OBJ_P1)
+SCAN_ORDER = (OBJ_P0, OBJ_P1, OBJ_BALL, OBJ_M0, OBJ_M1)
 
 # Offset of the first real entry (the dummy occupies table bytes 0..4; its
 # delta byte is the EV_MARKER_ROW sentinel so the builder back-scan stops there).
 ENTRY0 = 5
 
 
-def scene(p0y, p1y, by, m0y, m1y, m0a, m1a, p0_alive=True, p1_alive=True):
+def scene(p0y, p1y, by, m0y, m1y, m0a, m1a, p0_alive=True, p1_alive=True,
+          ball_x=80):
     """Return (active, objects) for a scene.
 
     Objects are keyed by dispatch code; each is (y, height, reg, on_val).
@@ -56,6 +57,7 @@ def scene(p0y, p1y, by, m0y, m1y, m0a, m1a, p0_alive=True, p1_alive=True):
         OBJ_P0: (p0y, 18, EV_REG_GRP0, 0x3C),     # PLAYER_HEIGHT/PADDLE_BITS
         OBJ_P1: (p1y, 18, EV_REG_GRP1, 0x3C),
         OBJ_BALL: (by, ball_h, EV_REG_ENABL, 0x02),  # BALL_HEIGHT/BALL_ENABLE
+        "_ball_x": ball_x,
     }
     active = set()
     if p0_alive:
@@ -80,6 +82,7 @@ def build(active, objects, kernel_lines=185, max_events=10):
     byte table (dummy at offset 0, entries from ENTRY0, marker at the end)
     and the prime delta nullDelta.
     """
+    ball_x = objects.get("_ball_x", 80)
     # Dummy (delta byte = EV_MARKER_ROW back-scan sentinel, regs all zero)
     # followed by the marker.
     table = [EV_MARKER_ROW, 0, 0, 0, 0, EV_MARKER_VAL, 0, 0, 0, 0]
@@ -98,15 +101,17 @@ def build(active, objects, kernel_lines=185, max_events=10):
                 best_row = cand
         y, height, reg, val = objects[best]
         if best in on_pending:
-            _append(table, best_row, reg, val, kernel_lines, max_events)
+            _append(table, best_row, reg, val, kernel_lines, max_events,
+                    ball_x)
             on_pending.discard(best)
         else:
-            _append(table, best_row, reg, 0, kernel_lines, max_events)
+            _append(table, best_row, reg, 0, kernel_lines, max_events,
+                    ball_x)
             active_mask.discard(best)
     return _convert(table, kernel_lines)
 
 
-def _append(table, row, reg, val, kernel_lines, max_events):
+def _append(table, row, reg, val, kernel_lines, max_events, ball_x=80):
     """AppendEvent: append/merge/bump an event into the flat table.
 
     The table is a byte list of 5-byte entries (dummy at offset 0, real
@@ -128,8 +133,8 @@ def _append(table, row, reg, val, kernel_lines, max_events):
             table[off + 5:off + 5] = [row, reg, val, 0, 0]
             return
         if cur == row:
-            if table[off + 3] != 0 or reg in (EV_REG_ENABL, EV_REG_ENAM1):
-                # double, or a forbidden slot-2 register: bump to row+1
+            if table[off + 3] != 0:
+                # already a double -> bump the new event
                 row += 1
                 if row >= kernel_lines:
                     return
@@ -138,7 +143,63 @@ def _append(table, row, reg, val, kernel_lines, max_events):
                     table[off + 5:off + 5] = [row, reg, val, 0, 0]
                     return
                 continue
-            table[off + 3] = reg      # merge as slot 2
+            # entry is a single: check slot-2 safety
+            if reg == EV_REG_ENAM1:
+                # M1 must never be slot 2 (x varies, can be < 15)
+                row += 1
+                if row >= kernel_lines:
+                    return
+                i += 1
+                if i >= n_real:
+                    table[off + 5:off + 5] = [row, reg, val, 0, 0]
+                    return
+                continue
+            existing_reg1 = table[off + 1]
+            if reg == EV_REG_ENABL:
+                # new event is the ball
+                if ball_x >= 15:
+                    # safe to merge ball into slot 2
+                    table[off + 3] = reg
+                    table[off + 4] = val
+                    return
+                # ball_x < 15: ball cannot be slot 2
+                if existing_reg1 == EV_REG_ENABL:
+                    # both ENABL: impossible (ball is single), bump
+                    row += 1
+                    if row >= kernel_lines:
+                        return
+                    i += 1
+                    if i >= n_real:
+                        table[off + 5:off + 5] = [row, reg, val, 0, 0]
+                        return
+                    continue
+                # existing entry is a player: swap
+                # ball -> slot 1, player -> slot 2 (player x=16 always safe)
+                player_reg = table[off + 1]
+                player_val = table[off + 2]
+                table[off + 1] = EV_REG_ENABL   # ball reg -> slot 1
+                table[off + 2] = val             # ball val -> slot 1
+                table[off + 3] = player_reg      # player reg -> slot 2
+                table[off + 4] = player_val      # player val -> slot 2
+                return
+            # new event is NOT the ball
+            if existing_reg1 == EV_REG_ENABL:
+                # existing entry has ball in slot 1, new event is a player
+                if ball_x >= 15:
+                    # ball safe in slot 2: swap player to slot 1, ball to slot 2
+                    ball_val = table[off + 2]
+                    table[off + 1] = reg         # player reg -> slot 1
+                    table[off + 2] = val         # player val -> slot 1
+                    table[off + 3] = EV_REG_ENABL  # ball reg -> slot 2
+                    table[off + 4] = ball_val    # ball val -> slot 2
+                    return
+                # ball_x < 15: ball must stay in slot 1, player -> slot 2
+                # player x=16 is safe for slot 2
+                table[off + 3] = reg
+                table[off + 4] = val
+                return
+            # neither is ENABL: safe to merge as slot 2
+            table[off + 3] = reg
             table[off + 4] = val
             return
         i -= 1                        # entry row > new row: step back
@@ -214,52 +275,49 @@ class TestBuilderBasics(unittest.TestCase):
                          [48, 52, 56, 66, 128, 132, 136, 142, 144, 146])
 
     def test_same_row_events_merge(self):
-        # Ball ON, P0 ON and P1 ON on the same row.  The ball is scanned first
-        # with a strict "<", so it wins the row tie and keeps slot 1; P0 (the
-        # next scanned, x >= 15) merges into slot 2; P1 is bumped to row+1.
+        # P0 ON, P1 ON and Ball ON on the same row.  Players are scanned first
+        # so P0 wins slot 1, P1 merges into slot 2; Ball sees a double entry
+        # and is bumped to row+1.  Ball_x=80 (default, >= 15) so if the entry
+        # were a single, Ball could merge as slot 2 — but with two writes
+        # already, it must bump.
         active, objects = scene(128, 128, 128, 0, 0, False, False)
         table, nd = build(active, objects)
         rows = table_rows(table, nd)
         self.assertEqual(rows, [128, 129, 130, 146])
-        # entry 0 is a double with the ball first (slot 1), then P0
+        # entry 0 is a double with P0 first (slot 1), then P1
         d, reg1, val1, reg2, val2 = next(entries(table))
-        self.assertEqual((reg1, val1), (EV_REG_ENABL, 0x02))   # Ball ON
-        self.assertEqual((reg2, val2), (EV_REG_GRP0, 0x3C))    # P0 ON
+        self.assertEqual((reg1, val1), (EV_REG_GRP0, 0x3C))   # P0 ON
+        self.assertEqual((reg2, val2), (EV_REG_GRP1, 0x3C))   # P1 ON
         self.assertEqual(fire_rows(table, nd), [128, 129, 130, 146])
 
     def test_non_ball_merge_keeps_scan_order(self):
-        # P0, P1 and M0 all ON at 48, ball at 142.  M0 is scanned before P0,
-        # so M0 (x >= 15) is slot 1 and P0 slot 2 on row 48; P1 is bumped to
-        # 49.  The OFF events merge the same way on row 60.
+        # P0, P1 and M0 all ON at 48, ball at 142.  P0 is scanned first, so
+        # P0 is slot 1 and P1 (next player scanned) merges into slot 2; M0 is
+        # bumped to 49.  The OFF events merge the same way on row 60.
         active, objects = scene(48, 48, 142, 48, 0, True, False)
         table, nd = build(active, objects)
         rows = table_rows(table, nd)
         self.assertEqual(rows, [48, 49, 52, 66, 142, 144])
         d, reg1, val1, reg2, val2 = next(entries(table))
-        self.assertEqual((reg1, val1), (EV_REG_ENAM0, 0x02))   # M0 ON slot 1
-        self.assertEqual((reg2, val2), (EV_REG_GRP0, 0x3C))    # P0 ON slot 2
+        self.assertEqual((reg1, val1), (EV_REG_GRP0, 0x3C))   # P0 ON slot 1
+        self.assertEqual((reg2, val2), (EV_REG_GRP1, 0x3C))   # P1 ON slot 2
 
     def test_ball_wins_row_tie_over_earlier_scan_order(self):
-        # Ball ON and M1 ON on the same row: even though M1 is scanned next,
-        # the ball was scanned first with a strict "<", so the ball is slot 1
-        # and M1 is bumped to row+1 (M1 can never be slot 2).
+        # Ball ON and M1 ON on the same row: players are scanned first, then
+        # ball, then M0, then M1.  Ball wins over M1 (scanned earlier), so
+        # ball is slot 1 and M1 is bumped to row+1 (M1 can never be slot 2).
         active, objects = scene(48, 128, 100, 0, 100, False, True)
         table, nd = build(active, objects)
         rows = table_rows(table, nd)
-        # ball ON 100, M1 ON bumped 101, M1 OFF 104, ball OFF 104 merges? no:
-        # 104 == M1 OFF row -> ball OFF merges as slot 2 (ball is slot 1 there
-        # from the earlier 100/101 ordering? no - the 104 merge is a fresh
-        # single).  Recompute below via the model and assert only the slot-1
-        # invariant.
         self.assertEqual(rows, sorted(rows))
         for d, reg1, val1, reg2, val2 in entries(table):
             if reg2 != 0:
-                self.assertNotIn(reg1, (EV_REG_ENAM1,))
-                self.assertNotIn(reg2, (EV_REG_ENAM1, EV_REG_ENABL))
+                self.assertNotIn(reg2, (EV_REG_ENAM1,))
 
     def test_enabl_and_enam1_never_second_write(self):
-        # Across a dense scenario matrix, the ball and M1 must never end up as
-        # the second write of a double.
+        # Across a dense scenario matrix, M1 must never end up as the second
+        # write of a double.  ENABL may be slot 2 when ball_x >= 15 (the
+        # default), which is safe.
         for by in range(0, 180, 5):
             for m0y, m1y in ((by, by), (by - 2, by + 2), (52, 132)):
                 for m0a, m1a in ((True, True), (True, False),
@@ -268,9 +326,6 @@ class TestBuilderBasics(unittest.TestCase):
                     table, nd = build(active, objects)
                     for d, reg1, val1, reg2, val2 in entries(table):
                         if reg2 != 0:
-                            self.assertNotEqual(
-                                reg2, EV_REG_ENABL,
-                                f"ENABL in the second slot at by={by}")
                             self.assertNotEqual(
                                 reg2, EV_REG_ENAM1,
                                 f"ENAM1 in the second slot at m1y={m1y}")
@@ -360,6 +415,112 @@ class TestBuilderBasics(unittest.TestCase):
             n_events = sum(1 for _ in entries(table))
             self.assertEqual(len(rows), n_events)
             self.assertEqual(sorted(rows), rows)
+
+
+class TestPlayerBallRowCollision(unittest.TestCase):
+    """Regression: player events must never be bumped when ball shares a row.
+
+    Before the Round 14 fix, when Ball OFF and P1 ON/OFF shared a row,
+    the ball was scanned first (won the row tie) and occupied slot 1.
+    P1's event was then bumped to row+1, causing P1 to appear 1 scanline
+    too short or too tall.  The fix reorders the scan loop so players are
+    checked before the ball: players always win row ties and the ball is
+    bumped instead (invisible on a 3-pixel ball).
+    """
+
+    def _check_player_height(self, p0y, p1y, by, m0y=0, m1y=0,
+                             m0a=False, m1a=False):
+        """Build events and verify both players have exactly PLAYER_HEIGHT."""
+        PH = read_constants()["PLAYER_HEIGHT"]
+        BH = read_constants()["BALL_HEIGHT"]
+        active, objects = scene(p0y, p1y, by, m0y, m1y, m0a, m1a)
+        table, nd = build(active, objects)
+
+        # Find P0 ON/OFF and P1 ON/OFF rows from the table
+        p0_on = p0_off = p1_on = p1_off = None
+        row = nd
+        i = ENTRY0
+        while table[i] != EV_MARKER_VAL:
+            reg1, val1 = table[i+1], table[i+2]
+            reg2, val2 = table[i+3], table[i+4]
+            if reg1 == EV_REG_GRP0:
+                if val1: p0_on = row
+                else: p0_off = row
+            if reg2 == EV_REG_GRP0:
+                if val2: p0_on = row
+                else: p0_off = row
+            if reg1 == EV_REG_GRP1:
+                if val1: p1_on = row
+                else: p1_off = row
+            if reg2 == EV_REG_GRP1:
+                if val2: p1_on = row
+                else: p1_off = row
+            row += table[i]
+            i += 5
+
+        self.assertIsNotNone(p0_on, "P0 ON not found")
+        self.assertIsNotNone(p0_off, "P0 OFF not found")
+        self.assertIsNotNone(p1_on, "P1 ON not found")
+        self.assertIsNotNone(p1_off, "P1 OFF not found")
+        self.assertEqual(p0_off - p0_on, PH,
+                         f"P0 height {p0_off - p0_on} != {PH} "
+                         f"(p0y={p0y} by={by})")
+        self.assertEqual(p1_off - p1_on, PH,
+                         f"P1 height {p1_off - p1_on} != {PH} "
+                         f"(p1y={p1y} by={by})")
+        self.assertEqual(p0_on, p0y, f"P0 ON {p0_on} != P0Y {p0y}")
+        self.assertEqual(p1_on, p1y, f"P1 ON {p1_on} != P1Y {p1y}")
+
+    def test_ball_on_equals_p1_on(self):
+        """Case A: Ball ON row == P1 ON row."""
+        self._check_player_height(p0y=82, p1y=83, by=83)
+
+    def test_ball_off_equals_p1_on(self):
+        """Case B: Ball OFF row == P1 ON row."""
+        PH = read_constants()["PLAYER_HEIGHT"]
+        BH = read_constants()["BALL_HEIGHT"]
+        self._check_player_height(p0y=82, p1y=83, by=83 - BH)
+
+    def test_ball_on_equals_p1_off(self):
+        """Case C: Ball ON row == P1 OFF row."""
+        PH = read_constants()["PLAYER_HEIGHT"]
+        self._check_player_height(p0y=82, p1y=83, by=83 + PH)
+
+    def test_ball_off_equals_p1_off(self):
+        """Case D: Ball OFF row == P1 OFF row."""
+        PH = read_constants()["PLAYER_HEIGHT"]
+        BH = read_constants()["BALL_HEIGHT"]
+        self._check_player_height(p0y=82, p1y=83, by=83 + PH - BH)
+
+    def test_ball_on_equals_p0_on(self):
+        """P0 Control A: Ball ON row == P0 ON row."""
+        self._check_player_height(p0y=82, p1y=83, by=82)
+
+    def test_ball_off_equals_p0_on(self):
+        """P0 Control B: Ball OFF row == P0 ON row."""
+        BH = read_constants()["BALL_HEIGHT"]
+        self._check_player_height(p0y=82, p1y=83, by=82 - BH)
+
+    def test_ball_on_equals_p0_off(self):
+        """P0 Control C: Ball ON row == P0 OFF row."""
+        PH = read_constants()["PLAYER_HEIGHT"]
+        self._check_player_height(p0y=82, p1y=83, by=82 + PH)
+
+    def test_ball_off_equals_p0_off(self):
+        """P0 Control D: Ball OFF row == P0 OFF row."""
+        PH = read_constants()["PLAYER_HEIGHT"]
+        BH = read_constants()["BALL_HEIGHT"]
+        self._check_player_height(p0y=82, p1y=83, by=82 + PH - BH)
+
+    def test_no_player_event_is_bumped_by_ball(self):
+        """Sweep: for every ball_y, player ON/OFF rows must match P0Y/P1Y."""
+        PH = read_constants()["PLAYER_HEIGHT"]
+        BH = read_constants()["BALL_HEIGHT"]
+        for by in range(0, 185):
+            # Skip cases where player events fall off-screen
+            if 83 + PH > 185:
+                continue
+            self._check_player_height(p0y=82, p1y=83, by=by)
 
 
 if __name__ == "__main__":

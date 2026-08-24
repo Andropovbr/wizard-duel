@@ -88,11 +88,12 @@ class EventBuilderHarness:
         return self.sym[name] - 0x80
 
     def set_state(self, p0=88, p1=50, by=96, m0y=96, m1y=100,
-                  m0act=False, m1act=False, hp0=3, hp1=3):
+                  m0act=False, m1act=False, hp0=3, hp1=3, ball_x=80):
         r = self.cpu.ram
         r[self._ram("P0Y")] = p0
         r[self._ram("P1Y")] = p1
         r[self._ram("ball_y")] = by
+        r[self._ram("ball_x")] = ball_x
         r[self._ram("m0_y")] = m0y
         r[self._ram("m1_y")] = m1y
         r[self._ram("m_active")] = (0x01 if m0act else 0) | (0x02 if m1act else 0)
@@ -105,6 +106,7 @@ class EventBuilderHarness:
         A synthetic return address (StartOfFrame) is planted on the stack so
         BuildEvents can RTS back to a known label.
         """
+        self._ball_x = kwargs.get("ball_x", 80)
         self.set_state(**kwargs)
         self.cpu.sp = 0xFD
         self.cpu.write(0x100 + 0xFD, (self.sof >> 8) & 0xFF)
@@ -517,33 +519,32 @@ class TestBoundaryRows(unittest.TestCase):
 
 
 class TestBallWriteSlotInvariant(unittest.TestCase):
-    """ENABL and ENAM1 must never occupy a double's second write slot.
+    """ENABL and ENAM1 write-slot invariant.
 
-    The kernel's second write lands at CPU cycle 27 of the scanline
-    (measured on the deterministic emulator), which is only safe for objects
-    whose x is guaranteed >= 15: P0 (16), P1 (136) and M0 (>= 18).  The ball
-    (ENABL, x can be 0..156) and M1 (x can be 2..158) must therefore never be
-    the second write of a double - the write could land after the beam passed
-    the object's x, applying one scanline late and stretching/shifting it.
+    The kernel's second write lands at CPU cycle 27 of the scanline, which is
+    only safe for objects whose x is guaranteed >= 15.  ENAM1 is never slot 2
+    (M1 x varies).  ENABL may be slot 2 only when ball_x >= 15; when ball_x < 15
+    and Ball shares a row with a player, the two are reordered within the slot
+    pair (ball -> slot 1, player -> slot 2) so neither is displaced.
 
     These tests run the REAL ROM's BuildEvents across every collision and
-    assert that no double entry ever carries ENABL or ENAM1 in the second
-    slot.
+    assert that the slot invariant holds given the current ball_x.
     """
 
     def setUp(self):
         self.h = EventBuilderHarness()
 
     def assert_slot_legal(self, msg):
+        ball_x = getattr(self.h, "_ball_x", 80)
         for row, writes in self.h.decoded_entries():
             if len(writes) != 2:
                 continue  # singles have no write-slot problem
             (reg1, _), (reg2, _) = writes
-            self.assertNotEqual(
-                reg2, EV_REG_ENABL,
-                f"{msg}: ENABL is the second write of the double at row {row}; "
-                f"the late write (cycle 27) can miss ball_x and shift the "
-                f"ball one scanline")
+            if reg2 == EV_REG_ENABL:
+                self.assertGreaterEqual(
+                    ball_x, 15,
+                    f"{msg}: ENABL is slot 2 at row {row} with ball_x={ball_x}; "
+                    f"the late write (cycle 27) can miss the ball")
             self.assertNotEqual(
                 reg2, EV_REG_ENAM1,
                 f"{msg}: ENAM1 is the second write of the double at row {row}; "
@@ -553,28 +554,150 @@ class TestBallWriteSlotInvariant(unittest.TestCase):
         # Force the ball's ON and OFF rows onto P0's and P1's ON/OFF rows.
         for by in (50, 58, 62, 88, 92, 96, 100, 104):
             self.h.build_events(p0=88, p1=50, by=by, m0y=96, m1y=100,
-                                m0act=False, m1act=False)
+                                m0act=False, m1act=False, ball_x=80)
             self.h.assert_valid_table(self.h.decoded_rows(), f"by={by}")
             self.assert_slot_legal(f"by={by}")
 
     def test_ball_never_second_write_with_missiles(self):
         for by in (92, 96, 100, 104):
             self.h.build_events(p0=88, p1=50, by=by, m0y=96, m1y=100,
-                                m0act=True, m1act=True)
+                                m0act=True, m1act=True, ball_x=80)
             self.h.assert_valid_table(self.h.decoded_rows(), f"by={by}")
             self.assert_slot_legal(f"by={by}")
 
     def test_ball_never_second_write_full_sweep(self):
         # Sweep the ball over the whole arena with every object active; a row
-        # the ball shares must never put ENABL in the second slot.
+        # the ball shares must respect the slot invariant given ball_x.
         for by in range(0, 182, 3):
             self.h.build_events(p0=88, p1=50, by=by, m0y=96, m1y=100,
-                                m0act=True, m1act=True)
+                                m0act=True, m1act=True, ball_x=80)
             self.h.assert_valid_table(self.h.decoded_rows(), f"by={by}")
             self.assert_slot_legal(f"by={by}")
             entry_rows = [r for r, _ in self.h.decoded_entries()]
             self.assertEqual(len(entry_rows), len(set(entry_rows)),
                              f"duplicate entry rows for by={by}")
+
+    def test_slot_swap_with_ball_left_of_safe_zone(self):
+        # ball_x < 15: Ball and player must swap slots (no bump).
+        for bx in (0, 5, 10, 14):
+            for by in (88, 92, 96, 100):
+                self.h.build_events(p0=88, p1=50, by=by, m0y=96, m1y=100,
+                                    m0act=False, m1act=False, ball_x=bx)
+                self.h.assert_valid_table(self.h.decoded_rows(),
+                                          f"bx={bx} by={by}")
+                self.assert_slot_legal(f"bx={bx} by={by}")
+                # Verify no player row displacement
+                for row, reg, val in self.h.decoded_rows():
+                    if reg == EV_REG_GRP0:
+                        if val:  # P0 ON
+                            self.assertEqual(row, 88,
+                                             f"P0 ON displaced at bx={bx}")
+                        else:    # P0 OFF
+                            self.assertEqual(row, 88 + 18,
+                                             f"P0 OFF displaced at bx={bx}")
+                    if reg == EV_REG_GRP1:
+                        if val:  # P1 ON
+                            self.assertEqual(row, 50,
+                                             f"P1 ON displaced at bx={bx}")
+                        else:    # P1 OFF
+                            self.assertEqual(row, 50 + 18,
+                                             f"P1 OFF displaced at bx={bx}")
+
+    def test_slot_swap_at_right_edge(self):
+        # Reproduce the reported scenario: ball_x = BALL_X_MAX, ball ON/OFF
+        # coincides with P1 ON/OFF.  Ball must not change row.
+        BALL_X_MAX = 160 - 4  # BALL_WIDTH = 4
+        BH = C["BALL_HEIGHT"]
+        PH = C["PLAYER_HEIGHT"]
+        for by in (50, 50 + PH):
+            self.h.build_events(p0=88, p1=50, by=by, m0y=96, m1y=100,
+                                m0act=False, m1act=False, ball_x=BALL_X_MAX)
+            self.h.assert_valid_table(self.h.decoded_rows(),
+                                      f"ball_x=MAX by={by}")
+            self.assert_slot_legal(f"ball_x=MAX by={by}")
+            for row, reg, val in self.h.decoded_rows():
+                if reg == EV_REG_ENABL:
+                    if val:  # Ball ON
+                        self.assertEqual(row, by,
+                                         f"Ball ON row shifted at right edge")
+                    else:    # Ball OFF
+                        self.assertEqual(row, by + BH,
+                                         f"Ball OFF row shifted at right edge")
+
+    def test_all_56_collision_cases_no_displacement(self):
+        """8 collision types × 7 ball_x positions = 56 cases.
+
+        Ball shares a row with ONE player; the other player is far away.
+        Neither Ball nor Player may be displaced from its logical row.
+        """
+        PH = C["PLAYER_HEIGHT"]
+        BH = C["BALL_HEIGHT"]
+        P0Y, P1Y_FAR = 83, 120
+        P1Y, P0Y_FAR = 83, 120
+        X_POSITIONS = [0, 14, 15, 16, 136, 156, 159]
+        CASES = [
+            ("Ball_ON==P0_ON",   P0Y, P1Y_FAR, P0Y,           "P0"),
+            ("Ball_OFF==P0_ON",  P0Y, P1Y_FAR, P0Y - BH,      "P0"),
+            ("Ball_ON==P0_OFF",  P0Y, P1Y_FAR, P0Y + PH,      "P0"),
+            ("Ball_OFF==P0_OFF", P0Y, P1Y_FAR, P0Y + PH - BH, "P0"),
+            ("Ball_ON==P1_ON",   P0Y_FAR, P1Y, P1Y,           "P1"),
+            ("Ball_OFF==P1_ON",  P0Y_FAR, P1Y, P1Y - BH,      "P1"),
+            ("Ball_ON==P1_OFF",  P0Y_FAR, P1Y, P1Y + PH,      "P1"),
+            ("Ball_OFF==P1_OFF", P0Y_FAR, P1Y, P1Y + PH - BH, "P1"),
+        ]
+        for case_name, p0y, p1y, by, player in CASES:
+            for bx in X_POSITIONS:
+                self.h.build_events(p0=p0y, p1=p1y, by=by, m0y=0, m1y=0,
+                                    m0act=False, m1act=False, ball_x=bx)
+                self.h.assert_valid_table(self.h.decoded_rows(),
+                                          f"{case_name} bx={bx}")
+                self.assert_slot_legal(f"{case_name} bx={bx}")
+                for row, reg, val in self.h.decoded_rows():
+                    if reg == EV_REG_ENABL:
+                        if val:  # Ball ON
+                            self.assertEqual(
+                                row, by,
+                                f"{case_name} bx={bx}: Ball ON displaced "
+                                f"({row} != {by})")
+                        else:    # Ball OFF
+                            self.assertEqual(
+                                row, by + BH,
+                                f"{case_name} bx={bx}: Ball OFF displaced "
+                                f"({row} != {by + BH})")
+                    p_reg = EV_REG_GRP0 if player == "P0" else EV_REG_GRP1
+                    if reg == p_reg:
+                        exp_on = p0y if player == "P0" else p1y
+                        if val:  # Player ON
+                            self.assertEqual(
+                                row, exp_on,
+                                f"{case_name} bx={bx}: {player} ON displaced "
+                                f"({row} != {exp_on})")
+                        else:    # Player OFF
+                            self.assertEqual(
+                                row, exp_on + PH,
+                                f"{case_name} bx={bx}: {player} OFF displaced"
+                                f" ({row} != {exp_on + PH})")
+
+    def test_ball_never_displaced_sweep(self):
+        """Sweep ball_y across the arena with various ball_x.
+
+        Ball ON must always be at ball_y, Ball OFF at ball_y + BH.
+        """
+        BH = C["BALL_HEIGHT"]
+        for bx in (0, 14, 15, 16, 80, 156):
+            for by in range(0, 185 - BH, 7):
+                self.h.build_events(p0=88, p1=50, by=by, m0y=96, m1y=100,
+                                    m0act=True, m1act=True, ball_x=bx)
+                for row, reg, val in self.h.decoded_rows():
+                    if reg == EV_REG_ENABL:
+                        if val:
+                            self.assertEqual(
+                                row, by,
+                                f"bx={bx} by={by}: Ball ON displaced")
+                        else:
+                            self.assertEqual(
+                                row, by + BH,
+                                f"bx={bx} by={by}: Ball OFF displaced")
 
 
 if __name__ == "__main__":

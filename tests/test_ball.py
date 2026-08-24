@@ -114,6 +114,36 @@ class Mini6502:
                     pc += 2
                 else:
                     pc = (pc + 2 + rel) & 0xFFFF
+            elif op == 0x4C:  # JMP abs
+                lo = self.read(pc + 1)
+                hi = self.read(pc + 2)
+                pc = lo | (hi << 8)
+            elif op == 0x30:  # BMI rel
+                rel = self.read(pc + 1)
+                if rel & 0x80:
+                    rel -= 0x100
+                if self.sr & 0x80:  # N set -> taken
+                    pc = (pc + 2 + rel) & 0xFFFF
+                else:
+                    pc += 2
+            elif op == 0xF0:  # BEQ rel
+                rel = self.read(pc + 1)
+                if rel & 0x80:
+                    rel -= 0x100
+                if self.sr & 0x02:  # Z set -> taken
+                    pc = (pc + 2 + rel) & 0xFFFF
+                else:
+                    pc += 2
+            elif op == 0xE6:  # INC zp
+                addr = self.read(pc + 1)
+                val = (self.read(addr) + 1) & 0xFF
+                self.write(addr, val)
+                self.sr &= ~0x82  # clear N and Z
+                if val == 0:
+                    self.sr |= 0x02
+                if val & 0x80:
+                    self.sr |= 0x80
+                pc += 2
             else:
                 raise AssertionError(
                     f"unexpected opcode ${op:02X} at ${pc:04X} in UpdateBall")
@@ -277,11 +307,12 @@ class TestBallRamBudget(unittest.TestCase):
     def test_ram_usage(self):
         # Round 6: P0Y..hit_flags + ball_contact_flags (15) + fire_prev/evCnt
         # (2) + evTbl (60, dummy + 10 entries + marker) + builder temps
-        # evRow/tempCount/tblLen (3) + nullDelta (1) = 81 bytes ($80-$D0).
+        # evRow/tempCount/tempSwap/tblLen (4) + nullDelta (1) = 82 bytes ($80-$D1).
         # The +1 byte over Round 11 is the ball x player contact record
         # (CONTACT_P0/CONTACT_P1).  Round 12 adds game_state, game_mode,
-        # select_prev, reset_prev, swchb_cur, reset_held (6 bytes) = 87 bytes.
-        self.assertEqual(self.used, 87)
+        # select_prev, reset_prev, swchb_cur, reset_held (6 bytes) = 88 bytes.
+        # SCORE mode adds score_p0, score_p1, pending_rally_reset (3) = 91 bytes.
+        self.assertEqual(self.used, 91)
 
 
 class TestEventKernel(unittest.TestCase):
